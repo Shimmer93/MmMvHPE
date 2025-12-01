@@ -1,0 +1,1 @@
+from .xfi_head import XFiRegressionHead  # noqa: F401, F403

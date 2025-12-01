@@ -1,0 +1,1 @@
+from .xfi_resnet import XFiResNet  # noqa: F401, F403
