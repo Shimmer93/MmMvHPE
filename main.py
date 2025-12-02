@@ -4,7 +4,6 @@ warnings.filterwarnings("ignore")
 from argparse import ArgumentParser
 import os
 
-import numpy as np
 import torch
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
@@ -19,7 +18,11 @@ def main(args):
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
     monitor = 'val_mpjpe'
-    filename = args.model_name+'-{epoch}-{val_mpjpe:.4f}'
+
+    if hasattr(args, 'epochs'):
+        filename = args.model_name+'-{epoch}-{val_mpjpe:.4f}'
+    else:
+        filename = args.model_name+'-{step}-{val_mpjpe:.4f}'
 
     callbacks = [
         ModelCheckpoint(
@@ -38,20 +41,44 @@ def main(args):
                     version=args.version)
     logger.log_hyperparams(args)
 
-    trainer = L.Trainer(
-        fast_dev_run=args.dev,
-        logger=logger, # wandb_logger if wandb_on else None,
-        max_epochs=args.epochs,
-        devices=1 if args.predict else args.gpus, # Use 1 GPU for prediction
-        accelerator="gpu",
-        sync_batchnorm=args.sync_batchnorm,
-        num_nodes=args.num_nodes,
-        gradient_clip_val=args.clip_grad,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.strategy == 'ddp' else args.strategy,
-        callbacks=callbacks,
-        precision=args.precision,
-        benchmark=args.benchmark
-    )
+    if hasattr(args, 'epochs'):
+        print(f'Training for {args.epochs} epochs.')
+        trainer = L.Trainer(
+            fast_dev_run=args.dev,
+            logger=logger, # wandb_logger if wandb_on else None,
+            profiler="simple",
+            max_epochs=args.epochs,
+            devices=1 if args.predict else args.gpus, # Use 1 GPU for prediction
+            accelerator="gpu",
+            sync_batchnorm=args.sync_batchnorm,
+            num_nodes=args.num_nodes,
+            gradient_clip_val=args.clip_grad,
+            strategy=DDPStrategy(find_unused_parameters=True) if args.strategy == 'ddp' else args.strategy,
+            callbacks=callbacks,
+            precision=args.precision,
+            benchmark=args.benchmark
+        )
+    else:
+        # step-based training
+        print(f'Training for {args.max_steps} steps.')
+        trainer = L.Trainer(
+            fast_dev_run=args.dev,
+            logger=logger, # wandb_logger if wandb_on else None,
+            profiler="simple",
+            max_epochs=-1,
+            max_steps=args.max_steps,
+            val_check_interval=args.val_check_interval,
+            limit_val_batches=args.limit_val_batches,
+            devices=1 if args.predict else args.gpus, # Use 1 GPU for prediction
+            accelerator="gpu",
+            sync_batchnorm=args.sync_batchnorm,
+            num_nodes=args.num_nodes,
+            gradient_clip_val=args.clip_grad,
+            strategy=DDPStrategy(find_unused_parameters=True) if args.strategy == 'ddp' else args.strategy,
+            callbacks=callbacks,
+            precision=args.precision,
+            benchmark=args.benchmark
+        )
 
     if bool(args.test):
         trainer.test(model, datamodule=dm)

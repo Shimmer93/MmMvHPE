@@ -1,3 +1,3 @@
-from .mpjpe import MPJPE
+from .mpjpe import MPJPE, PAMPJPE
 
-__all__ = ['MPJPE']
+__all__ = ['MPJPE', 'PAMPJPE']
