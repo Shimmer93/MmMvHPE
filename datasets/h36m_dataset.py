@@ -17,7 +17,7 @@ class H36MDataset(BaseDataset):
     def __init__(
         self,
         pipeline: List[dict] = [],
-        h36m_root: str = "",
+        h36m_root: str = "/data/yzhanghe/H36M-Toolbox",
         split: str = "train",
         sequence_length: int = 16,
         frame_step: int = 1,
@@ -29,8 +29,8 @@ class H36MDataset(BaseDataset):
         self.frame_step = frame_step
 
         # Dataset paths
-        self.images_root = "/data/yzhanghe/H36M-Toolbox/images"
-        self.extracted_root = "/data/yzhanghe/H36M-Toolbox/extracted"
+        self.images_root = f"{h36m_root}/images"
+        self.extracted_root = f"{h36m_root}/extracted"
 
         # H3.6M protocol splits
         if split == "train":
@@ -41,7 +41,7 @@ class H36MDataset(BaseDataset):
             self.subjects = ["S1", "S5", "S6", "S7", "S8", "S9", "S11"]
 
         # Load metadata
-        self.metadata = load_h36m_metadata("/data/yzhanghe/H36M-Toolbox/metadata.xml")
+        self.metadata = load_h36m_metadata(f"{h36m_root}/metadata.xml")
 
         # Build dataset index
         self.data_list = self._build_dataset()
@@ -93,7 +93,7 @@ class H36MDataset(BaseDataset):
 
     def _load_camera_params(self):
         """Load camera parameters for all subjects."""
-        with open("/data/yzhanghe/H36M-Toolbox/camera_data.pkl", "rb") as f:
+        with open(f"{self.h36m_root}/camera_data.pkl", "rb") as f:
             camera_params = pickle.load(f)
         return camera_params
 
