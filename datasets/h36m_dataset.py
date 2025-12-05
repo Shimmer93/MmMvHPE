@@ -142,16 +142,15 @@ class H36MDataset(BaseDataset):
             f"Pose file not found for subject {subject}, action {action}, subaction {subaction}, camera {camera}"
         )
 
-    def _load_depth_data(self, subject, action, subaction, camera):
+    def _load_depth_data(self, subject, action, subaction):
         """Load depth data for a sequence."""
         basename = self.metadata.get_base_filename(
             subject,
             "{:d}".format(action),
             "{:d}".format(subaction),
-            self.metadata.camera_ids[camera - 1],
+            None
         )
         annotname = basename + ".cdf"
-
         depth_file = osp.join(self.extracted_root, subject, "TOF", annotname)
         if osp.exists(depth_file):
             cdf = cdflib.CDF(depth_file)
@@ -159,7 +158,11 @@ class H36MDataset(BaseDataset):
             # Transpose to (num_frames, H, W)
             depth_data = range_frames[0].transpose(2, 0, 1)
             return depth_data
-        return None
+        else:
+            # Throw error if depth file not found
+            raise FileNotFoundError(
+                f"Depth file not found for subject {subject}, action {action}, subaction {subaction}, camera {camera}"
+            )
 
     def __len__(self):
         return len(self.data_list)
@@ -216,22 +219,22 @@ class H36MDataset(BaseDataset):
         else:
             # Raise error if pose data is missing
             raise RuntimeError(
-                f"3D pose data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}"
+                f"3D pose data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}"  
             )
 
         # Load depth data
-        # depth_data = self._load_depth_data(data_info['subject'], action_id, subaction_id, camera_id)
-        # depth_frames = []
-        # if depth_data is not None:
-        #     # Handle depth frame rate difference (typically half of RGB)
-        #     depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
-        #     for i in range(self.sequence_length):
-        #         depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
-        #         depth_idx = min(depth_idx, depth_data.shape[0] - 1)
-        #         depth_frames.append(depth_data[depth_idx])
-        # else:
-        #     # Raise error if depth data is missing
-        #     raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+        depth_data = self._load_depth_data(data_info['subject'], action_id, subaction_id)
+        depth_frames = []
+        if depth_data is not None:
+            # Handle depth frame rate difference (typically half of RGB)
+            depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
+            for i in range(self.sequence_length):
+                depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
+                depth_idx = min(depth_idx, depth_data.shape[0] - 1)
+                depth_frames.append(depth_data[depth_idx])
+        else:
+            # Raise error if depth data is missing
+            raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
 
         # Get camera parameters
         camera_param = self.camera_params.get(data_info["subject"], {}).get(
@@ -243,7 +246,7 @@ class H36MDataset(BaseDataset):
 
         sample = {
             "input_rgb": rgb_frames,
-            # "input_depth": depth_frames,
+            "input_depth": depth_frames,
             "input_rgb_camera": camera_param,
             "input_depth_camera": camera_param,  # Assuming same camera for RGB and depth
             "gt_keypoints": pose_sequence[

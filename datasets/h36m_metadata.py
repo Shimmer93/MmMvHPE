@@ -29,8 +29,11 @@ class H36M_Metadata:
         self.camera_ids = [elem.text for elem in root.find('dbcameras/index2id')]
 
     def get_base_filename(self, subject, action, subaction, camera):
-        return '{}.{}'.format(self.sequence_mappings[subject][(action, subaction)], camera)
-
+        if camera == None:
+            return '{}'.format(self.sequence_mappings[subject][(action, subaction)]) # No camera id for depth data
+        else:
+            return '{}.{}'.format(self.sequence_mappings[subject][(action, subaction)], camera)
+    
 
 def load_h36m_metadata(metadata_file='datasets/h36m_metadata.xml'):
     return H36M_Metadata(metadata_file)
