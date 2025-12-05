@@ -39,7 +39,7 @@ class H36MDataset(BaseDataset):
             14: 'WalkDog', 15: 'Walking', 16: 'WalkTogether'
         }
         
-        # Camera IDs
+        # Camera IDs mapping (1-indexed to names)
         self.camera_ids = ['54138969', '55011271', '58860488', '60457274']
         
         # Build dataset index
@@ -73,7 +73,7 @@ class H36MDataset(BaseDataset):
                         # Create sequences with overlap
                         for start_idx in range(0, num_frames - self.sequence_length + 1, self.frame_step):
                             data_info = {
-                                'subject': f'S{subject_id}',
+                                'subject': f'S{int(subject_id)}',  # Convert to int to remove zero padding
                                 'action': action_id,
                                 'subaction': subaction_id,
                                 'camera': camera_id,
