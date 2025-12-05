@@ -78,6 +78,7 @@ class H36MDataset(BaseDataset):
                             0, num_frames - self.sequence_length + 1, self.frame_step
                         ):
                             data_info = {
+                                "subject_id": int(subject_id),    
                                 "subject": f"S{int(subject_id)}",  # Convert to int to remove zero padding
                                 "action": action_id,
                                 "subaction": subaction_id,
@@ -237,9 +238,16 @@ class H36MDataset(BaseDataset):
             raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
 
         # Get camera parameters
-        camera_param = self.camera_params.get(data_info["subject"], {}).get(
-            data_info["camera"], {"fx": 1000.0, "fy": 1000.0, "cx": 500.0, "cy": 500.0}
-        )
+        camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
+        camera_dict = {}
+        camera_dict['R'] = camera_param[0]
+        camera_dict['T'] = camera_param[1]
+        camera_dict['fx'] = camera_param[2][0]
+        camera_dict['fy'] = camera_param[2][1]
+        camera_dict['cx'] = camera_param[3][0]
+        camera_dict['cy'] = camera_param[3][1]
+        camera_dict['k'] = camera_param[4]
+        camera_dict['p'] = camera_param[5]
 
         # Get action name for sample ID
         action_name = self.metadata.action_names.get(action_id, f"Action_{action_id}")
@@ -247,11 +255,9 @@ class H36MDataset(BaseDataset):
         sample = {
             "input_rgb": rgb_frames,
             "input_depth": depth_frames,
-            "input_rgb_camera": camera_param,
+            "input_rgb_camera": camera_dict,
             "input_depth_camera": camera_param,  # Assuming same camera for RGB and depth
-            "gt_keypoints": pose_sequence[
-                self.sequence_length // 2
-            ],  # Use middle frame pose
+            "gt_keypoints": pose_sequence,
             "sample_id": f"{data_info['subject']}_{action_name}_{data_info['subaction']}_{data_info['camera']}_{data_info['start_frame']}",
             "modalities": ["rgb", "depth"],
             "anchor_key": "input_rgb",  # Coordinates in RGB camera space
