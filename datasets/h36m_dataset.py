@@ -238,16 +238,22 @@ class H36MDataset(BaseDataset):
             raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
 
         # Get camera parameters
-        camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
-        camera_dict = {}
-        camera_dict['R'] = camera_param[0]
-        camera_dict['T'] = camera_param[1]
-        camera_dict['fx'] = camera_param[2][0]
-        camera_dict['fy'] = camera_param[2][1]
-        camera_dict['cx'] = camera_param[3][0]
-        camera_dict['cy'] = camera_param[3][1]
-        camera_dict['k'] = camera_param[4]
-        camera_dict['p'] = camera_param[5]
+        rgb_camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
+        rgb_camera_dict = {}
+        rgb_camera_dict['R'] = rgb_camera_param[0]
+        rgb_camera_dict['T'] = rgb_camera_param[1]
+        rgb_camera_dict['fx'] = rgb_camera_param[2][0]
+        rgb_camera_dict['fy'] = rgb_camera_param[2][1]
+        rgb_camera_dict['cx'] = rgb_camera_param[3][0]
+        rgb_camera_dict['cy'] = rgb_camera_param[3][1]
+        rgb_camera_dict['k'] = rgb_camera_param[4]
+        rgb_camera_dict['p'] = rgb_camera_param[5]
+
+        # Get depth camera parameters (assume same extrinsics as camera 02)
+        depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
+        depth_camera_dict = {}
+        depth_camera_dict['R'] = depth_camera_param[0]
+        depth_camera_dict['T'] = depth_camera_param[1]
 
         # Get action name for sample ID
         action_name = self.metadata.action_names.get(action_id, f"Action_{action_id}")
@@ -255,8 +261,8 @@ class H36MDataset(BaseDataset):
         sample = {
             "input_rgb": rgb_frames,
             "input_depth": depth_frames,
-            "input_rgb_camera": camera_dict,
-            "input_depth_camera": camera_param,  # Assuming same camera for RGB and depth
+            "input_rgb_camera": rgb_camera_dict,
+            "input_depth_camera": depth_camera_dict,  # Assuming same camera extrinsics as cam 02
             "gt_keypoints": pose_sequence,
             "sample_id": f"{data_info['subject']}_{action_name}_{data_info['subaction']}_{data_info['camera']}_{data_info['start_frame']}",
             "modalities": ["rgb", "depth"],
