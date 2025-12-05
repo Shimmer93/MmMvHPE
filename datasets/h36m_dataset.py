@@ -10,6 +10,9 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from datasets.base_dataset import BaseDataset
 
+from h36m_metadata import load_h36m_metadata
+
+
 class H36MDataset(BaseDataset):
     def __init__(self, pipeline: List[dict] = [], h36m_root: str = '', split: str = 'train', 
                  sequence_length: int = 16, frame_step: int = 1):
@@ -30,24 +33,33 @@ class H36MDataset(BaseDataset):
             self.subjects = ['S9', 'S11']
         else:
             self.subjects = ['S1', 'S5', 'S6', 'S7', 'S8', 'S9', 'S11']
+
+        # Load metadata
+        self.metadata = load_h36m_metadata('/data/yzhanghe/H36M-Toolbox/metadata.xml')
             
-        # Action mapping - H3.6M actions
-        self.action_names = {
-            2: 'Directions', 3: 'Discussion', 4: 'Eating', 5: 'Greeting',
-            6: 'Phoning', 7: 'Photo', 8: 'Posing', 9: 'Purchases',
-            10: 'Sitting', 11: 'SittingDown', 12: 'Smoking', 13: 'Waiting',
-            14: 'WalkDog', 15: 'Walking', 16: 'WalkTogether'
-        }
+        # # Action mapping - H3.6M actions
+        # self.action_names = {
+        #     2: 'Directions', 3: 'Discussion', 4: 'Eating', 5: 'Greeting',
+        #     6: 'Phoning', 7: 'Photo', 8: 'Posing', 9: 'Purchases',
+        #     10: 'Sitting', 11: 'SittingDown', 12: 'Smoking', 13: 'Waiting',
+        #     14: 'WalkDog', 15: 'Walking', 16: 'WalkTogether'
+        # }
         
         # Camera IDs mapping (1-indexed to names)
-        self.camera_ids = ['54138969', '55011271', '58860488', '60457274']
+        # self.camera_ids = ['54138969', '55011271', '58860488', '60457274']
         
         # Build dataset index
         self.data_list = self._build_dataset()
         
         # Load camera parameters
         self.camera_params = self._load_camera_params()
-
+    
+    # def _get_base_filename(self, subject:str, action, subaction, camera_id):
+    #     """Get base filename like in the reference script."""
+    #     # This follows the pattern from the reference script
+    #     # return f'{self.action_names[int(action)]} {subaction}'
+    #     return self.metadata.get_base_filename(subject, '{:d}'.format(action), '{:d}'.format(subaction), self.metadata.camera_ids[camera_id-1])
+        
     def _build_dataset(self):
         """Build dataset index with available sequences."""
         data_list = []
@@ -87,59 +99,47 @@ class H36MDataset(BaseDataset):
     
     def _load_camera_params(self):
         """Load camera parameters for all subjects."""
-        camera_params = {}
-        
-        for subject in self.subjects:
-            calib_file = osp.join(self.extracted_root, subject, 'calibration.toml')
-            if osp.exists(calib_file):
-                # Parse TOML-like format manually
-                cameras = {}
-                with open(calib_file, 'r') as f:
-                    content = f.read()
-                    
-                # Extract camera data (simple parsing)
-                import re
-                cam_blocks = re.findall(r'\[cam_(\d+)\]([^\[]*)', content)
-                for cam_idx, cam_data in cam_blocks:
-                    # Extract camera name
-                    name_match = re.search(r'name = "(\d+)"', cam_data)
-                    if name_match:
-                        cam_name = name_match.group(1)
-                        
-                        # Extract matrix (intrinsics)
-                        matrix_match = re.search(r'matrix = \[\s*\[([^\]]+)\]', cam_data)
-                        if matrix_match:
-                            matrix_str = matrix_match.group(1)
-                            fx, _, cx = [float(x.strip(' ,')) for x in matrix_str.split(',')[:3]]
-                            
-                            # Get fy and cy from second row
-                            fy_match = re.search(r'\[\s*[^,]+,\s*([^,]+),\s*([^,]+),\s*\]', cam_data)
-                            if fy_match:
-                                fy = float(fy_match.group(1))
-                                cy = float(fy_match.group(2))
-                                
-                                cameras[cam_name] = {
-                                    'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy
-                                }
-                
-                camera_params[subject] = cameras
-        
+        with open('/data/yzhanghe/H36M-Toolbox/camera_data.pkl', 'rb') as f:
+            camera_params = pickle.load(f)
         return camera_params
-    
-    def _load_pose_data(self, subject, action_name):
-        """Load 3D pose data for a sequence."""
-        pose_file = osp.join(self.extracted_root, subject, 'MyPoseFeatures', 'D3_Positions', f'{action_name}.cdf')
+
+    def _load_pose_data(self, subject, action, subaction, camera):
+        """Load 3D pose data for a sequence using the correct approach."""
+        # Get the base filename like in the reference script
+        # basename = self._get_base_filename(subject, action, subaction, camera)
+        basename = self.metadata.get_base_filename(subject, '{:d}'.format(action), '{:d}'.format(subaction), self.metadata.camera_ids[camera-1])
+        annotname = basename + '.cdf'
+        
+        # Use D3_Positions_mono_universal (world coordinates)
+        pose_file = osp.join(self.extracted_root, subject, 'MyPoseFeatures', 'D3_Positions_mono_universal', annotname)
         if osp.exists(pose_file):
             cdf = cdflib.CDF(pose_file)
-            pose_data = cdf.varget('Pose')  # Shape: (32, num_frames, 96)
+            pose_data = cdf.varget('Pose')  # Shape: (32, num_frames, 96) or (num_frames, 32, 3)
+            pose_data = np.array(pose_data)
+            
             # Reshape to (num_frames, 32, 3)
-            pose_data = pose_data.transpose(1, 0, 2).reshape(pose_data.shape[1], 32, 3)
+            if len(pose_data.shape) == 3 and pose_data.shape[2] == 96:
+                # Shape is (32, num_frames, 96)
+                pose_data = pose_data.transpose(1, 0, 2).reshape(pose_data.shape[1], 32, 3)
+            elif len(pose_data.shape) == 3:
+                # Already in correct shape (num_frames, 32, 3)
+                pass
+            else:
+                # Fallback reshape
+                pose_data = pose_data.reshape(-1, 32, 3)
+            
             return pose_data
-        return None
-    
-    def _load_depth_data(self, subject, action_name):
+        
+        # If not found, throw error 
+        raise FileNotFoundError(f"Pose file not found for subject {subject}, action {action}, subaction {subaction}, camera {camera}")
+
+
+    def _load_depth_data(self, subject, action, subaction, camera):
         """Load depth data for a sequence."""
-        depth_file = osp.join(self.extracted_root, subject, 'TOF', f'{action_name}.cdf')
+        basename = self.metadata.get_base_filename(subject, '{:d}'.format(action), '{:d}'.format(subaction), self.metadata.camera_ids[camera-1] )
+        annotname = basename + '.cdf'
+        
+        depth_file = osp.join(self.extracted_root, subject, 'TOF', annotname)
         if osp.exists(depth_file):
             cdf = cdflib.CDF(depth_file)
             range_frames = cdf.varget('RangeFrames')  # Shape: (1, H, W, num_frames)
@@ -170,45 +170,57 @@ class H36MDataset(BaseDataset):
                 if rgb_frames:
                     rgb_frames.append(rgb_frames[-1].copy())
                 else:
-                    # Create dummy frame if first frame is missing
-                    rgb_frames.append(np.zeros((1000, 1000, 3), dtype=np.uint8))
+                    # raise error if first frame is missing
+                    raise RuntimeError(f"RGB frame not found: {frame_path}")
         
         # Load action name for pose/depth data
         action_id = int(data_info['action'])
-        action_name = self.action_names.get(action_id, f'Action_{action_id}')
+        subaction_id = int(data_info['subaction'])
+        camera_id = int(data_info['camera'])
         
         # Load 3D pose data
-        pose_data = self._load_pose_data(data_info['subject'], action_name)
+        pose_data = self._load_pose_data(data_info['subject'], action_id, subaction_id, camera_id)
         if pose_data is not None:
             # Get poses corresponding to RGB frames
             pose_start = min(data_info['start_frame'], pose_data.shape[0] - self.sequence_length)
+            pose_start = max(0, pose_start)  # Ensure non-negative
             pose_sequence = pose_data[pose_start:pose_start + self.sequence_length]
+            
+            # If we don't have enough frames, pad with the last frame
+            if pose_sequence.shape[0] < self.sequence_length:
+                last_pose = pose_sequence[-1:] if pose_sequence.shape[0] > 0 else np.zeros((1, 32, 3))
+                padding_needed = self.sequence_length - pose_sequence.shape[0]
+                padding = np.repeat(last_pose, padding_needed, axis=0)
+                pose_sequence = np.concatenate([pose_sequence, padding], axis=0)
         else:
             # Raise error if pose data is missing
             raise RuntimeError(f"3D pose data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
         
         # Load depth data  
-        depth_data = self._load_depth_data(data_info['subject'], action_name)
-        depth_frames = []
-        if depth_data is not None:
-            # Handle depth frame rate difference (typically half of RGB)
-            depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
-            for i in range(self.sequence_length):
-                depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
-                depth_idx = min(depth_idx, depth_data.shape[0] - 1)
-                depth_frames.append(depth_data[depth_idx])
-        else:
-            # Raise error if depth data is missing
-            raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+        # depth_data = self._load_depth_data(data_info['subject'], action_id, subaction_id, camera_id)
+        # depth_frames = []
+        # if depth_data is not None:
+        #     # Handle depth frame rate difference (typically half of RGB)
+        #     depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
+        #     for i in range(self.sequence_length):
+        #         depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
+        #         depth_idx = min(depth_idx, depth_data.shape[0] - 1)
+        #         depth_frames.append(depth_data[depth_idx])
+        # else:
+        #     # Raise error if depth data is missing
+        #     raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
         
         # Get camera parameters
         camera_param = self.camera_params.get(data_info['subject'], {}).get(data_info['camera'], {
             'fx': 1000.0, 'fy': 1000.0, 'cx': 500.0, 'cy': 500.0
         })
         
+        # Get action name for sample ID
+        action_name = self.metadata.action_names.get(action_id, f'Action_{action_id}')
+        
         sample = {
             'input_rgb': rgb_frames,
-            'input_depth': depth_frames,
+            # 'input_depth': depth_frames,
             'input_rgb_camera': camera_param,
             'input_depth_camera': camera_param,  # Assuming same camera for RGB and depth
             'gt_keypoints': pose_sequence[self.sequence_length // 2],  # Use middle frame pose
