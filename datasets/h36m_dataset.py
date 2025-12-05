@@ -161,7 +161,7 @@ class H36MDataset(BaseDataset):
         else:
             # Throw error if depth file not found
             raise FileNotFoundError(
-                f"Depth file not found for subject {subject}, action {action}, subaction {subaction}, camera {camera}"
+                f"Depth file not found for subject {subject}, action {action}, subaction {subaction}"
             )
 
     def __len__(self):
