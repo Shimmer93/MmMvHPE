@@ -117,9 +117,12 @@ class PointTransformer(nn.Module):
 
 
 class XFiPointTransformerEncoderLidar(nn.Module):
-    def __init__(self, n_points=1024, nblocks=5, nneighbor=16, input_dim=3, transformer_dim=64):
+    def __init__(self, n_points=1024, nblocks=5, nneighbor=16, input_dim=3, transformer_dim=64, pretrained=None):
         super(XFiPointTransformerEncoderLidar, self).__init__()
         lidar_model = PointTransformer(n_points, nblocks, nneighbor, transformer_dim, input_dim)
+        if pretrained is not None:
+            lidar_model.load_state_dict(torch.load(pretrained), strict=False)
+
         self.fc1 = lidar_model.fc1
         self.transformer1 = lidar_model.transformer1
         self.transition_downs = nn.ModuleList()
@@ -130,7 +133,8 @@ class XFiPointTransformerEncoderLidar(nn.Module):
             self.transformers.append(lidar_model.transformers[i])
         self.nblocks = nblocks
 
-        self._init_params()
+        if pretrained is None:
+            self._init_params()
 
     def forward(self, x):
         xyz = x[..., :3]

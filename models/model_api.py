@@ -19,7 +19,6 @@ class LitModel(L.LightningModule):
         if self.with_rgb:
             self.backbone_rgb = create_model(self.hparams.backbone_rgb['name'], self.hparams.backbone_rgb['params'])
             self.has_temporal_rgb = self.hparams.backbone_rgb['has_temporal']
-
         if self.with_depth:
             self.backbone_depth = create_model(self.hparams.backbone_depth['name'], self.hparams.backbone_depth['params'])
             self.has_temporal_depth = self.hparams.backbone_depth['has_temporal']

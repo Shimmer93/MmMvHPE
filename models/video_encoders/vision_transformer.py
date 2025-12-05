@@ -394,3 +394,13 @@ def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
         **kwargs,
     )
     return model
+
+if __name__ == "__main__":
+    model = vit_small()
+    model.train()
+    img = torch.randn(2, 3, 224, 224)
+    outputs = model.forward_features(img)
+
+    for k, v in outputs.items():
+        print(f"{k}: {v.shape}")
+    

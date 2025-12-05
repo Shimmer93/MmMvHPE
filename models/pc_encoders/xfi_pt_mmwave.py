@@ -133,10 +133,13 @@ class PointTransformer(nn.Module):
         return points, xyz_and_feats
     
 class XFiPointTransformerEncoderMMWave(nn.Module):
-    def __init__(self, n_points=256, nblocks=4, nneighbor=16, input_dim=5, transformer_dim=64):
+    def __init__(self, n_points=256, nblocks=4, nneighbor=16, input_dim=5, transformer_dim=64, pretrained=None):
         super().__init__()
         self.point_transformer = PointTransformer(n_points, nblocks, nneighbor, input_dim, transformer_dim)
-        self._init_params()
+        if pretrained is None:
+            self._init_params()
+        else:
+            self.point_transformer.load_state_dict(torch.load(pretrained), strict=False)
         
     def forward(self, x):
         points, _ = self.point_transformer(x)

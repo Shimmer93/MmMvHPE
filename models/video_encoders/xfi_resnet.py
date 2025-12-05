@@ -67,7 +67,7 @@ class Block(nn.Module):
         return x
 
 class XFiResNet(nn.Module):
-    def __init__(self, block_type, layer_list):
+    def __init__(self, block_type, layer_list, pretrained=None):
         super(XFiResNet, self).__init__()
 
         if block_type == 'Block':
@@ -96,7 +96,10 @@ class XFiResNet(nn.Module):
         self.layer3 = self._make_layer(ResBlock, layer_list[2], planes=256, stride=2)
         self.layer4 = self._make_layer(ResBlock, layer_list[3], planes=512, stride=2)
 
-        self._init_params()
+        if pretrained is None:
+            self._init_params()
+        else:
+            self.load_state_dict(torch.load(pretrained), strict=False)
 
     def forward(self, x):
         x = self.reshape(x)

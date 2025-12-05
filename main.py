@@ -14,6 +14,8 @@ from datasets.data_api import LitDataModule
 from models.model_api import LitModel
 from misc.utils import load_cfg, merge_args_cfg
 
+torch.set_float32_matmul_precision('high')
+
 def main(args):
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
@@ -46,7 +48,6 @@ def main(args):
         trainer = L.Trainer(
             fast_dev_run=args.dev,
             logger=logger, # wandb_logger if wandb_on else None,
-            profiler="simple",
             max_epochs=args.epochs,
             devices=1 if args.predict else args.gpus, # Use 1 GPU for prediction
             accelerator="gpu",
@@ -64,7 +65,6 @@ def main(args):
         trainer = L.Trainer(
             fast_dev_run=args.dev,
             logger=logger, # wandb_logger if wandb_on else None,
-            profiler="simple",
             max_epochs=-1,
             max_steps=args.max_steps,
             val_check_interval=args.val_check_interval,
