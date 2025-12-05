@@ -184,8 +184,8 @@ class H36MDataset(BaseDataset):
             pose_start = min(data_info['start_frame'], pose_data.shape[0] - self.sequence_length)
             pose_sequence = pose_data[pose_start:pose_start + self.sequence_length]
         else:
-            # Dummy pose data
-            pose_sequence = np.zeros((self.sequence_length, 32, 3))
+            # Raise error if pose data is missing
+            raise RuntimeError(f"3D pose data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
         
         # Load depth data  
         depth_data = self._load_depth_data(data_info['subject'], action_name)
@@ -198,9 +198,8 @@ class H36MDataset(BaseDataset):
                 depth_idx = min(depth_idx, depth_data.shape[0] - 1)
                 depth_frames.append(depth_data[depth_idx])
         else:
-            # Dummy depth frames
-            for i in range(self.sequence_length):
-                depth_frames.append(np.zeros((144, 176), dtype=np.float32))
+            # Raise error if depth data is missing
+            raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
         
         # Get camera parameters
         camera_param = self.camera_params.get(data_info['subject'], {}).get(data_info['camera'], {
