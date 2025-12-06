@@ -30,6 +30,8 @@ class H36MDataset(BaseDataset):
         self.split = split
         self.seq_len = seq_len
         self.seq_step = seq_step
+        self.causal = causal
+        self.pad_seq = pad_seq
 
         # Dataset paths
         self.images_root = f"{data_root}/images"
@@ -177,7 +179,7 @@ class H36MDataset(BaseDataset):
 
         # Load RGB sequence
         rgb_frames = []
-        for i in range(self.sequence_length):
+        for i in range(self.seq_len):
             frame_idx = data_info["start_frame"] + i + 1  # 1-indexed
             frame_name = f"s_{data_info['subject'][1:].zfill(2)}_act_{data_info['action'].zfill(2)}_subact_{data_info['subaction'].zfill(2)}_ca_{data_info['camera'].zfill(2)}_{frame_idx:06d}.jpg"
             frame_path = osp.join(data_info["seq_dir"], frame_name)
