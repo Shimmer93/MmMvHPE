@@ -11,6 +11,7 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 from datasets.base_dataset import BaseDataset
 
 from h36m_metadata import load_h36m_metadata
+import warnings
 
 
 class H36MDataset(BaseDataset):
@@ -32,6 +33,15 @@ class H36MDataset(BaseDataset):
         self.seq_step = seq_step
         self.causal = causal
         self.pad_seq = pad_seq
+        self.modality_names = modality_names
+        # Validate modality names
+        valid_modalities = {"rgb", "depth"}
+        invalid_modalities = set(modality_names) - valid_modalities
+        if invalid_modalities:
+            warnings.warn(
+                f"Invalid modality names detected: {invalid_modalities}. "
+                f"Only 'rgb' and 'depth' are supported for H36M dataset."
+            )
 
         # Dataset paths
         self.images_root = f"{data_root}/images"
@@ -178,23 +188,24 @@ class H36MDataset(BaseDataset):
 
 
         # Load RGB sequence
-        rgb_frames = []
-        for i in range(self.seq_len):
-            frame_idx = data_info["start_frame"] + i + 1  # 1-indexed
-            frame_name = f"s_{data_info['subject'][1:].zfill(2)}_act_{data_info['action'].zfill(2)}_subact_{data_info['subaction'].zfill(2)}_ca_{data_info['camera'].zfill(2)}_{frame_idx:06d}.jpg"
-            frame_path = osp.join(data_info["seq_dir"], frame_name)
+        if "rgb" in self.modality_names:
+            rgb_frames = []
+            for i in range(self.seq_len):
+                frame_idx = data_info["start_frame"] + i + 1  # 1-indexed
+                frame_name = f"s_{data_info['subject'][1:].zfill(2)}_act_{data_info['action'].zfill(2)}_subact_{data_info['subaction'].zfill(2)}_ca_{data_info['camera'].zfill(2)}_{frame_idx:06d}.jpg"
+                frame_path = osp.join(data_info["seq_dir"], frame_name)
 
-            if osp.exists(frame_path):
-                frame = cv2.imread(frame_path)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                rgb_frames.append(frame)
-            else:
-                # Handle missing frames by repeating last frame
-                if rgb_frames:
-                    rgb_frames.append(rgb_frames[-1].copy())
+                if osp.exists(frame_path):
+                    frame = cv2.imread(frame_path)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    rgb_frames.append(frame)
                 else:
-                    # raise error if first frame is missing
-                    raise RuntimeError(f"RGB frame not found: {frame_path}")
+                    # Handle missing frames by repeating last frame
+                    if rgb_frames:
+                        rgb_frames.append(rgb_frames[-1].copy())
+                    else:
+                        # raise error if first frame is missing
+                        raise RuntimeError(f"RGB frame not found: {frame_path}")
 
         # Load action name for pose/depth data
         action_id = int(data_info["action"])
@@ -238,50 +249,56 @@ class H36MDataset(BaseDataset):
             )
 
         # Load depth data
-        depth_data = self._load_depth_data(data_info['subject'], action_id, subaction_id)
-        depth_frames = []
-        if depth_data is not None:
-            # Handle depth frame rate difference (typically half of RGB)
-            depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
-            for i in range(self.seq_len):
-                depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
-                depth_idx = min(depth_idx, depth_data.shape[0] - 1)
-                depth_frames.append(depth_data[depth_idx])
-        else:
-            # Raise error if depth data is missing
-            raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+        if "depth" in self.modality_names:    
+            depth_data = self._load_depth_data(data_info['subject'], action_id, subaction_id)
+            depth_frames = []
+            if depth_data is not None:
+                # Handle depth frame rate difference (typically half of RGB)
+                depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
+                for i in range(self.seq_len):
+                    depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
+                    depth_idx = min(depth_idx, depth_data.shape[0] - 1)
+                    depth_frames.append(depth_data[depth_idx])
+            else:
+                # Raise error if depth data is missing
+                raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
 
         # Get camera parameters
-        rgb_camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
-        rgb_camera_dict = {}
-        rgb_camera_dict['R'] = rgb_camera_param[0]
-        rgb_camera_dict['T'] = rgb_camera_param[1]
-        rgb_camera_dict['fx'] = rgb_camera_param[2][0]
-        rgb_camera_dict['fy'] = rgb_camera_param[2][1]
-        rgb_camera_dict['cx'] = rgb_camera_param[3][0]
-        rgb_camera_dict['cy'] = rgb_camera_param[3][1]
-        rgb_camera_dict['k'] = rgb_camera_param[4]
-        rgb_camera_dict['p'] = rgb_camera_param[5]
+        if "rgb" in self.modality_names:
+            rgb_camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
+            rgb_camera_dict = {}
+            rgb_camera_dict['R'] = rgb_camera_param[0]
+            rgb_camera_dict['T'] = rgb_camera_param[1]
+            rgb_camera_dict['fx'] = rgb_camera_param[2][0]
+            rgb_camera_dict['fy'] = rgb_camera_param[2][1]
+            rgb_camera_dict['cx'] = rgb_camera_param[3][0]
+            rgb_camera_dict['cy'] = rgb_camera_param[3][1]
+            rgb_camera_dict['k'] = rgb_camera_param[4]
+            rgb_camera_dict['p'] = rgb_camera_param[5]
 
         # Get depth camera parameters (assume same extrinsics as camera 02)
-        depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
-        depth_camera_dict = {}
-        depth_camera_dict['R'] = depth_camera_param[0]
-        depth_camera_dict['T'] = depth_camera_param[1]
-
+        if "depth" in self.modality_names:
+            depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
+            depth_camera_dict = {}
+            depth_camera_dict['R'] = depth_camera_param[0]
+            depth_camera_dict['T'] = depth_camera_param[1]
+        
         # Get action name for sample ID
         action_name = self.metadata.action_names.get(action_id, f"Action_{action_id}")
 
+
         sample = {
-            "input_rgb": rgb_frames,
-            "input_depth": depth_frames,
-            "input_rgb_camera": rgb_camera_dict,
-            "input_depth_camera": depth_camera_dict,  # Assuming same camera extrinsics as cam 02
             "gt_keypoints": gt_keypoints,
             "sample_id": f"{data_info['subject']}_{action_name}_{data_info['subaction']}_{data_info['camera']}_{data_info['start_frame']}",
-            "modalities": ["rgb", "depth"],
+            "modalities": list(self.modality_names),
             "anchor_key": "input_rgb",  # Coordinates in RGB camera space
         }
+        if "rgb" in self.modality_names:
+            sample["input_rgb"] = rgb_frames
+            sample["input_rgb_camera"] = rgb_camera_dict
+        if "depth" in self.modality_names:
+            sample["input_depth"] = depth_frames
+            sample["input_depth_camera"] = depth_camera_dict
 
         sample = self.pipeline(sample)
 
