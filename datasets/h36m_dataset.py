@@ -16,21 +16,24 @@ from h36m_metadata import load_h36m_metadata
 class H36MDataset(BaseDataset):
     def __init__(
         self,
+        data_root: str = "/data/yzhanghe/H36M-Toolbox",
         pipeline: List[dict] = [],
-        h36m_root: str = "/data/yzhanghe/H36M-Toolbox",
         split: str = "train",
-        sequence_length: int = 16,
-        frame_step: int = 1,
+        modality_names: Sequence[str] = ["rgb", "depth"],
+        seq_len: int = 5,
+        seq_step: int = 1,
+        pad_seq: bool = False,
+        causal: bool = False,
     ):
         super().__init__(pipeline=pipeline)
-        self.h36m_root = h36m_root
+        self.h36m_root = data_root
         self.split = split
-        self.sequence_length = sequence_length
-        self.frame_step = frame_step
+        self.seq_len = seq_len
+        self.seq_step = seq_step
 
         # Dataset paths
-        self.images_root = f"{h36m_root}/images"
-        self.extracted_root = f"{h36m_root}/extracted"
+        self.images_root = f"{data_root}/images"
+        self.extracted_root = f"{data_root}/extracted"
 
         # H3.6M protocol splits
         if split == "train":
@@ -41,7 +44,7 @@ class H36MDataset(BaseDataset):
             self.subjects = ["S1", "S5", "S6", "S7", "S8", "S9", "S11"]
 
         # Load metadata
-        self.metadata = load_h36m_metadata(f"{h36m_root}/metadata.xml")
+        self.metadata = load_h36m_metadata(f"{data_root}/metadata.xml")
 
         # Build dataset index
         self.data_list = self._build_dataset()
@@ -72,10 +75,10 @@ class H36MDataset(BaseDataset):
                     frame_files = glob.glob(osp.join(seq_dir, "*.jpg"))
                     num_frames = len(frame_files)
 
-                    if num_frames >= self.sequence_length:
+                    if num_frames >= self.seq_len:
                         # Create sequences with overlap
                         for start_idx in range(
-                            0, num_frames - self.sequence_length + 1, self.frame_step
+                            0, num_frames - self.seq_len + 1, self.seq_step
                         ):
                             data_info = {
                                 "subject_id": int(subject_id),    
@@ -171,6 +174,7 @@ class H36MDataset(BaseDataset):
     def __getitem__(self, index):
         data_info = self.data_list[index]
 
+
         # Load RGB sequence
         rgb_frames = []
         for i in range(self.sequence_length):
@@ -202,21 +206,29 @@ class H36MDataset(BaseDataset):
         if pose_data is not None:
             # Get poses corresponding to RGB frames
             pose_start = min(
-                data_info["start_frame"], pose_data.shape[0] - self.sequence_length
+                data_info["start_frame"], pose_data.shape[0] - self.seq_len
             )
             pose_start = max(0, pose_start)  # Ensure non-negative
-            pose_sequence = pose_data[pose_start : pose_start + self.sequence_length]
+            pose_sequence = pose_data[pose_start : pose_start + self.seq_len]
 
             # If we don't have enough frames, pad with the last frame
-            if pose_sequence.shape[0] < self.sequence_length:
+            if pose_sequence.shape[0] < self.seq_len:
                 last_pose = (
                     pose_sequence[-1:]
                     if pose_sequence.shape[0] > 0
                     else np.zeros((1, 32, 3))
                 )
-                padding_needed = self.sequence_length - pose_sequence.shape[0]
+                padding_needed = self.seq_len - pose_sequence.shape[0]
                 padding = np.repeat(last_pose, padding_needed, axis=0)
                 pose_sequence = np.concatenate([pose_sequence, padding], axis=0)
+            
+            # Select ground truth pose based on causal or non-causal setting
+            if self.causal:
+                gt_keypoints = pose_sequence[-1]
+            else:
+                middle_idx = self.seq_len // 2
+                gt_keypoints = pose_sequence[middle_idx]
+
         else:
             # Raise error if pose data is missing
             raise RuntimeError(
@@ -229,7 +241,7 @@ class H36MDataset(BaseDataset):
         if depth_data is not None:
             # Handle depth frame rate difference (typically half of RGB)
             depth_ratio = depth_data.shape[0] / data_info['num_frames'] if data_info['num_frames'] > 0 else 0.5
-            for i in range(self.sequence_length):
+            for i in range(self.seq_len):
                 depth_idx = int((data_info['start_frame'] + i) * depth_ratio)
                 depth_idx = min(depth_idx, depth_data.shape[0] - 1)
                 depth_frames.append(depth_data[depth_idx])
@@ -263,7 +275,7 @@ class H36MDataset(BaseDataset):
             "input_depth": depth_frames,
             "input_rgb_camera": rgb_camera_dict,
             "input_depth_camera": depth_camera_dict,  # Assuming same camera extrinsics as cam 02
-            "gt_keypoints": pose_sequence,
+            "gt_keypoints": gt_keypoints,
             "sample_id": f"{data_info['subject']}_{action_name}_{data_info['subaction']}_{data_info['camera']}_{data_info['start_frame']}",
             "modalities": ["rgb", "depth"],
             "anchor_key": "input_rgb",  # Coordinates in RGB camera space
@@ -272,6 +284,3 @@ class H36MDataset(BaseDataset):
         sample = self.pipeline(sample)
 
         return sample
-
-        # TODO: Check coorespondence between rgb, depth, camera params, and 3D pose data
-        # TODO: Check depth camera pose.
