@@ -146,32 +146,35 @@ class TransformerAggregator(nn.Module):
         }
         anchor_idx = anchor_map.get(anchor_key, -1)
 
-        features_list = [features_rgb, features_depth, features_lidar, features_mmwave]
-        for i, feat in enumerate(features_list):
-            if i == anchor_idx:
-                features_list[i] = self.insert_special_tokens(feat, camera_tokens_anchor, joint_tokens_anchor, register_tokens_anchor)
-            else:
-                features_list[i] = self.insert_special_tokens(feat, camera_tokens_normal, joint_tokens_normal, register_tokens_normal)
-
         features_list = []
-        for feat in [features_rgb, features_depth, features_lidar, features_mmwave]:
+        Ns = []
+        for i, feat in enumerate([features_rgb, features_depth, features_lidar, features_mmwave]):
             if feat is not None:
+                if i == anchor_idx:
+                    feat = self.insert_special_tokens(feat, camera_tokens_anchor, joint_tokens_anchor, register_tokens_anchor)
+                else:
+                    feat = self.insert_special_tokens(feat, camera_tokens_normal, joint_tokens_normal, register_tokens_normal)
                 features_list.append(feat)
+                Ns.append(feat.shape[2])
+            else:
+                Ns.append(0)
+        
         features_cat = torch.cat(features_list, dim=2)  # B, T, N_total, C
 
-        N_rgb = features_rgb.shape[2] if features_rgb is not None else 0
-        N_depth = features_depth.shape[2] if features_depth is not None else 0
-        N_lidar = features_lidar.shape[2] if features_lidar is not None else 0
-        N_mmwave = features_mmwave.shape[2] if features_mmwave is not None else 0
-        Ns = [N_rgb, N_depth, N_lidar, N_mmwave]
+        N_rgb, N_depth, N_lidar, N_mmwave = Ns
+        N_total = sum(Ns)
 
-        mask_input = torch.zeros([B, T, N_rgb + N_depth + N_lidar + N_mmwave], dtype=torch.long, device=camera_tokens_normal.device)
-        mask_input[:, :, N_rgb:N_rgb + N_depth] += 1
-        mask_input[:, :, N_rgb + N_depth:N_rgb + N_depth + N_lidar] += 2
-        mask_input[:, :, N_rgb + N_depth + N_lidar:] += 3
+        mask_input = torch.zeros([B, T, N_total], dtype=torch.long, device=features_cat.device)
+        if N_depth > 0:
+            mask_input[:, :, N_rgb:N_rgb + N_depth] = 1
+        if N_lidar > 0:
+            mask_input[:, :, N_rgb + N_depth:N_rgb + N_depth + N_lidar] = 2
+        if N_mmwave > 0:
+            mask_input[:, :, N_rgb + N_depth + N_lidar:] = 3
 
         cond_mask = self.trainable_cond_mask(mask_input)  # B, T, N_total, C
         tokens = features_cat + cond_mask
+        del features_cat, cond_mask  # Free memory
 
         pos = None  # Placeholder for positional encoding if needed
 
@@ -195,12 +198,11 @@ class TransformerAggregator(nn.Module):
                         tokens, Ns, cross_idx, pos=pos
                     )
             for i in range(len(single_intermediates)):
-                concat_inter = torch.cat(
-                    [single_intermediates[i], global_intermediates[i], cross_intermediates[i]], dim=-1
-                )  # B, M, T, N_total, C_concat
-                output_list.append(concat_inter)
+                output_list.append(
+                    torch.cat([single_intermediates[i], global_intermediates[i], cross_intermediates[i]], dim=-1)
+            )
 
-        del concat_inter, single_intermediates, global_intermediates, cross_intermediates
+        del single_intermediates, global_intermediates, cross_intermediates
 
         return output_list
     
@@ -220,7 +222,7 @@ class TransformerAggregator(nn.Module):
             
             for start, end in modality_ranges:
                 if end > start:
-                    tokens_slice = tokens[:, :, start:end, :].reshape(B, T * (end - start), C)
+                    tokens_slice = tokens[:, :, start:end, :].reshape(B, T * (end - start), C).contiguous()
                     if self.training:
                         tokens_slice = checkpoint(self.single_blocks[idx], tokens_slice, pos=pos, use_reentrant=False)
                     else:
@@ -256,8 +258,8 @@ class TransformerAggregator(nn.Module):
         N_3d = N_lidar + N_mmwave
         intermediates = []
         for _ in range(self.aa_block_size):
-            tokens_2d = tokens[:, :, :N_2d, :].reshape(B, T * N_2d, C)
-            tokens_3d = tokens[:, :, N_2d:, :].reshape(B, T * N_3d, C)
+            tokens_2d = tokens[:, :, :N_2d, :].reshape(B, T * N_2d, C).contiguous()
+            tokens_3d = tokens[:, :, N_2d:, :].reshape(B, T * N_3d, C).contiguous()
 
             if self.training:
                 tokens_2d = checkpoint(

@@ -1,6 +1,8 @@
 import yaml
 from argparse import Namespace
 from collections import OrderedDict
+import time
+from contextlib import contextmanager
 
 def load_cfg(cfg):
     hyp = None
@@ -30,3 +32,10 @@ def delete_prefix_from_state_dict(state_dict, prefix):
 
 def exists_and_is_true(hparams, key):
     return hasattr(hparams, key) and getattr(hparams, key)
+
+@contextmanager
+def timer(name):
+    start = time.perf_counter()
+    yield
+    elapsed = (time.perf_counter() - start) * 1000
+    print(f"{name}: {elapsed:.2f} ms")
