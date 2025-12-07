@@ -10,7 +10,7 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from datasets.base_dataset import BaseDataset
 
-from h36m_metadata import load_h36m_metadata
+from .h36m_metadata import load_h36m_metadata
 import warnings
 
 
