@@ -322,11 +322,12 @@ class DinoVisionTransformer(nn.Module):
         return tuple(outputs)
 
     def forward(self, *args, is_training=True, **kwargs):
-        ret = self.forward_features(*args, **kwargs)
-        if is_training:
-            return ret
-        else:
-            return self.head(ret["x_norm_clstoken"])
+        ret = self.forward_features(*args, **kwargs)['x_norm_patchtokens']
+        return ret
+        # if is_training:
+        #     return ret
+        # else:
+        #     return self.head(ret["x_norm_clstoken"])
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):
@@ -335,6 +336,62 @@ def init_weights_vit_timm(module: nn.Module, name: str = ""):
         trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
+
+
+class DinoViTSmall(DinoVisionTransformer):
+    def __init__(self, patch_size=16, num_register_tokens=0, **kwargs):
+        super().__init__(
+            patch_size=patch_size,
+            embed_dim=384,
+            depth=12,
+            num_heads=6,
+            mlp_ratio=4,
+            block_fn=partial(Block, attn_class=MemEffAttention),
+            num_register_tokens=num_register_tokens,
+            **kwargs,
+        )
+
+class DinoViTBase(DinoVisionTransformer):
+    def __init__(self, patch_size=16, num_register_tokens=0, **kwargs):
+        super().__init__(
+            patch_size=patch_size,
+            embed_dim=768,
+            depth=12,
+            num_heads=12,
+            mlp_ratio=4,
+            block_fn=partial(Block, attn_class=MemEffAttention),
+            num_register_tokens=num_register_tokens,
+            **kwargs,
+        )
+
+class DinoViTLarge(DinoVisionTransformer):
+    def __init__(self, patch_size=16, num_register_tokens=0, **kwargs):
+        super().__init__(
+            patch_size=patch_size,
+            embed_dim=1024,
+            depth=24,
+            num_heads=16,
+            mlp_ratio=4,
+            block_fn=partial(Block, attn_class=MemEffAttention),
+            num_register_tokens=num_register_tokens,
+            **kwargs,
+        )
+
+class DinoViTGiant2(DinoVisionTransformer):
+    def __init__(self, patch_size=16, num_register_tokens=0, **kwargs):
+        """
+        Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
+        """
+        super().__init__(
+            patch_size=patch_size,
+            embed_dim=1536,
+            depth=40,
+            num_heads=24,
+            mlp_ratio=4,
+            block_fn=partial(Block, attn_class=MemEffAttention),
+            num_register_tokens=num_register_tokens,
+            **kwargs,
+        )
 
 
 def vit_small(patch_size=16, num_register_tokens=0, **kwargs):

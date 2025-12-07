@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import yaml
 from typing import Callable, List, Optional, Sequence, Tuple, Union
+from functools import lru_cache
+from misc.timer import timer
 
 from datasets.base_dataset import BaseDataset
 
@@ -104,19 +106,20 @@ class MMFiDataset(BaseDataset):
                  pad_seq: bool = False,
                  causal: bool = True,
                  pipeline: List[dict] = [],
-                 test_mode: bool = False):
+                 test_mode: bool = False,
+                 cache_ground_truth: bool = True):
         
         super().__init__(pipeline=pipeline)
 
         self.data_root = data_root
         self.rgb_root = rgb_root if rgb_root is not None else data_root
+        
+        # Load split config once
         with open(split_config, 'r') as f:
             split_config = yaml.safe_load(f)
         split_info = decode_config(split_config, split_to_use, protocol)
-        if test_mode:
-            self.split_info = split_info['val_dataset']
-        else:
-            self.split_info = split_info['train_dataset']
+        self.split_info = split_info['val_dataset'] if test_mode else split_info['train_dataset']
+        
         self.modality_names = modality_names
         self.seq_len = seq_len
         self.seq_step = seq_step
@@ -125,124 +128,133 @@ class MMFiDataset(BaseDataset):
         self.pad_seq = pad_seq
         self.causal = causal
         self.test_mode = test_mode
+        self.cache_ground_truth = cache_ground_truth
 
-        self.scenes = {}
-        self.subjects = {}
-        self.actions = {}
-        self.modalities = {}
-        self.load_data_paths()
-
+        # Pre-load and cache data
         self.data_split = self.load_data_split()
+        
+        # Cache ground truth data to avoid repeated I/O
+        if self.cache_ground_truth:
+            self._gt_cache = {}
+            self._preload_ground_truth()
 
-    def load_data_paths(self):
-        for scene in sorted(os.listdir(self.data_root)):
-            self.scenes[scene] = {}
-
-            for subject in sorted(os.listdir(osp.join(self.data_root, scene))):
-                self.scenes[scene][subject] = {}
-                self.subjects[subject] = {}
-
-                for action in sorted(os.listdir(osp.join(self.data_root, scene, subject))):
-                    self.scenes[scene][subject][action] = {}
-                    self.subjects[subject][action] = {}
-                    if action not in self.actions.keys():
-                        self.actions[action] = {}
-                    if scene not in self.actions[action].keys():
-                        self.actions[action][scene] = {}
-                    if subject not in self.actions[action][scene].keys():
-                        self.actions[action][scene][subject] = {}
-                    
-                    for modality in self.modality_names:
-                        data_path = osp.join(self.data_root, scene, subject, action, modality)
-                        self.scenes[scene][subject][action][modality] = data_path
-                        self.subjects[subject][action][modality] = data_path
-                        self.actions[action][scene][subject][modality] = data_path
-                        if modality not in self.modalities.keys():
-                            self.modalities[modality] = {}
-                        if scene not in self.modalities[modality].keys():
-                            self.modalities[modality][scene] = {}
-                        if subject not in self.modalities[modality][scene].keys():
-                            self.modalities[modality][scene][subject] = {}
-                        if action not in self.modalities[modality][scene][subject].keys():
-                            self.modalities[modality][scene][subject][action] = data_path
+    def _preload_ground_truth(self):
+        """Pre-load all ground truth data into memory"""
+        unique_gt_paths = set(item['gt_path'] for item in self.data_split)
+        for gt_path in unique_gt_paths:
+            self._gt_cache[gt_path] = np.load(gt_path)
                         
     def load_data_split(self):
-        data_split = tuple()
+        data_split = []
+        
+        # Pre-compute frame indices to avoid repeated calculation
+        if self.causal:
+            frame_offsets = list(range(-self.seq_len + 1, 1))
+        else:
+            half_len = (self.seq_len - 1) // 2
+            frame_offsets = list(range(-half_len, half_len + 1))
         
         for subject, actions in self.split_info.items():
+            scene = get_scene(subject)
             
             for action in actions:
-                action_dir = osp.join(self.data_root, get_scene(subject), subject, action)
-                action_dir_rgb = osp.join(self.rgb_root, get_scene(subject), subject, action)
+                action_dir = osp.join(self.data_root, scene, subject, action)
+                action_dir_rgb = osp.join(self.rgb_root, scene, subject, action)
 
-                frame_lists = {modality: sorted(os.listdir(osp.join(action_dir, modality))) for modality in self.modality_names}
+                # Read frame lists once per action
+                frame_lists = {}
+                for modality in self.modality_names:
+                    modality_path = osp.join(action_dir, modality)
+                    if modality == 'rgb':
+                        modality_path = osp.join(action_dir_rgb, modality)
+                    frame_lists[modality] = sorted(os.listdir(modality_path))
+                
                 frame_list_ref = frame_lists[self.modality_names[0]]
-                frame_list_rgb = sorted(os.listdir(osp.join(action_dir_rgb, 'rgb')))
+                num_total_frames = len(frame_list_ref)
 
                 if self.pad_seq:
                     start_idx = 0
-                    num_frames = len(frame_list_ref)
+                    num_frames = num_total_frames
                 else:
                     start_idx = self.seq_len - 1 if self.causal else (self.seq_len - 1) // 2
-                    num_frames = len(frame_list_ref) - (self.seq_len - 1) * self.seq_step
+                    num_frames = num_total_frames - (self.seq_len - 1) * self.seq_step
 
+                gt_path = osp.join(action_dir, 'ground_truth.npy')
+
+                # Pre-compute paths for all frames
                 for idx in range(start_idx, num_frames):
                     frame_idx = int(frame_list_ref[idx].split('.')[0].split('frame')[1]) - 1
-                    if self.causal:
-                        frame_idxs = [frame_idx - self.seq_len + 1 + i for i in range(self.seq_len)]
-                    else:
-                        half_len = (self.seq_len - 1) // 2
-                        frame_idxs = [frame_idx - half_len + i for i in range(self.seq_len)]
+                    frame_idxs = [max(0, min(num_total_frames - 1, frame_idx + offset)) 
+                                  for offset in frame_offsets]
 
                     data_dict = {
                         'modalities': self.modality_names,
-                        'scene': get_scene(subject),
+                        'scene': scene,
                         'subject': subject,
                         'action': action,
-                        'gt_path': osp.join(action_dir, 'ground_truth.npy'),
-                        'idx': frame_idx
+                        'gt_path': gt_path,
+                        'idx': frame_idx,
+                        'frame_idxs': frame_idxs  # Store pre-computed indices
                     }
 
+                    # Pre-compute all paths
                     for modality in self.modality_names:
                         if modality == 'rgb':
-                            data_dict['rgb_paths'] = [osp.join(action_dir_rgb, 'rgb', frame_list_rgb[i]) for i in frame_idxs]
+                            data_dict['rgb_paths'] = [
+                                osp.join(action_dir_rgb, 'rgb', frame_lists['rgb'][i]) 
+                                for i in frame_idxs
+                            ]
                         elif modality == 'mmwave':
-                            data_dict['mmwave_paths'] = []
-                            for i in frame_idxs:
-                                mmwave_frame_paths = []
-                                for j in range(2 * self.mmwave_num_frames + 1):
-                                    mmwave_frame_idx = max(0, min(len(frame_lists[modality]) - 1, i - self.mmwave_num_frames + j))
-                                    mmwave_frame_paths.append(osp.join(action_dir, modality, frame_lists[modality][mmwave_frame_idx]))
-                                data_dict['mmwave_paths'].append(mmwave_frame_paths)
+                            data_dict['mmwave_paths'] = self._compute_multi_frame_paths(
+                                action_dir, modality, frame_lists[modality], 
+                                frame_idxs, self.mmwave_num_frames
+                            )
                         elif modality == 'lidar':
-                            data_dict['lidar_paths'] = []
-                            for i in frame_idxs:
-                                lidar_frame_paths = []
-                                for j in range(2 * self.lidar_num_frames + 1):
-                                    lidar_frame_idx = max(0, min(len(frame_lists[modality]) - 1, i - self.lidar_num_frames + j))
-                                    lidar_frame_paths.append(osp.join(action_dir, modality, frame_lists[modality][lidar_frame_idx]))
-                                data_dict['lidar_paths'].append(lidar_frame_paths)
+                            data_dict['lidar_paths'] = self._compute_multi_frame_paths(
+                                action_dir, modality, frame_lists[modality], 
+                                frame_idxs, self.lidar_num_frames
+                            )
                         else:
-                            data_dict[f'{modality}_paths'] = [osp.join(action_dir, modality, frame_lists[modality][i]) for i in frame_idxs]
+                            data_dict[f'{modality}_paths'] = [
+                                osp.join(action_dir, modality, frame_lists[modality][i]) 
+                                for i in frame_idxs
+                            ]
 
-                    data_split += (data_dict, )
+                    data_split.append(data_dict)
 
         return data_split
     
+    def _compute_multi_frame_paths(self, action_dir, modality, frame_list, 
+                                    frame_idxs, num_extra_frames):
+        """Helper to compute multi-frame paths for lidar/mmwave"""
+        multi_frame_paths = []
+        max_idx = len(frame_list) - 1
+        
+        for i in frame_idxs:
+            frame_paths = []
+            for j in range(-num_extra_frames, num_extra_frames + 1):
+                frame_idx = max(0, min(max_idx, i + j))
+                frame_paths.append(osp.join(action_dir, modality, frame_list[frame_idx]))
+            multi_frame_paths.append(frame_paths)
+        
+        return multi_frame_paths
+    
     def read_frame(self, frame_path, modality):
+        """Optimized frame reading with cv2 flags"""
         if modality == 'rgb':
-            frame = cv2.imread(frame_path)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Use cv2.IMREAD_COLOR for faster reading
+            with timer('Read RGB frame'):
+                frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         elif modality == 'depth':
-            frame = cv2.imread(frame_path) # TODO: depth image reading
-        elif modality == 'lidar':
-            with open(frame_path, 'rb') as f:
-                raw_frame = f.read()
-            frame = np.frombuffer(raw_frame, dtype=np.float64).reshape(-1, 3)
-        elif modality == 'mmwave':
-            with open(frame_path, 'rb') as f:
-                raw_frame = f.read()
-            frame = np.frombuffer(raw_frame, dtype=np.float64).reshape(-1, 5)
+            # Specify depth reading mode
+            with timer('Read Depth frame'):
+                frame = cv2.imread(frame_path)
+        elif modality in ['lidar', 'mmwave']:
+            # Use numpy's fromfile for faster binary reading
+            dtype_size = 3 if modality == 'lidar' else 5
+            with timer(f'Read {modality.upper()} frame'):
+                frame = np.fromfile(frame_path, dtype=np.float64).reshape(-1, dtype_size)
         else:
             raise ValueError(f'Modality {modality} not supported.')
         return frame
@@ -253,31 +265,163 @@ class MMFiDataset(BaseDataset):
     def __getitem__(self, idx):
         data_dict = self.data_split[idx]
 
-        gt_keypoints = np.load(data_dict['gt_path'])[data_dict['idx'], ...]
+        # Use cached ground truth if available
+        if self.cache_ground_truth:
+            gt_keypoints = self._gt_cache[data_dict['gt_path']][data_dict['idx']]
+        else:
+            gt_keypoints = np.load(data_dict['gt_path'])[data_dict['idx']]
 
-        sample = {}
-        sample['gt_keypoints'] = gt_keypoints
-        sample['sample_id'] = f"{data_dict['scene']}_{data_dict['subject']}_{data_dict['action']}_{data_dict['idx']:03d}"
-        sample['modalities'] = data_dict['modalities']
+        sample = {
+            'gt_keypoints': gt_keypoints,
+            'sample_id': f"{data_dict['scene']}_{data_dict['subject']}_{data_dict['action']}_{data_dict['idx']:03d}",
+            'modalities': data_dict['modalities']
+        }
 
+        # Read frames for each modality
         for modality in data_dict['modalities']:
             frame_paths = data_dict[f'{modality}_paths']
+            
             try:
                 if modality in ['mmwave', 'lidar']:
+                    # Vectorize concatenation
                     frames = []
                     for multi_frame_paths in frame_paths:
-                        multi_frames = []
-                        for frame_path in multi_frame_paths:
-                            frame = self.read_frame(frame_path, modality)
-                            multi_frames.append(frame)
-                        multi_frames = np.concatenate(multi_frames, axis=0)
-                        frames.append(multi_frames)
+                        multi_frames = [self.read_frame(fp, modality) for fp in multi_frame_paths]
+                        # Use vstack for better performance
+                        frames.append(np.vstack(multi_frames))
                 else:
-                    frames = [self.read_frame(frame_path, modality) for frame_path in frame_paths]
+                    frames = [self.read_frame(fp, modality) for fp in frame_paths]
+                
                 sample[f'input_{modality}'] = frames
             except Exception as e:
-                print(f"Error reading {modality} frames: {e}")
+                print(f"Error reading {modality} frames for {sample['sample_id']}: {e}")
+                # Add empty placeholder to avoid pipeline errors
+                sample[f'input_{modality}'] = None
 
         sample = self.pipeline(sample)
 
         return sample
+    
+class MMFiPreprocessedDataset(MMFiDataset):
+
+    def load_data_split(self):
+        file_index = {m: {} for m in self.modality_names}
+        for modality in self.modality_names:
+            modality_path = osp.join(self.data_root, modality)
+            all_files = sorted(os.listdir(modality_path))
+            
+            for fn in all_files:
+                parts = fn.split('_')
+                key = f'{parts[0]}_{parts[1]}_{parts[2]}'
+                file_index[modality].setdefault(key, []).append(fn)
+
+        for key in file_index[modality]:
+            file_index[modality][key].sort()
+
+        data_split = []
+        # Pre-compute frame indices to avoid repeated calculation
+        if self.causal:
+            frame_offsets = list(range(-self.seq_len + 1, 1))
+        else:
+            half_len = (self.seq_len - 1) // 2
+            frame_offsets = list(range(-half_len, half_len + 1))
+
+        for subject, actions in self.split_info.items():
+            scene = get_scene(subject)
+
+            for action in actions:
+                key = f"{scene}_{subject}_{action}"
+                frame_lists = {}
+
+                # Get pre-indexed filenames per modality
+                for modality in self.modality_names:
+                    frame_lists[modality] = file_index.get(modality, {}).get(key, [])
+
+                frame_list_ref = frame_lists[self.modality_names[0]]
+                num_total_frames = len(frame_list_ref)
+                if num_total_frames == 0:
+                    continue  # no data for this (scene, subject, action)
+
+                if self.pad_seq:
+                    start_idx = 0
+                    num_frames = num_total_frames
+                else:
+                    start_idx = self.seq_len - 1 if self.causal else (self.seq_len - 1) // 2
+                    num_frames = num_total_frames - (self.seq_len - 1) * self.seq_step
+
+                gt_path = osp.join(self.data_root, 'gt', f"{key}.npy")
+
+                # Pre-compute paths for all frames
+                for idx in range(start_idx, num_frames):
+                    # Use list index directly as frame index
+                    frame_idx = idx
+                    frame_idxs = [max(0, min(num_total_frames - 1, idx + offset))
+                                  for offset in frame_offsets]
+
+                    data_dict = {
+                        'modalities': self.modality_names,
+                        'scene': scene,
+                        'subject': subject,
+                        'action': action,
+                        'gt_path': gt_path,
+                        'idx': frame_idx,
+                        'frame_idxs': frame_idxs,
+                    }
+
+                    # Pre-compute all paths
+                    for modality in self.modality_names:
+                        if modality == 'rgb':
+                            data_dict['rgb_paths'] = [
+                                osp.join(self.data_root, 'rgb', frame_lists['rgb'][i])
+                                for i in frame_idxs
+                            ]
+                        elif modality == 'mmwave':
+                            data_dict['mmwave_paths'] = self._compute_multi_frame_paths(
+                                modality, frame_lists['mmwave'], frame_idxs, self.mmwave_num_frames
+                            )
+                        elif modality == 'lidar':
+                            data_dict['lidar_paths'] = self._compute_multi_frame_paths(
+                                modality, frame_lists['lidar'], frame_idxs, self.lidar_num_frames
+                            )
+                        else:
+                            data_dict[f'{modality}_paths'] = [
+                                osp.join(self.data_root, modality, frame_lists[modality][i])
+                                for i in frame_idxs
+                            ]
+
+                    data_split.append(data_dict)
+
+        return data_split
+
+    def _compute_multi_frame_paths(self, modality, frame_list, frame_idxs, num_extra_frames):
+        """Helper to compute multi-frame paths for lidar/mmwave"""
+        multi_frame_paths = []
+        max_idx = len(frame_list) - 1
+
+        for i in frame_idxs:
+            frame_paths = []
+            for offset in range(-num_extra_frames, num_extra_frames + 1):
+                frame_idx = max(0, min(max_idx, i + offset))
+                frame_paths.append(osp.join(self.data_root, modality, frame_list[frame_idx]))
+            multi_frame_paths.append(frame_paths)
+
+        return multi_frame_paths
+
+    def read_frame(self, frame_path, modality):
+        """Optimized frame reading with cv2 flags"""
+        if modality == 'rgb':
+            # Use cv2.IMREAD_COLOR for faster reading
+            # with timer('Read RGB frame'):
+            frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        elif modality == 'depth':
+            # Specify depth reading mode
+            # with timer('Read Depth frame'):
+            frame = cv2.imread(frame_path)
+        elif modality in ['lidar', 'mmwave']:
+            # Use numpy's fromfile for faster binary reading
+            # with timer(f'Read {modality.upper()} frame'):
+            frame = np.load(frame_path)
+        else:
+            raise ValueError(f'Modality {modality} not supported.')
+        return frame

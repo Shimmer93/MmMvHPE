@@ -12,12 +12,11 @@ from .modules.transformer import *
 # from torchvision.models import resnet18
 
 
-class P4Transformer(nn.Module):
+class P4TEncoder(nn.Module):
     def __init__(self, radius, nsamples, spatial_stride,                                # P4DConv: spatial
                  temporal_kernel_size, temporal_stride,                                 # P4DConv: temporal
                  emb_relu,                                                              # embedding: relu
-                 dim, depth, heads, dim_head,                                           # transformer
-                 mlp_dim, output_dim, features=3, mode='only_h'):                                                 # output
+                 dim, features=3, mode='only_h'):                                       # output
         super().__init__()
 
         self.tube_embedding = P4DConv(in_planes=features, mlp_planes=[dim], mlp_batch_norm=[False], mlp_activation=[False],
@@ -28,14 +27,14 @@ class P4Transformer(nn.Module):
         self.pos_embedding = nn.Conv1d(in_channels=4, out_channels=dim, kernel_size=1, stride=1, padding=0, bias=True)
         self.emb_relu = nn.ReLU() if emb_relu else False
 
-        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim)
+        # self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim)
 
-        self.mlp_head = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, mlp_dim),
-            nn.GELU(),
-            nn.Linear(mlp_dim, output_dim),
-        )
+        # self.mlp_head = nn.Sequential(
+        #     nn.LayerNorm(dim),
+        #     nn.Linear(dim, mlp_dim),
+        #     nn.GELU(),
+        #     nn.Linear(mlp_dim, output_dim),
+        # )
 
         assert mode in ['only_h', 'xyz', 'd', 'all'], "mode should be one of ['only_h', 'xyz', 'd', 'all']"
         self.mode = mode
@@ -52,6 +51,8 @@ class P4Transformer(nn.Module):
         elif self.mode == 'all':
             input_feat = input[:,:,:,3:5].clone()
         xyzs, features = self.tube_embedding(input[:,:,:,:3], input_feat.permute(0,1,3,2))                                             # [B, L, n, 3], [B, L, C, n] 
+
+        B, L, C, n = features.shape
 
         # print('xyzs: ', xyzs.max().item(), xyzs.min().item())
         # print('features: ', features.max().item(), features.min().item())
@@ -75,11 +76,15 @@ class P4Transformer(nn.Module):
         if self.emb_relu:
             embedding = self.emb_relu(embedding)
 
-        output = self.transformer(embedding)
+        # output = self.transformer(embedding)
         # print('output after transformer: ', output.max().item(), output.min().item())
 
-        output_ = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
-        output = self.mlp_head(output_)
-        output = output.reshape(output.shape[0], 1, output.shape[-1]//3, 3) # B 1 J 3
+        # output_ = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
+        # output = self.mlp_head(output_)
+        # output = output.reshape(output.shape[0], 1, output.shape[-1]//3, 3) # B 1 J 3
         # print('output after mlp_head: ', output.max().item(), output.min().item())
-        return output
+        # return output
+
+        embedding = embedding.reshape(B, L, -1, embedding.shape[-1])  # B L N C
+
+        return embedding
