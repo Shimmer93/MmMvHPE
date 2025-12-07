@@ -269,12 +269,19 @@ class H36MDataset(BaseDataset):
             rgb_camera_dict = {}
             rgb_camera_dict['R'] = rgb_camera_param[0]
             rgb_camera_dict['T'] = rgb_camera_param[1]
-            rgb_camera_dict['fx'] = rgb_camera_param[2][0]
-            rgb_camera_dict['fy'] = rgb_camera_param[2][1]
-            rgb_camera_dict['cx'] = rgb_camera_param[3][0]
-            rgb_camera_dict['cy'] = rgb_camera_param[3][1]
+            rgb_camera_dict['fx'] = float(rgb_camera_param[2][0])
+            rgb_camera_dict['fy'] = float(rgb_camera_param[2][1])
+            rgb_camera_dict['cx'] = float(rgb_camera_param[3][0])
+            rgb_camera_dict['cy'] = float(rgb_camera_param[3][1])
             rgb_camera_dict['k'] = rgb_camera_param[4]
             rgb_camera_dict['p'] = rgb_camera_param[5]
+            # Construct intrinsics matrix from fx, fy, cx, cy
+            rgb_camera_dict['intrinsic'] = np.array([
+                [rgb_camera_dict['fx'], 0, rgb_camera_dict['cx']],
+                [0, rgb_camera_dict['fy'], rgb_camera_dict['cy']],
+                [0, 0, 1]
+            ], dtype=np.float32)
+            rgb_camera_dict['extrinsic'] = np.hstack((rgb_camera_dict['R'], rgb_camera_dict['T'].reshape(3, 1))).astype(np.float32)
 
         # Get depth camera parameters (assume same extrinsics as camera 02)
         if "depth" in self.modality_names:
