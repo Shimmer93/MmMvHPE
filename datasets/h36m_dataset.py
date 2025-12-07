@@ -17,7 +17,7 @@ import warnings
 class H36MDataset(BaseDataset):
     def __init__(
         self,
-        data_root: str = "/data/yzhanghe/H36M-Toolbox",
+        data_root: str = "/data/shared/H36M-Toolbox",
         pipeline: List[dict] = [],
         split: str = "train",
         modality_names: Sequence[str] = ["rgb", "depth"],
