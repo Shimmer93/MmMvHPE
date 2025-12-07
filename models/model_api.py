@@ -74,7 +74,7 @@ class LitModel(L.LightningModule):
         if self.has_temporal_rgb:
             features_rgb = self.backbone_rgb(frames_rgb)
         else:
-            frames_rgb = rearrange(frames_rgb, 'b t c h w -> (b t) c h w')
+            frames_rgb = rearrange(frames_rgb, 'b t ... -> (b t) ...')
             features_rgb = self.backbone_rgb(frames_rgb)
             features_rgb = rearrange(features_rgb, '(b t) ... -> b t ...', b=B)
 
@@ -89,7 +89,7 @@ class LitModel(L.LightningModule):
         if self.has_temporal_depth:
             features_depth = self.backbone_depth(frames_depth)
         else:
-            frames_depth = rearrange(frames_depth, 'b t c h w -> (b t) c h w')
+            frames_depth = rearrange(frames_depth, 'b t ... -> (b t) ...')
             features_depth = self.backbone_depth(frames_depth)
             features_depth = rearrange(features_depth, '(b t) ... -> b t ...', b=B)
 
@@ -193,7 +193,6 @@ class LitModel(L.LightningModule):
             log_dict[f'test_{metric.name}'] = metric(pred_dict, batch)
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
-
 
     def configure_optimizers(self):
         optimizer = create_optimizer(self.hparams.optim_name, self.hparams.optim_params, self.parameters())

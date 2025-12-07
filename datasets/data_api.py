@@ -44,6 +44,7 @@ class LitDataModule(L.LightningDataModule):
             num_workers=self.hparams.num_workers,
             collate_fn=self.train_collate_fn,
             pin_memory=self.hparams.pin_memory,
+            prefetch_factor=self.hparams.prefetch_factor,
             drop_last=True
         )
     
@@ -55,6 +56,7 @@ class LitDataModule(L.LightningDataModule):
             num_workers=self.hparams.num_workers,
             collate_fn=self.val_collate_fn,
             pin_memory=self.hparams.pin_memory,
+            prefetch_factor=self.hparams.prefetch_factor,
             drop_last=False
         )
     
@@ -66,6 +68,7 @@ class LitDataModule(L.LightningDataModule):
             num_workers=self.hparams.num_workers,
             collate_fn=self.test_collate_fn,
             pin_memory=self.hparams.pin_memory,
+            prefetch_factor=self.hparams.prefetch_factor,
             drop_last=False
         )
     
@@ -77,5 +80,6 @@ class LitDataModule(L.LightningDataModule):
             num_workers=self.hparams.num_workers,
             collate_fn=self.predict_collate_fn,
             pin_memory=self.hparams.pin_memory,
+            prefetch_factor=self.hparams.prefetch_factor,
             drop_last=False
         )
