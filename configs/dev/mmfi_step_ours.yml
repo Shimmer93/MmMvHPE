@@ -175,7 +175,7 @@ train_pipeline: &train_pipeline
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
 
-denorm_params:
+vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]
   rgb_std: [58.395, 57.12, 57.375]
   depth_mean: [0.0, 0.0, 0.0]

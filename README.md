@@ -32,5 +32,5 @@ cd ../../..
 # python setup.py develop
 # cd ../..
 
-pip install scikit-learn "numpy<2" "opencv-python<4.8" einops tensorboard tensorboardX
+pip install scikit-learn "numpy<2" "opencv-python<4.8" einops tensorboard tensorboardX cdflib
 ```

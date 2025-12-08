@@ -178,7 +178,7 @@ class LitModel(L.LightningModule):
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
-        if self.batch_idx == 0:
+        if batch_idx == 0:
             self.visualize(batch, pred_dict)
 
     def test_step(self, batch, batch_idx):
@@ -199,9 +199,9 @@ class LitModel(L.LightningModule):
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
-        num_batches = self.trainer.num_test_batches
+        num_batches = sum(self.trainer.num_test_batches) # list of ints
         visualize_interval = max(1, num_batches // 20)
-        if self.batch_idx in range(0, num_batches, visualize_interval):
+        if batch_idx in range(0, num_batches, visualize_interval):
             self.visualize(batch, pred_dict)
 
     def visualize(self, batch, pred_dict):
