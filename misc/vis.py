@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from .skeleton import JOINT_COLOR_MAP
+from .skeleton import JOINT_COLOR_MAP, H36MSkeleton, COCOSkeleton, SMPLSkeleton
 
 def denormalize(img_array, mean, std):
     """Denormalize an image array.
@@ -98,7 +98,7 @@ def plot_2d_point_cloud(ax, points, dims=[0, 1], color='k', s=1):
 def plot_3d_point_cloud(ax, points, color='k', s=1):
     ax.scatter(points[:, 0], points[:, 1], points[:, 2], c=color, s=s)
 
-def visualize_multimodal_sample(batch, pred_dict, denorm_params):
+def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None):
     # Plot the following subplots:
     # 1. RGB image (if available)
     # 2. Depth image (if available)
@@ -113,6 +113,14 @@ def visualize_multimodal_sample(batch, pred_dict, denorm_params):
     # second row: GT 3D skeleton, GT XY, GT XZ, GT YZ
     # third row: Pred 3D skeleton, Pred XY, Pred XZ, Pred YZ
 
+    bones = None
+    if skl_format == 'h36m':
+        bones = H36MSkeleton.bones
+    elif skl_format == 'coco':
+        bones = COCOSkeleton.bones
+    elif skl_format == 'smpl':
+        bones = SMPLSkeleton.bones
+
     fig, axes = plt.subplots(3, 4, figsize=(16, 12))
     axes = axes.flatten()
 
@@ -122,14 +130,16 @@ def visualize_multimodal_sample(batch, pred_dict, denorm_params):
     # RGB image
     if 'input_rgb' in batch and batch['input_rgb'] is not None:
         rgb_image = batch['input_rgb'][sample_idx].permute(1, 2, 0).cpu().numpy()
-        rgb_image = denormalize(rgb_image, denorm_params['rgb_mean'], denorm_params['rgb_std'])
+        if denorm_params is not None:
+            rgb_image = denormalize(rgb_image, denorm_params['rgb_mean'], denorm_params['rgb_std'])
         axes[plot_idx].imshow(rgb_image)
         axes[plot_idx].set_title('RGB Image')
     plot_idx += 1
     # Depth image
     if 'input_depth' in batch and batch['input_depth'] is not None:
         depth_image = batch['input_depth'][sample_idx].squeeze().cpu().numpy()
-        depth_image = denormalize(depth_image, denorm_params['depth_mean'], denorm_params['depth_std'])
+        if denorm_params is not None:
+            depth_image = denormalize(depth_image, denorm_params['depth_mean'], denorm_params['depth_std'])
         axes[plot_idx].imshow(depth_image, cmap='gray')
         axes[plot_idx].set_title('Depth Image')
     plot_idx += 1
@@ -157,24 +167,24 @@ def visualize_multimodal_sample(batch, pred_dict, denorm_params):
     bounds = get_bounds(np.concatenate([gt_keypoints_3d, pred_keypoints_3d], axis=0))
     
     # GT 3D skeleton
-    plot_3d_skeleton(axes[plot_idx], gt_keypoints_3d)
+    plot_3d_skeleton(axes[plot_idx], gt_keypoints_3d, edges=bones)
     set_3d_ax_limits(axes[plot_idx], bounds)
     axes[plot_idx].set_title('GT 3D Skeleton')
     plot_idx += 1
     # GT projections
     for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
-        plot_2d_skeleton(axes[plot_idx], gt_keypoints_3d, dims=dims)
+        plot_2d_skeleton(axes[plot_idx], gt_keypoints_3d, dims=dims, edges=bones)
         set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
         axes[plot_idx].set_title(f'GT {plane} Projection')
         plot_idx += 1
     # Pred 3D skeleton
-    plot_3d_skeleton(axes[plot_idx], pred_keypoints_3d)
+    plot_3d_skeleton(axes[plot_idx], pred_keypoints_3d, edges=bones)
     set_3d_ax_limits(axes[plot_idx], bounds)
     axes[plot_idx].set_title('Predicted 3D Skeleton')
     plot_idx += 1
     # Pred projections
     for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
-        plot_2d_skeleton(axes[plot_idx], pred_keypoints_3d, dims=dims)
+        plot_2d_skeleton(axes[plot_idx], pred_keypoints_3d, dims=dims, edges=bones)
         set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
         axes[plot_idx].set_title(f'Predicted {plane} Projection')
         plot_idx += 1

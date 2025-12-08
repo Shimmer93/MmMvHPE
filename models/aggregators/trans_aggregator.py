@@ -107,6 +107,7 @@ class TransformerAggregator(nn.Module):
         }
 
         nn.init.normal_(self.camera_token, std=1e-6)
+        nn.init.normal_(self.joint_token, std=1e-6)
         nn.init.normal_(self.register_token, std=1e-6)
         nn.init.normal_(self.trainable_cond_mask.weight, std=1e-6)
 

@@ -1,5 +1,6 @@
 strategy: ddp
 benchmark: true
+deterministic: false
 pretrained: false
 sync_batchnorm: false
 clip_grad: null
@@ -11,10 +12,9 @@ limit_val_batches: 100
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'MMFiDataset'
+  name: 'MMFiPreprocessedDataset'
   params:
-    data_root: &data_root '/data/shared/pc/MMFi_Dataset'
-    rgb_root: &rgb_root '/data/shared/pc/MMFi_Defaced_RGB'
+    data_root: &data_root 'data/mmfi'
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
     split_to_use: &split_to_use 'random_split'
@@ -25,10 +25,9 @@ train_dataset:
     causal: true
     test_mode: false
 val_dataset:
-  name: 'MMFiDataset'
+  name: 'MMFiPreprocessedDataset'
   params:
     data_root: *data_root
-    rgb_root: *rgb_root
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: *split_config
     split_to_use: *split_to_use
@@ -39,10 +38,9 @@ val_dataset:
     causal: true
     test_mode: true
 test_dataset:
-  name: 'MMFiDataset'
+  name: 'MMFiPreprocessedDataset'
   params:
     data_root: *data_root
-    rgb_root: *rgb_root
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: *split_config
     split_to_use: *split_to_use
@@ -142,10 +140,10 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: VideoResize
-  #   params:
-  #     size: [240, 320]
-  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoResize
+    params:
+      size: [480, 640]
+      keys: ['input_rgb', 'input_depth']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'

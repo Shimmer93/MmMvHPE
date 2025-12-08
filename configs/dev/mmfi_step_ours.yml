@@ -19,7 +19,7 @@ train_dataset:
     split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
     split_to_use: &split_to_use 'random_split'
     protocol: &protocol 'protocol3'
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -32,7 +32,7 @@ val_dataset:
     split_config: *split_config
     split_to_use: *split_to_use
     protocol: *protocol
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -45,7 +45,7 @@ test_dataset:
     split_config: *split_config
     split_to_use: *split_to_use
     protocol: *protocol
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -71,18 +71,16 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_1206
+model_name: TestModel_1207
 backbone_rgb:
-  name: 'DinoViTSmall'
+  name: 'ResNet18'
   params:
-    patch_size: 16
-    num_register_tokens: 0
+    pretrained: true
   has_temporal: false
 backbone_depth:
-  name: 'DinoViTSmall'
+  name: 'ResNet18'
   params:
-    patch_size: 16
-    num_register_tokens: 0
+    pretrained: true
   has_temporal: false
 backbone_lidar:
   name: 'P4TEncoder'
@@ -113,8 +111,8 @@ backbone_mmwave:
 aggregator:
   name: 'TransformerAggregator'
   params:
-    input_dims: [384, 384, 512, 512]
-    embed_dim: 192
+    input_dims: [512, 512, 512, 512]
+    embed_dim: 256
     num_register_tokens: 4
     aa_order: ['single', 'global', 'cross']
     aa_block_size: 1
@@ -130,7 +128,7 @@ aggregator:
 keypoint_head:
   name: 'RegressionKeypointHead'
   params:
-    emb_size: 576
+    emb_size: 768
     num_classes: 51
     losses:
       - name: 'MSELoss'
@@ -177,4 +175,8 @@ train_pipeline: &train_pipeline
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
 
-
+denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0, 0.0, 0.0]
+  depth_std: [255.0, 255.0, 255.0]

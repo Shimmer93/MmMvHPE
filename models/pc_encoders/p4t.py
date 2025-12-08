@@ -39,6 +39,22 @@ class P4TEncoder(nn.Module):
         assert mode in ['only_h', 'xyz', 'd', 'all'], "mode should be one of ['only_h', 'xyz', 'd', 'all']"
         self.mode = mode
 
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
     def forward(self, input):                                                                                                               # [B, L, N, 3]
         device = input.get_device()
 
