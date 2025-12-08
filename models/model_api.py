@@ -179,7 +179,7 @@ class LitModel(L.LightningModule):
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
         if batch_idx == 0:
-            self.visualize(batch, pred_dict)
+            self.visualize(batch, pred_dict, stage="val")
 
     def test_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
@@ -200,15 +200,21 @@ class LitModel(L.LightningModule):
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
         num_batches = sum(self.trainer.num_test_batches) # list of ints
-        visualize_interval = max(1, num_batches // 20)
+        visualize_interval = max(1, num_batches // 5)
         if batch_idx in range(0, num_batches, visualize_interval):
-            self.visualize(batch, pred_dict)
+            self.visualize(batch, pred_dict, stage="test", batch_idx=batch_idx)
 
-    def visualize(self, batch, pred_dict):
+    def visualize(self, batch, pred_dict, stage="val", batch_idx=None):
         skl_format = self.hparams.vis_skl_format if hasattr(self.hparams, 'vis_skl_format') else None
         vis_denorm_params = self.hparams.vis_denorm_params if hasattr(self.hparams, 'vis_denorm_params') else None
         fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params)
-        self.logger.experiment.add_figure('visualization', fig, global_step=self.global_step)
+
+        if batch_idx is None:
+            tag = f"{stage}_visualization"
+        else:
+            tag = f"{stage}_visualization/batch_{batch_idx}"
+
+        self.logger.experiment.add_figure(tag, fig, global_step=self.global_step)
         plt.close(fig)
 
     def configure_optimizers(self):
