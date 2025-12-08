@@ -93,10 +93,12 @@ def plot_3d_skeleton(ax, keypoints, edges=None, color_map=JOINT_COLOR_MAP, linew
         ax.scatter(x, y, z, color=color_map[i], marker='o', s=s)
 
 def plot_2d_point_cloud(ax, points, dims=[0, 1], color='k', s=1):
-    ax.scatter(points[:, dims[0]], points[:, dims[1]], c=color, s=s)
+    points_ = points[..., :3].reshape(-1, 3)
+    ax.scatter(points_[:, dims[0]], points_[:, dims[1]], c=color, s=s)
 
 def plot_3d_point_cloud(ax, points, color='k', s=1):
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2], c=color, s=s)
+    points_ = points[..., :3].reshape(-1, 3)
+    ax.scatter(points_[:, 0], points_[:, 1], points_[:, 2], c=color, s=s)
 
 def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None):
     # Plot the following subplots:
@@ -121,15 +123,24 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     elif skl_format == 'smpl':
         bones = SMPLSkeleton.bones
 
-    fig, axes = plt.subplots(3, 4, figsize=(16, 12))
-    axes = axes.flatten()
+    fig = plt.figure(figsize=(16, 12))
+    axes = []
+    is_3d = [
+        False, False, True, True,
+        True, False, False, False,
+        True, False, False, False
+    ]
+
+    for i in range(12):
+        ax = fig.add_subplot(3, 4, i+1, projection='3d' if is_3d[i] else None)
+        axes.append(ax)
 
     sample_idx = 0  # visualize the first sample in the batch
     plot_idx = 0
 
     # RGB image
     if 'input_rgb' in batch and batch['input_rgb'] is not None:
-        rgb_image = batch['input_rgb'][sample_idx].permute(1, 2, 0).cpu().numpy()
+        rgb_image = batch['input_rgb'][sample_idx][-1].permute(1, 2, 0).cpu().numpy()
         if denorm_params is not None:
             rgb_image = denormalize(rgb_image, denorm_params['rgb_mean'], denorm_params['rgb_std'])
         axes[plot_idx].imshow(rgb_image)
@@ -137,7 +148,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     plot_idx += 1
     # Depth image
     if 'input_depth' in batch and batch['input_depth'] is not None:
-        depth_image = batch['input_depth'][sample_idx].squeeze().cpu().numpy()
+        depth_image = batch['input_depth'][sample_idx][-1].permute(1, 2, 0).squeeze().cpu().numpy()
         if denorm_params is not None:
             depth_image = denormalize(depth_image, denorm_params['depth_mean'], denorm_params['depth_std'])
         axes[plot_idx].imshow(depth_image, cmap='gray')
@@ -145,20 +156,24 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     plot_idx += 1
     # LiDAR point cloud
     if 'input_lidar' in batch and batch['input_lidar'] is not None:
-        lidar_points = batch['input_lidar'][sample_idx].cpu().numpy()
+        lidar_points = batch['input_lidar'][sample_idx][-1].cpu().numpy()
         if 'input_lidar_affine' in batch and batch['input_lidar_affine'] is not None:
             affine_matrix = batch['input_lidar_affine'][sample_idx].cpu().numpy()
             lidar_points = reverse_affine_transform(lidar_points, affine_matrix)
+        bounds_lidar = get_bounds(lidar_points)
         plot_3d_point_cloud(axes[plot_idx], lidar_points)
+        set_3d_ax_limits(axes[plot_idx], bounds_lidar)
         axes[plot_idx].set_title('LiDAR Point Cloud')
     plot_idx += 1
     # mmWave point cloud
     if 'input_mmwave' in batch and batch['input_mmwave'] is not None:
-        mmwave_points = batch['input_mmwave'][sample_idx].cpu().numpy()
+        mmwave_points = batch['input_mmwave'][sample_idx][-1].cpu().numpy()
         if 'input_mmwave_affine' in batch and batch['input_mmwave_affine'] is not None:
             affine_matrix = batch['input_mmwave_affine'][sample_idx].cpu().numpy()
             mmwave_points = reverse_affine_transform(mmwave_points, affine_matrix)
+        bounds_mmwave = get_bounds(mmwave_points)
         plot_3d_point_cloud(axes[plot_idx], mmwave_points)
+        set_3d_ax_limits(axes[plot_idx], bounds_mmwave)
         axes[plot_idx].set_title('mmWave Point Cloud')
     plot_idx += 1
     

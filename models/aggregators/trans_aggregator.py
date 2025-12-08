@@ -11,7 +11,7 @@ from .layers.block import CABlock
 
 class TransformerAggregator(nn.Module):
     def __init__(self, 
-                 input_dims=[512, 512, 512, 128],
+                 input_dims=[512, 512, 512, 512],
                  embed_dim=512, 
                  num_register_tokens=4, 
                  aa_order=["single", "global", "cross"], 
@@ -26,6 +26,7 @@ class TransformerAggregator(nn.Module):
                  qk_norm=True,
                  init_values=0.01,
                  use_grad_ckpt=False,
+                 max_seq_len=1000,
                  ):
         super(TransformerAggregator, self).__init__()
 
@@ -40,6 +41,10 @@ class TransformerAggregator(nn.Module):
         self.joint_token = nn.Parameter(torch.randn(1, 1, 2, 1, embed_dim))
         self.register_token = nn.Parameter(torch.randn(1, 1, 2, num_register_tokens, embed_dim))
         self.trainable_cond_mask = nn.Embedding(4, embed_dim)
+        self.pos_embed_rgb = nn.Parameter(torch.randn(1, 1, max_seq_len, embed_dim))
+        self.pos_embed_depth = nn.Parameter(torch.randn(1, 1, max_seq_len, embed_dim))
+        self.pos_embed_lidar = nn.Parameter(torch.randn(1, 1, max_seq_len, embed_dim))
+        self.pos_embed_mmwave = nn.Parameter(torch.randn(1, 1, max_seq_len, embed_dim))
 
         # self.rope = RotaryPositionEmbedding3D(embed_dim, freq=rope_freq) if rope_freq > 0 else None
         # self.position_getter = PositionGetter3D() if rope_freq > 0 else None
