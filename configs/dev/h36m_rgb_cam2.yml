@@ -12,47 +12,38 @@ limit_val_batches: 100
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'MMFiDataset'
+  name: 'H36MDataset'
   params:
-    data_root: &data_root '/data/shared/MMFi_Dataset'
-    rgb_root: &rgb_root '/data/shared/MMFi_rgb_Dataset'
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
-    split_to_use: &split_to_use 'random_split'
-    protocol: &protocol 'protocol3'
-    seq_len: 1
+    data_root: &data_root '/data/shared/H36M-Toolbox'
+    modality_names: ['rgb']
+    cameras: ['02']
+    split: "train"
+    seq_len: 1       
     seq_step: 1
     pad_seq: true
     causal: true
-    test_mode: false
 val_dataset:
-  name: 'MMFiDataset'
+  name: 'H36MDataset'
   params:
     data_root: *data_root
-    rgb_root: *rgb_root
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: *split_config
-    split_to_use: *split_to_use
-    protocol: *protocol
+    modality_names: ['rgb']
+    cameras: ['02']
+    split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
-    test_mode: true
 test_dataset:
-  name: 'MMFiDataset'
+  name: 'H36MDataset'
   params:
     data_root: *data_root
-    rgb_root: *rgb_root
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: *split_config
-    split_to_use: *split_to_use
-    protocol: *protocol
+    modality_names: ['rgb']
+    cameras: ['02']
+    split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
-    test_mode: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -124,7 +115,7 @@ keypoint_head:
   name: 'XFiRegressionHead'
   params:
     emb_size: 512
-    num_classes: 51
+    num_classes: 96  # 32 joints * 3 coordinates
     losses:
       - name: 'MSELoss'
         params: null
@@ -143,28 +134,19 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: VideoResize
-  #   params:
-  #     size: [240, 320]
-  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoResize
+    params:
+      size: [480, 640]
+      keep_ratio: false
+      keys: ['input_rgb']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  - name: VideoNormalize
-    params:
-      norm_mode: 'zero_one'
-      keys: ['input_depth']
-  - name: PCPad
-    params:
-      num_points: 1024
-      pad_mode: 'repeat'
-      keys: ['input_lidar']
-  - name: PCPad
-    params:
-      num_points: 32
-      pad_mode: 'repeat'
-      keys: ['input_mmwave']
+  # - name: VideoNormalize
+  #   params:
+  #     norm_mode: 'zero_one'
+  #     keys: ['input_depth']
   - name: ToTensor
     params: null
 val_pipeline: *train_pipeline
