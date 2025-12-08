@@ -8,12 +8,13 @@ class regression_Head(nn.Sequential):
         super(regression_Head,self).__init__()
         self.norm = nn.LayerNorm(emb_size)
         self.fc = nn.Linear(emb_size, num_classes)
+        self.num_joints = num_classes // 3  # Calculate number of joints from num_classes
     
     def forward(self, x):
         x = torch.mean(x, dim=1)
         x = self.norm(x)
         x = self.fc(x)
-        x = x.view(x.size(0), 17, 3)
+        x = x.view(x.size(0), self.num_joints, 3)  # Use dynamic num_joints
         return x
 
 class XFiRegressionHead(BaseHead):

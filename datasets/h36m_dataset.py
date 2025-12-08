@@ -21,6 +21,7 @@ class H36MDataset(BaseDataset):
         pipeline: List[dict] = [],
         split: str = "train",
         modality_names: Sequence[str] = ["rgb", "depth"],
+        cameras: Sequence[str] = ['01', '02', '03', '04'], # use all cameras by default
         seq_len: int = 5,
         seq_step: int = 1,
         pad_seq: bool = False,
@@ -34,6 +35,7 @@ class H36MDataset(BaseDataset):
         self.causal = causal
         self.pad_seq = pad_seq
         self.modality_names = modality_names
+        self.cameras = cameras
         # Validate modality names
         valid_modalities = {"rgb", "depth"}
         invalid_modalities = set(modality_names) - valid_modalities
@@ -52,6 +54,14 @@ class H36MDataset(BaseDataset):
             self.subjects = ["S1", "S5", "S6", "S7", "S8"]
         elif split == "test":
             self.subjects = ["S9", "S11"]
+        elif split == "train_depth":
+            self.subjects = ["S1", "S6", "S8", "S9"]
+        elif split == "test_depth":
+            self.subjects = ["S11"]
+        elif split == "train_mini":
+            self.subjects = ["S1"]
+        elif split == "test_mini":
+            self.subjects = ["S11"]
         else:
             self.subjects = ["S1", "S5", "S6", "S7", "S8", "S9", "S11"]
 
@@ -82,6 +92,10 @@ class H36MDataset(BaseDataset):
                     action_id = parts[3]
                     subaction_id = parts[5]
                     camera_id = parts[7] if len(parts) > 7 else parts[6]
+
+                    # Skip if camera not in selected cameras
+                    if camera_id not in self.cameras:
+                        continue
 
                     # Count available frames
                     frame_files = glob.glob(osp.join(seq_dir, "*.jpg"))
@@ -176,9 +190,11 @@ class H36MDataset(BaseDataset):
             return depth_data
         else:
             # Throw error if depth file not found
-            raise FileNotFoundError(
-                f"Depth file not found for subject {subject}, action {action}, subaction {subaction}"
-            )
+            # raise FileNotFoundError(
+            #     f"Depth file not found for subject {subject}, action {action}, subaction {subaction}"
+            # )
+            # TODO: Check depth data missing at S7 action 15 subaction 2
+            return None
 
     def __len__(self):
         return len(self.data_list)
@@ -261,7 +277,11 @@ class H36MDataset(BaseDataset):
                     depth_frames.append(depth_data[depth_idx])
             else:
                 # Raise error if depth data is missing
-                raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+                # raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+                # If depth data is missing, fill with zeros (H36M depth is 144x176)
+                # TODO: Check depth data missing at S7 action 15 subaction 2
+                print(f"Warning: Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}. Filling with zeros.")
+                depth_frames = [np.zeros((144, 176), dtype=np.float32) for _ in range(self.seq_len)]
 
         # Get camera parameters
         if "rgb" in self.modality_names:
@@ -283,12 +303,27 @@ class H36MDataset(BaseDataset):
             ], dtype=np.float32)
             rgb_camera_dict['extrinsic'] = np.hstack((rgb_camera_dict['R'], rgb_camera_dict['T'].reshape(3, 1))).astype(np.float32)
 
-        # Get depth camera parameters (assume same extrinsics as camera 02)
+        # Get depth camera parameters (assume same extrinsics and intrinsics as camera 02 for now)
+        # TODO: Find correct depth camera parameters if available
         if "depth" in self.modality_names:
             depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
             depth_camera_dict = {}
             depth_camera_dict['R'] = depth_camera_param[0]
             depth_camera_dict['T'] = depth_camera_param[1]
+            depth_camera_dict['fx'] = float(depth_camera_param[2][0])
+            depth_camera_dict['fy'] = float(depth_camera_param[2][1])
+            depth_camera_dict['cx'] = float(depth_camera_param[3][0])
+            depth_camera_dict['cy'] = float(depth_camera_param[3][1])
+            depth_camera_dict['k'] = depth_camera_param[4]
+            depth_camera_dict['p'] = depth_camera_param[5]
+            # Construct intrinsics matrix from fx, fy, cx, cy
+            depth_camera_dict['intrinsic'] = np.array([
+                [depth_camera_dict['fx'], 0, depth_camera_dict['cx']],
+                [0, depth_camera_dict['fy'], depth_camera_dict['cy']],
+                [0, 0, 1]
+            ], dtype=np.float32)
+            depth_camera_dict['extrinsic'] = np.hstack((depth_camera_dict['R'], depth_camera_dict['T'].reshape(3, 1))).astype(np.float32)
+
         
         # Get action name for sample ID
         action_name = self.metadata.action_names.get(action_id, f"Action_{action_id}")
@@ -302,10 +337,10 @@ class H36MDataset(BaseDataset):
         }
         if "rgb" in self.modality_names:
             sample["input_rgb"] = rgb_frames
-            sample["input_rgb_camera"] = rgb_camera_dict
+            sample["rgb_camera"] = rgb_camera_dict
         if "depth" in self.modality_names:
             sample["input_depth"] = depth_frames
-            sample["input_depth_camera"] = depth_camera_dict
+            sample["depth_camera"] = depth_camera_dict
 
         sample = self.pipeline(sample)
 

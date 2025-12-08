@@ -94,7 +94,15 @@ class VideoNormalize():
             frames = sample[key]
             normalized_frames = []
             for frame in frames:
-                frame = (frame.astype(np.float32) - self.mean) / self.std
+                # Handle both RGB (H, W, 3) and grayscale (H, W) images
+                if frame.ndim == 2:
+                    # Grayscale image - use scalar mean/std
+                    mean = self.mean[0, 0, 0]
+                    std = self.std[0, 0, 0]
+                    frame = (frame.astype(np.float32) - mean) / std
+                else:
+                    # RGB image - use channel-wise mean/std
+                    frame = (frame.astype(np.float32) - self.mean) / self.std
                 normalized_frames.append(frame)
             sample[key] = normalized_frames
         return sample

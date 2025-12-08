@@ -372,7 +372,8 @@ class XFiAggregator(nn.Module):
             feature_list.append(None)
             modality_list.append(False)
         lidar_points = kwargs.get('input_lidar', None)
-        lidar_points = rearrange(lidar_points, 'b t n c -> (b t) n c')
+        if lidar_points is not None:
+            lidar_points = rearrange(lidar_points, 'b t n c -> (b t) n c')
         projected_feature = self.linear_projector(feature_list, lidar_points, modality_list)
         fused_feature = self.x_fusion(projected_feature, modality_list)
         return fused_feature
