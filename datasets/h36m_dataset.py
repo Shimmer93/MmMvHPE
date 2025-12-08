@@ -182,9 +182,11 @@ class H36MDataset(BaseDataset):
             return depth_data
         else:
             # Throw error if depth file not found
-            raise FileNotFoundError(
-                f"Depth file not found for subject {subject}, action {action}, subaction {subaction}"
-            )
+            # raise FileNotFoundError(
+            #     f"Depth file not found for subject {subject}, action {action}, subaction {subaction}"
+            # )
+            # TODO: Check depth data missing at S7 action 15 subaction 2
+            return None
 
     def __len__(self):
         return len(self.data_list)
@@ -267,7 +269,11 @@ class H36MDataset(BaseDataset):
                     depth_frames.append(depth_data[depth_idx])
             else:
                 # Raise error if depth data is missing
-                raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+                # raise RuntimeError(f"Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}")
+                # If depth data is missing, fill with zeros (H36M depth is 144x176)
+                # TODO: Check depth data missing at S7 action 15 subaction 2
+                print(f"Warning: Depth data not found for {data_info['subject']} action {action_id} subaction {subaction_id} camera {camera_id}. Filling with zeros.")
+                depth_frames = [np.zeros((144, 176), dtype=np.float32) for _ in range(self.seq_len)]
 
         # Get camera parameters
         if "rgb" in self.modality_names:
