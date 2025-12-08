@@ -21,6 +21,7 @@ class H36MDataset(BaseDataset):
         pipeline: List[dict] = [],
         split: str = "train",
         modality_names: Sequence[str] = ["rgb", "depth"],
+        cameras: Sequence[str] = ['01', '02', '03', '04'], # use all cameras by default
         seq_len: int = 5,
         seq_step: int = 1,
         pad_seq: bool = False,
@@ -34,6 +35,7 @@ class H36MDataset(BaseDataset):
         self.causal = causal
         self.pad_seq = pad_seq
         self.modality_names = modality_names
+        self.cameras = cameras
         # Validate modality names
         valid_modalities = {"rgb", "depth"}
         invalid_modalities = set(modality_names) - valid_modalities
@@ -82,6 +84,10 @@ class H36MDataset(BaseDataset):
                     action_id = parts[3]
                     subaction_id = parts[5]
                     camera_id = parts[7] if len(parts) > 7 else parts[6]
+
+                    # Skip if camera not in selected cameras
+                    if camera_id not in self.cameras:
+                        continue
 
                     # Count available frames
                     frame_files = glob.glob(osp.join(seq_dir, "*.jpg"))
