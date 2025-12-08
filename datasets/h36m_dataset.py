@@ -54,6 +54,14 @@ class H36MDataset(BaseDataset):
             self.subjects = ["S1", "S5", "S6", "S7", "S8"]
         elif split == "test":
             self.subjects = ["S9", "S11"]
+        elif split == "train_depth":
+            self.subjects = ["S1", "S6", "S8", "S9"]
+        elif split == "test_depth":
+            self.subjects = ["S11"]
+        elif split == "train_mini":
+            self.subjects = ["S1"]
+        elif split == "test_mini":
+            self.subjects = ["S11"]
         else:
             self.subjects = ["S1", "S5", "S6", "S7", "S8", "S9", "S11"]
 
