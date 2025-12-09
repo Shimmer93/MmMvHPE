@@ -26,6 +26,7 @@ class H36MDataset(BaseDataset):
         seq_step: int = 1,
         pad_seq: bool = False,
         causal: bool = False,
+        remove_static_joints=True
     ):
         super().__init__(pipeline=pipeline)
         self.h36m_root = data_root
@@ -33,6 +34,7 @@ class H36MDataset(BaseDataset):
         self.seq_len = seq_len
         self.seq_step = seq_step
         self.causal = causal
+        self.remove_static_joints = remove_static_joints
         self.pad_seq = pad_seq
         self.modality_names = modality_names
         self.cameras = cameras
@@ -257,6 +259,12 @@ class H36MDataset(BaseDataset):
             else:
                 middle_idx = self.seq_len // 2
                 gt_keypoints = pose_sequence[middle_idx]
+
+            # Remove static joints 
+            if self.remove_static_joints:
+                # Bring the skeleton to 17 joints instead of the original 32
+                joints_to_remove = [4, 5, 9, 10, 11, 16, 20, 21, 22, 23, 24, 28, 29, 30, 31]
+                gt_keypoints = np.delete(gt_keypoints, joints_to_remove, axis=0)
 
         else:
             # Raise error if pose data is missing
