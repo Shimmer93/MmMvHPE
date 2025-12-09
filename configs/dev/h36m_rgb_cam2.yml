@@ -126,7 +126,7 @@ keypoint_head:
   name: 'XFiRegressionHead'
   params:
     emb_size: 512
-    num_classes: 96  # 32 joints * 3 coordinates
+    num_classes: 51  # 17 joints * 3 coordinates
     losses:
       - name: 'MSELoss'
         params: null
