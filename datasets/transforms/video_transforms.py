@@ -4,6 +4,9 @@ from copy import deepcopy
 from typing import Optional, Sequence, Union, List
 import cv2
 
+IMAGENET_MEAN = [123.675, 116.28, 103.53]
+IMAGENET_STD = [58.395, 57.12, 57.375]
+
 class VideoResize():
     def __init__(self, 
                  size: Union[int, Sequence[int]],
@@ -76,8 +79,8 @@ class VideoNormalize():
         self.norm_mode = norm_mode
 
         if norm_mode == 'imagenet':
-            self.mean = np.array([123.675, 116.28, 103.53]).reshape(1, 1, 3)
-            self.std = np.array([58.395, 57.12, 57.375]).reshape(1, 1, 3)
+            self.mean = np.array(IMAGENET_MEAN).reshape(1, 1, 3)
+            self.std = np.array(IMAGENET_STD).reshape(1, 1, 3)
         elif norm_mode == 'zero_one':
             self.mean = np.array([0.0, 0.0, 0.0]).reshape(1, 1, 3)
             self.std = np.array([255.0, 255.0, 255.0]).reshape(1, 1, 3)

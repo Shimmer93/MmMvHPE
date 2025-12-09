@@ -5,8 +5,10 @@ import lightning as L
 import os
 import pickle
 from einops import rearrange
+import matplotlib.pyplot as plt
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
+from misc.vis import visualize_multimodal_sample
 
 class LitModel(L.LightningModule):
 
@@ -176,6 +178,9 @@ class LitModel(L.LightningModule):
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
+        if batch_idx == 0:
+            self.visualize(batch, pred_dict)
+
     def test_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
         feats_agg = self.aggregate_features(feats, batch)
@@ -194,6 +199,11 @@ class LitModel(L.LightningModule):
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
+        num_batches = sum(self.trainer.num_test_batches) # list of ints
+        visualize_interval = max(1, num_batches // 20)
+        if batch_idx in range(0, num_batches, visualize_interval):
+            self.visualize(batch, pred_dict)
+    
     def predict_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
         feats_agg = self.aggregate_features(feats, batch)
@@ -207,6 +217,13 @@ class LitModel(L.LightningModule):
             pred_dict['pred_keypoints'] = preds_keypoint
 
         return pred_dict
+
+    def visualize(self, batch, pred_dict):
+        skl_format = self.hparams.vis_skl_format if hasattr(self.hparams, 'vis_skl_format') else None
+        vis_denorm_params = self.hparams.vis_denorm_params if hasattr(self.hparams, 'vis_denorm_params') else None
+        fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params)
+        self.logger.experiment.add_figure('visualization', fig, global_step=self.global_step)
+        plt.close(fig)
 
     def configure_optimizers(self):
         optimizer = create_optimizer(self.hparams.optim_name, self.hparams.optim_params, self.parameters())

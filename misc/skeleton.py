@@ -85,7 +85,7 @@ class MMBodySkeleton:
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
 
-class MMFiSkeleton:
+class H36MSkeleton:
     joint_names = [
         "pelvis", "right_hip", "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle", 
         "waist", "neck", "nose", "head", "left_shoulder", "left_elbow", "left_wrist", 
