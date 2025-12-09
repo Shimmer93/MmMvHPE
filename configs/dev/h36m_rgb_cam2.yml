@@ -44,6 +44,17 @@ test_dataset:
     seq_step: 1
     pad_seq: true
     causal: true
+predict_dataset:
+  name: 'H36MDataset'
+  params:
+    data_root: *data_root
+    modality_names: ['rgb']
+    cameras: ['02']
+    split: "train_mini"
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -151,5 +162,6 @@ train_pipeline: &train_pipeline
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
+predict_pipeline: *train_pipeline
 
 
