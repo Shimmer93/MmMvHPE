@@ -194,6 +194,20 @@ class LitModel(L.LightningModule):
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
+    def predict_step(self, batch, batch_idx):
+        feats = self.extract_features(batch)
+        feats_agg = self.aggregate_features(feats, batch)
+
+        pred_dict = {}
+        if self.with_camera_head:
+            preds_camera = self.camera_head.predict(feats_agg)
+            pred_dict['pred_cameras'] = preds_camera
+        if self.with_keypoint_head:
+            preds_keypoint = self.keypoint_head.predict(feats_agg)
+            pred_dict['pred_keypoints'] = preds_keypoint
+
+        return pred_dict
+
     def configure_optimizers(self):
         optimizer = create_optimizer(self.hparams.optim_name, self.hparams.optim_params, self.parameters())
         scheduler = create_scheduler(self.hparams.sched_name, self.hparams.sched_params, optimizer)
