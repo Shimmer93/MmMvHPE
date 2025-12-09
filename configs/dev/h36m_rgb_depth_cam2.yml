@@ -3,9 +3,9 @@ benchmark: true
 deterministic: false
 pretrained: false
 sync_batchnorm: false
-clip_grad: null
-precision: 16
-max_steps: &max_steps 20000
+clip_grad: 1.0
+precision: 32
+max_steps: &max_steps 80000
 val_check_interval: 500
 limit_val_batches: 100
 # --------------------------------------
@@ -17,7 +17,7 @@ train_dataset:
     data_root: &data_root '/data/shared/H36M-Toolbox'
     modality_names: ['rgb', 'depth']
     cameras: ['02']
-    split: "train_mini"
+    split: "train"
     seq_len: 1       
     seq_step: 1
     pad_seq: true
@@ -28,7 +28,7 @@ val_dataset:
     data_root: *data_root
     modality_names: ['rgb', 'depth']
     cameras: ['02']
-    split: "test_mini"
+    split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -39,7 +39,7 @@ test_dataset:
     data_root: *data_root
     modality_names: ['rgb', 'depth']
     cameras: ['02']
-    split: "test_mini"
+    split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
