@@ -6,6 +6,7 @@ import os
 import pickle
 from einops import rearrange
 import matplotlib.pyplot as plt
+import wandb
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
@@ -214,7 +215,10 @@ class LitModel(L.LightningModule):
         else:
             tag = f"{stage}_visualization/batch_{batch_idx}"
 
-        self.logger.experiment.add_figure(tag, fig, global_step=self.global_step)
+        if self.hparams.use_wandb:
+            self.logger.log_image(key=tag, images=[fig])
+        else:
+            self.logger.experiment.add_figure(tag, fig, global_step=self.global_step)
         plt.close(fig)
 
     def configure_optimizers(self):
