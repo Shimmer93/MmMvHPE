@@ -16,7 +16,9 @@ class P4TEncoder(nn.Module):
     def __init__(self, radius, nsamples, spatial_stride,                                # P4DConv: spatial
                  temporal_kernel_size, temporal_stride,                                 # P4DConv: temporal
                  emb_relu,                                                              # embedding: relu
-                 dim, features=3, mode='only_h'):                                       # output
+                 dim, 
+                 depth, heads, dim_head, mlp_dim, 
+                 features=3, mode='only_h'):                                       # output
         super().__init__()
 
         self.tube_embedding = P4DConv(in_planes=features, mlp_planes=[dim], mlp_batch_norm=[False], mlp_activation=[False],
@@ -27,7 +29,7 @@ class P4TEncoder(nn.Module):
         self.pos_embedding = nn.Conv1d(in_channels=4, out_channels=dim, kernel_size=1, stride=1, padding=0, bias=True)
         self.emb_relu = nn.ReLU() if emb_relu else False
 
-        # self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim)
+        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim)
 
         # self.mlp_head = nn.Sequential(
         #     nn.LayerNorm(dim),
@@ -92,7 +94,7 @@ class P4TEncoder(nn.Module):
         if self.emb_relu:
             embedding = self.emb_relu(embedding)
 
-        # output = self.transformer(embedding)
+        embedding = self.transformer(embedding)
         # print('output after transformer: ', output.max().item(), output.min().item())
 
         # output_ = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
