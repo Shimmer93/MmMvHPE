@@ -294,43 +294,48 @@ class H36MDataset(BaseDataset):
         # Get camera parameters
         if "rgb" in self.modality_names:
             rgb_camera_param = self.camera_params[(data_info['subject_id'], camera_id)]
-            rgb_camera_dict = {}
-            rgb_camera_dict['R'] = rgb_camera_param[0]
-            rgb_camera_dict['T'] = rgb_camera_param[1]
-            rgb_camera_dict['fx'] = float(rgb_camera_param[2][0])
-            rgb_camera_dict['fy'] = float(rgb_camera_param[2][1])
-            rgb_camera_dict['cx'] = float(rgb_camera_param[3][0])
-            rgb_camera_dict['cy'] = float(rgb_camera_param[3][1])
-            rgb_camera_dict['k'] = rgb_camera_param[4]
-            rgb_camera_dict['p'] = rgb_camera_param[5]
-            # Construct intrinsics matrix from fx, fy, cx, cy
-            rgb_camera_dict['intrinsic'] = np.array([
-                [rgb_camera_dict['fx'], 0, rgb_camera_dict['cx']],
-                [0, rgb_camera_dict['fy'], rgb_camera_dict['cy']],
-                [0, 0, 1]
-            ], dtype=np.float32)
-            rgb_camera_dict['extrinsic'] = np.hstack((rgb_camera_dict['R'], rgb_camera_dict['T'].reshape(3, 1))).astype(np.float32)
+            # Only expose intrinsic and extrinsic matrices
+            R = rgb_camera_param[0]
+            T = rgb_camera_param[1]
+            fx = float(rgb_camera_param[2][0])
+            fy = float(rgb_camera_param[2][1])
+            cx = float(rgb_camera_param[3][0])
+            cy = float(rgb_camera_param[3][1])
+
+            rgb_camera_dict = {
+                "intrinsic": np.array(
+                    [
+                        [fx, 0, cx],
+                        [0, fy, cy],
+                        [0, 0, 1],
+                    ],
+                    dtype=np.float32,
+                ),
+                "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
+            }
 
         # Get depth camera parameters (assume same extrinsics and intrinsics as camera 02 for now)
         # TODO: Find correct depth camera parameters if available
         if "depth" in self.modality_names:
             depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
-            depth_camera_dict = {}
-            depth_camera_dict['R'] = depth_camera_param[0]
-            depth_camera_dict['T'] = depth_camera_param[1]
-            depth_camera_dict['fx'] = float(depth_camera_param[2][0])
-            depth_camera_dict['fy'] = float(depth_camera_param[2][1])
-            depth_camera_dict['cx'] = float(depth_camera_param[3][0])
-            depth_camera_dict['cy'] = float(depth_camera_param[3][1])
-            depth_camera_dict['k'] = depth_camera_param[4]
-            depth_camera_dict['p'] = depth_camera_param[5]
-            # Construct intrinsics matrix from fx, fy, cx, cy
-            depth_camera_dict['intrinsic'] = np.array([
-                [depth_camera_dict['fx'], 0, depth_camera_dict['cx']],
-                [0, depth_camera_dict['fy'], depth_camera_dict['cy']],
-                [0, 0, 1]
-            ], dtype=np.float32)
-            depth_camera_dict['extrinsic'] = np.hstack((depth_camera_dict['R'], depth_camera_dict['T'].reshape(3, 1))).astype(np.float32)
+            R = depth_camera_param[0]
+            T = depth_camera_param[1]
+            fx = float(depth_camera_param[2][0])
+            fy = float(depth_camera_param[2][1])
+            cx = float(depth_camera_param[3][0])
+            cy = float(depth_camera_param[3][1])
+
+            depth_camera_dict = {
+                "intrinsic": np.array(
+                    [
+                        [fx, 0, cx],
+                        [0, fy, cy],
+                        [0, 0, 1],
+                    ],
+                    dtype=np.float32,
+                ),
+                "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
+            }
 
         
         # Get action name for sample ID
