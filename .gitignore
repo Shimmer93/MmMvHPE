@@ -3,6 +3,7 @@ play.ipynb
 *.sh
 logs
 data
+smpl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

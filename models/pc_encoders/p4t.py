@@ -94,7 +94,7 @@ class P4TEncoder(nn.Module):
         if self.emb_relu:
             embedding = self.emb_relu(embedding)
 
-        embedding = self.transformer(embedding)
+        # embedding = self.transformer(embedding)
         # print('output after transformer: ', output.max().item(), output.min().item())
 
         # output_ = torch.max(input=output, dim=1, keepdim=False, out=None)[0]

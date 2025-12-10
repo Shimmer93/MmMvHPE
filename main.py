@@ -139,6 +139,7 @@ if __name__ == '__main__':
     parser.add_argument('--pin_memory', action='store_true')
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--save_test_preds', action='store_true')
     parser.add_argument('--predict', action='store_true')
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--exp_name', type=str, default='fasternet')

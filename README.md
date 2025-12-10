@@ -16,7 +16,7 @@ mim install "mmdet==3.1.0"
 
 pip install git+https://github.com/state-spaces/mamba.git
 
-pip install "chumpy==0.66"
+pip install --no-build-isolation git+https://github.com/mattloper/chumpy
 mim install "mmpose==1.3.2"
 
 cd models/pc_encoders/modules
@@ -32,5 +32,5 @@ cd ../../..
 # python setup.py develop
 # cd ../..
 
-pip install scikit-learn "numpy<2" "opencv-python<4.8" einops tensorboard tensorboardX cdflib wandb
+pip install scikit-learn "numpy<2" "opencv-python<4.8" einops tensorboard tensorboardX cdflib wandb rerun
 ```
