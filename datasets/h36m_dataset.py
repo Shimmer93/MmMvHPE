@@ -139,7 +139,7 @@ class H36MDataset(BaseDataset):
         )
         annotname = basename + ".cdf"
 
-        # Use D3_Positions_mono_universal (world coordinates)
+        # Use D3_Positions_mono_universal (camera coordinates)
         pose_file = osp.join(
             self.extracted_root,
             subject,
