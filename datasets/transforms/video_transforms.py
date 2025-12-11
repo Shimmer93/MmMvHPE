@@ -57,13 +57,21 @@ class VideoResize():
                                                        borderType=cv2.BORDER_CONSTANT, value=0)
                 resized_frames.append(resized_frame)
 
-            if f'{key}_camera' in sample:
-                camera = deepcopy(sample[f'{key}_camera'])
+            # Update camera intrinsics if present
+            # Handle both 'input_X_camera' and 'X_camera' naming conventions
+            camera_key = f'{key}_camera'
+            if camera_key not in sample:
+                # Try without 'input_' prefix (e.g., 'rgb_camera' instead of 'input_rgb_camera')
+                if key.startswith('input_'):
+                    camera_key = f'{key[6:]}_camera'  # Remove 'input_' prefix
+            
+            if camera_key in sample:
+                camera = deepcopy(sample[camera_key])
                 camera['intrinsic'][0, 0] = camera['intrinsic'][0, 0] * (new_w / w)
                 camera['intrinsic'][1, 1] = camera['intrinsic'][1, 1] * (new_h / h)
                 camera['intrinsic'][0, 2] = camera['intrinsic'][0, 2] * (new_w / w) + pad_w // 2
                 camera['intrinsic'][1, 2] = camera['intrinsic'][1, 2] * (new_h / h) + pad_h // 2
-                sample[f'{key}_camera'] = camera
+                sample[camera_key] = camera
 
             sample[key] = resized_frames
         return sample
