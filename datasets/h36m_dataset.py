@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import yaml
 import pickle
+import json
 import glob
 import cdflib
 from typing import Callable, List, Optional, Sequence, Tuple, Union
@@ -22,6 +23,7 @@ class H36MDataset(BaseDataset):
         split: str = "train",
         modality_names: Sequence[str] = ["rgb", "depth"],
         cameras: Sequence[str] = ['01', '02', '03', '04'], # use all cameras by default
+        anchor_key: str = "input_rgb",
         seq_len: int = 5,
         seq_step: int = 1,
         pad_seq: bool = False,
@@ -46,6 +48,17 @@ class H36MDataset(BaseDataset):
                 f"Invalid modality names detected: {invalid_modalities}. "
                 f"Only 'rgb' and 'depth' are supported for H36M dataset."
             )
+        # Validate anchor_key
+        valid_anchor_keys = {f"input_{mod}" for mod in modality_names}
+        if anchor_key not in valid_anchor_keys:
+            warnings.warn(
+            f"Invalid anchor_key: {anchor_key}. "
+            f"Must be one of {valid_anchor_keys}. "
+            f"Defaulting to 'input_rgb'."
+            )
+            self.anchor_key = "input_rgb" if "rgb" in modality_names else f"input_{modality_names[0]}"
+        else:
+            self.anchor_key = anchor_key
 
         # Dataset paths
         self.images_root = f"{data_root}/images"
@@ -123,9 +136,53 @@ class H36MDataset(BaseDataset):
         return data_list
 
     def _load_camera_params(self):
-        """Load camera parameters for all subjects."""
-        with open(f"{self.h36m_root}/camera_data.pkl", "rb") as f:
-            camera_params = pickle.load(f)
+        """Load camera parameters for all subjects from JSON."""
+        with open(f"{self.h36m_root}/camera-parameters.json", "r") as f:
+            json_data = json.load(f)
+        
+        # Convert JSON format to dictionary keyed by (subject_id, camera_id)
+        # JSON uses standard world-to-camera convention: [R|t] where camera_center = -R.T @ t
+        camera_params = {}
+        camera_id_map = {
+            '54138969': 1,
+            '55011271': 2,
+            '58860488': 3,
+            '60457274': 4
+        }
+        
+        for subject in ['S1', 'S5', 'S6', 'S7', 'S8', 'S9', 'S11']:
+            subject_id = int(subject[1:])
+            if subject not in json_data['extrinsics']:
+                continue
+                
+            for cam_name, cam_idx in camera_id_map.items():
+                if cam_name not in json_data['extrinsics'][subject]:
+                    continue
+                    
+                # Get extrinsics
+                extrinsic_data = json_data['extrinsics'][subject][cam_name]
+                R = np.array(extrinsic_data['R'], dtype=np.float32)
+                t = np.array(extrinsic_data['t'], dtype=np.float32).flatten()
+                
+                # Get intrinsics
+                intrinsic_data = json_data['intrinsics'][cam_name]
+                calib_matrix = np.array(intrinsic_data['calibration_matrix'], dtype=np.float32)
+                fx, fy = calib_matrix[0, 0], calib_matrix[1, 1]
+                cx, cy = calib_matrix[0, 2], calib_matrix[1, 2]
+                distortion = np.array(intrinsic_data['distortion'], dtype=np.float32)
+                
+                # Store in format: [R, t, f, c, k, p, name]
+                # Note: JSON uses standard convention where t is translation, not camera center
+                camera_params[(subject_id, cam_idx)] = [
+                    R,
+                    t.reshape(3, 1),
+                    np.array([fx, fy], dtype=np.float32),
+                    np.array([cx, cy], dtype=np.float32),
+                    distortion[:3],  # radial distortion k1, k2, k3
+                    distortion[3:5],  # tangential distortion p1, p2
+                    cam_name
+                ]
+        
         return camera_params
 
     def _load_pose_data(self, subject, action, subaction, camera):
@@ -314,17 +371,17 @@ class H36MDataset(BaseDataset):
                 "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
             }
 
-        # Get depth camera parameters (assume same extrinsics and intrinsics as camera 02 for now)
+        # Get depth camera parameters (assume same extrinsics as camera 02 for now, intrinsics calculated manually)
         # TODO: Find correct depth camera parameters if available
         if "depth" in self.modality_names:
             depth_camera_param = self.camera_params[(data_info['subject_id'], 2)]
             R = depth_camera_param[0]
             T = depth_camera_param[1]
-            fx = float(depth_camera_param[2][0])
-            fy = float(depth_camera_param[2][1])
-            cx = float(depth_camera_param[3][0])
-            cy = float(depth_camera_param[3][1])
-
+            # Depth sensor has fixed intrinsic parameters (different from RGB)
+            fx = 220.0
+            fy = 231.2
+            cx = 88.0
+            cy = 72.0
             depth_camera_dict = {
                 "intrinsic": np.array(
                     [
@@ -337,6 +394,48 @@ class H36MDataset(BaseDataset):
                 "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
             }
 
+        # Transform extrinsics and keypoints to anchor_key coordinate system
+        if "depth" in self.modality_names:
+            depth_extrinsic = depth_camera_dict["extrinsic"]  # 3x4
+            rgb_extrinsic = rgb_camera_dict["extrinsic"]  # 3x4
+            
+            # Extract R and T from [R|T] format
+            depth_R, depth_T = depth_extrinsic[:, :3], depth_extrinsic[:, 3:]
+            rgb_R, rgb_T = rgb_extrinsic[:, :3], rgb_extrinsic[:, 3:]
+            
+            if self.anchor_key == "input_rgb":
+                # Keypoints are already in RGB camera space (from D3_Positions_mono_universal)
+                # Set RGB camera extrinsic to identity since it's the anchor
+                rgb_camera_dict["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+                
+                # Transform depth camera extrinsic to be relative to RGB camera
+                # For p_cam = R @ p_world + T format:
+                # p_depth = R_depth @ p_world + T_depth
+                # p_rgb = R_rgb @ p_world + T_rgb
+                # Therefore: p_depth = R_depth @ inv(R_rgb) @ (p_rgb - T_rgb) + T_depth
+                #          = R_depth @ inv(R_rgb) @ p_rgb + (T_depth - R_depth @ inv(R_rgb) @ T_rgb)
+                R_rel = depth_R @ np.linalg.inv(rgb_R)
+                T_rel = depth_T - R_rel @ rgb_T
+                depth_camera_dict["extrinsic"] = np.hstack([R_rel, T_rel]).astype(np.float32)
+                
+            elif self.anchor_key == "input_depth":
+                # Transform keypoints from RGB camera space to depth camera space
+                R_rel = depth_R @ np.linalg.inv(rgb_R)
+                T_rel = depth_T - R_rel @ rgb_T
+                gt_keypoints_transformed = (R_rel @ gt_keypoints.T).T + T_rel.T
+                gt_keypoints = gt_keypoints_transformed
+                
+                # Set depth camera extrinsic to identity since it's the anchor
+                depth_camera_dict["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+                
+                # Transform RGB camera extrinsic to be relative to depth camera
+                R_rel_inv = rgb_R @ np.linalg.inv(depth_R)
+                T_rel_inv = rgb_T - R_rel_inv @ depth_T
+                rgb_camera_dict["extrinsic"] = np.hstack([R_rel_inv, T_rel_inv]).astype(np.float32)
+                
+        elif self.anchor_key == "input_depth":
+            raise RuntimeError("Anchor key set to input_depth but depth modality not loaded.")
+
         
         # Get action name for sample ID
         action_name = self.metadata.action_names.get(action_id, f"Action_{action_id}")
@@ -346,7 +445,7 @@ class H36MDataset(BaseDataset):
             "gt_keypoints": gt_keypoints,
             "sample_id": f"{data_info['subject']}_{action_name}_{data_info['subaction']}_{data_info['camera']}_{data_info['start_frame']}",
             "modalities": list(self.modality_names),
-            "anchor_key": "input_rgb",  # Coordinates in RGB camera space
+            "anchor_key": self.anchor_key,  # Use the actual anchor key
         }
         if "rgb" in self.modality_names:
             sample["input_rgb"] = rgb_frames
