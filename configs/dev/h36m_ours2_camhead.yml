@@ -8,6 +8,7 @@ precision: 32
 max_steps: &max_steps 20000
 val_check_interval: 1000
 limit_val_batches: 100
+
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -15,8 +16,8 @@ train_dataset:
   name: 'H36MDataset'
   params:
     data_root: &data_root '/data/shared/H36M-Toolbox'
-    modality_names: ['rgb']
-    cameras: ['02']
+    modality_names: ['rgb', 'depth']
+    cameras: ['01','02','03','04']
     split: "train"
     seq_len: 1       
     seq_step: 1
@@ -26,8 +27,8 @@ val_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
-    modality_names: ['rgb']
-    cameras: ['02']
+    modality_names: ['rgb', 'depth']
+    cameras: ['01','02','03','04']
     split: "test"
     seq_len: 1
     seq_step: 1
@@ -37,20 +38,9 @@ test_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
-    modality_names: ['rgb']
-    cameras: ['02']
+    modality_names: ['rgb', 'depth']
+    cameras: ['01','02','03','04']
     split: "test"
-    seq_len: 1
-    seq_step: 1
-    pad_seq: true
-    causal: true
-predict_dataset:
-  name: 'H36MDataset'
-  params:
-    data_root: *data_root
-    modality_names: ['rgb']
-    cameras: ['02']
-    split: "train_mini"
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -60,7 +50,7 @@ predict_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.001
+  lr: &lr 0.0001
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -76,61 +66,56 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: XFi
+model_name: TestModel_1208
 backbone_rgb:
-  name: 'XFiResNet'
+  name: 'TimmWrapper'
   params:
-    block_type: 'Block'
-    layer_list: [2, 2, 2, 2]
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/RGB_Resnet18.pt'
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
   has_temporal: false
 backbone_depth:
-  name: 'XFiResNet'
+  name: 'TimmWrapper'
   params:
-    block_type: 'Block'
-    layer_list: [2, 2, 2, 2]
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/depth_Resnet18.pt'
-  has_temporal: false
-backbone_lidar:
-  name: 'XFiPointTransformerEncoderLidar'
-  params:
-    input_dim: 3
-    nblocks: 5
-    nneighbor: 16
-    transformer_dim: 512
-    n_points: 1024
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/lidar_all_random.pt'
-  has_temporal: false
-backbone_mmwave:
-  name: 'XFiPointTransformerEncoderMMWave'
-  params:
-    input_dim: 5
-    nblocks: 5
-    nneighbor: 16
-    transformer_dim: 128
-    n_points: 32
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/mmwave_all_random_TD.pt'
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
   has_temporal: false
 aggregator:
-  name: 'XFiAggregator'
+  name: 'TransformerAggregator'
   params:
-    input_dim: 512
-    output_dim: 512
-    num_modalities: 4
-    dim_expansion: 2
-    hidden_dim: 512
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 256
+    num_register_tokens: 4
+    aa_order: ['single', 'global', 'cross']
+    aa_block_size: 1
+    depth: 12
+    block_type: 'Block'
     num_heads: 8
-    dim_heads: 64
-    model_depth: 4
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
 keypoint_head:
-  name: 'XFiRegressionHead'
+  name: 'RegressionKeypointHead'
   params:
-    emb_size: 512
-    num_classes: 51  # 17 joints * 3 coordinates
+    emb_size: 768
+    num_classes: 51
     losses:
       - name: 'MSELoss'
         params: null
         weight: 1.0
+camera_head:
+  name: 'VGGTCameraHead'
+  params:
+    dim_in: 768
+    trunk_depth: 2
+    num_heads: 2
+    mlp_ratio: 1
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 0.3
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
@@ -141,6 +126,7 @@ metrics:
   - name: 'PAMPJPE'
     params:
       affix: null
+# TODO: create metric for camera error
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
@@ -149,19 +135,18 @@ train_pipeline: &train_pipeline
     params:
       size: [480, 640]
       keep_ratio: false
-      keys: ['input_rgb']
+      keys: ['input_rgb', 'input_depth']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  # - name: VideoNormalize
-  #   params:
-  #     norm_mode: 'zero_one'
-  #     keys: ['input_depth']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'zero_one'
+      keys: ['input_depth']
   - name: ToTensor
+    params: null
+  - name: CameraParamToPoseEncoding
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
-predict_pipeline: *train_pipeline
-
-
