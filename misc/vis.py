@@ -2,6 +2,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 from .skeleton import JOINT_COLOR_MAP, H36MSkeleton, COCOSkeleton, SMPLSkeleton
 
+def project_3d_to_2d(points_3d, intrinsic_matrix):
+    """Project 3D points in camera coordinates to 2D image coordinates.
+    
+    Args:
+        points_3d (np.ndarray): 3D points in camera coordinates, shape (N, 3)
+        intrinsic_matrix (np.ndarray): Camera intrinsic matrix, shape (3, 3)
+    
+    Returns:
+        np.ndarray: 2D points in image coordinates, shape (N, 2)
+    """
+    # Homogeneous coordinates
+    points_2d_homo = intrinsic_matrix @ points_3d.T  # (3, N)
+    
+    # Normalize by Z coordinate
+    points_2d = points_2d_homo[:2, :] / points_2d_homo[2:3, :]  # (2, N)
+    
+    return points_2d.T  # (N, 2)
+
 def denormalize(img_array, mean, std):
     """Denormalize an image array.
 
@@ -92,6 +110,35 @@ def plot_3d_skeleton(ax, keypoints, edges=None, color_map=JOINT_COLOR_MAP, linew
     for i, (x, y, z) in enumerate(keypoints):
         ax.scatter(x, y, z, color=color_map[i], marker='o', s=s)
 
+def plot_2d_skeleton_on_image(ax, image, keypoints_2d, edges=None, color_map=JOINT_COLOR_MAP, linewidth=2, s=50):
+    """Plot 2D skeleton overlay on an image.
+    
+    Args:
+        ax: matplotlib axis
+        image: RGB image array (H, W, 3)
+        keypoints_2d: 2D keypoint coordinates (N, 2) in image space
+        edges: list of (i, j) tuples representing skeleton bones
+        color_map: color map for joints
+        linewidth: line width for bones
+        s: marker size for joints
+    """
+    ax.imshow(image)
+    
+    # Plot bones
+    if edges is not None:
+        for i, j in edges:
+            ax.plot([keypoints_2d[i, 0], keypoints_2d[j, 0]],
+                    [keypoints_2d[i, 1], keypoints_2d[j, 1]], 
+                    color='lime', linewidth=linewidth, alpha=0.8)
+    
+    # Plot joints
+    for i, (x, y) in enumerate(keypoints_2d):
+        ax.scatter(x, y, color=color_map[i], marker='o', s=s, 
+                  edgecolors='white', linewidths=1.5, zorder=10)
+    
+    ax.axis('off')
+
+
 def plot_2d_point_cloud(ax, points, dims=[0, 1], color='k', s=1):
     points_ = points[..., :3].reshape(-1, 3)
     ax.scatter(points_[:, dims[0]], points_[:, dims[1]], c=color, s=s)
@@ -102,18 +149,10 @@ def plot_3d_point_cloud(ax, points, color='k', s=1):
 
 def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None):
     # Plot the following subplots:
-    # 1. RGB image (if available)
-    # 2. Depth image (if available)
-    # 3. LiDAR point cloud (if available)
-    # 4. mmWave point cloud (if available)
-    # 5. GT 3D skeleton
-    # 6-8. GT 3D skeleton projected onto XY, XZ, YZ planes
-    # 9. Predicted 3D skeleton
-    # 10-12. Predicted 3D skeleton projected onto XY, XZ, YZ planes
-    
-    # first row: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
-    # second row: GT 3D skeleton, GT XY, GT XZ, GT YZ
-    # third row: Pred 3D skeleton, Pred XY, Pred XZ, Pred YZ
+    # Row 1: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
+    # Row 2: GT 3D skeleton, GT XY, GT XZ, GT YZ
+    # Row 3: Pred 3D skeleton, Pred XY, Pred XZ, Pred YZ
+    # Row 4: RGB+GT overlay, Depth+GT overlay, RGB+Pred overlay, Depth+Pred overlay
 
     bones = None
     if skl_format == 'h36m':
@@ -123,20 +162,25 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     elif skl_format == 'smpl':
         bones = SMPLSkeleton.bones
 
-    fig = plt.figure(figsize=(16, 12))
+    fig = plt.figure(figsize=(16, 16))
     axes = []
     is_3d = [
         False, False, True, True,
         True, False, False, False,
-        True, False, False, False
+        True, False, False, False,
+        False, False, False, False
     ]
 
-    for i in range(12):
-        ax = fig.add_subplot(3, 4, i+1, projection='3d' if is_3d[i] else None)
+    for i in range(16):
+        ax = fig.add_subplot(4, 4, i+1, projection='3d' if is_3d[i] else None)
         axes.append(ax)
 
     sample_idx = 0  # visualize the first sample in the batch
     plot_idx = 0
+    
+    # Store RGB and depth images for later overlay
+    rgb_image = None
+    depth_image = None
 
     # RGB image
     if 'input_rgb' in batch and batch['input_rgb'] is not None:
@@ -145,14 +189,35 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             rgb_image = denormalize(rgb_image, denorm_params['rgb_mean'], denorm_params['rgb_std'])
         axes[plot_idx].imshow(rgb_image)
         axes[plot_idx].set_title('RGB Image')
+        axes[plot_idx].axis('off')
     plot_idx += 1
     # Depth image
     if 'input_depth' in batch and batch['input_depth'] is not None:
-        depth_image = batch['input_depth'][sample_idx][-1].permute(1, 2, 0).squeeze().cpu().numpy()
+        depth_image = batch['input_depth'][sample_idx][-1].permute(1, 2, 0).cpu().numpy()
         if denorm_params is not None:
             depth_image = denormalize(depth_image, denorm_params['depth_mean'], denorm_params['depth_std'])
-        axes[plot_idx].imshow(depth_image, cmap='gray')
+        
+        # Handle both single-channel and 3-channel depth images
+        if depth_image.shape[-1] == 3:
+            # Take first channel if it's 3-channel (MMFi case)
+            depth_image = depth_image[:, :, 0]
+        else:
+            depth_image = depth_image.squeeze()
+        
+        # Invert depth if specified (MMFi case where high values = close)
+        if denorm_params and denorm_params.get('depth_invert', False):
+            depth_image = 255.0 - depth_image
+        
+        # Normalize depth for better visualization
+        depth_nonzero = depth_image[depth_image > 0]
+        if len(depth_nonzero) > 0:
+            vmin, vmax = np.percentile(depth_nonzero, [2, 98])
+            depth_image_vis = np.clip(depth_image, vmin, vmax)
+        else:
+            depth_image_vis = depth_image
+        axes[plot_idx].imshow(depth_image_vis, cmap='jet')
         axes[plot_idx].set_title('Depth Image')
+        axes[plot_idx].axis('off')
     plot_idx += 1
     # LiDAR point cloud
     if 'input_lidar' in batch and batch['input_lidar'] is not None:
@@ -203,6 +268,153 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
         axes[plot_idx].set_title(f'Predicted {plane} Projection')
         plot_idx += 1
+
+    # Row 4: Overlay 2D projections on RGB and Depth images
+    anchor_key = batch.get('anchor_key', ['input_rgb'])[sample_idx] if isinstance(batch.get('anchor_key', ['input_rgb']), list) else batch.get('anchor_key', 'input_rgb')
+    
+    # RGB image with GT projected 2D keypoints
+    if rgb_image is not None and 'rgb_camera' in batch:
+        rgb_camera = batch['rgb_camera'][sample_idx]
+        intrinsic = rgb_camera['intrinsic']
+        extrinsic = rgb_camera['extrinsic']
+        
+        if not isinstance(intrinsic, np.ndarray):
+            intrinsic = intrinsic.cpu().numpy()
+        if not isinstance(extrinsic, np.ndarray):
+            extrinsic = extrinsic.cpu().numpy()
+        
+        # Transform keypoints if anchor is not RGB
+        gt_keypoints_for_rgb = gt_keypoints_3d.copy()
+        if anchor_key != 'input_rgb':
+            # Need to transform from anchor frame to RGB frame
+            # Convert 3x4 to 4x4
+            extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+            # Transform to RGB camera space
+            gt_keypoints_hom = np.hstack([gt_keypoints_for_rgb, np.ones((gt_keypoints_for_rgb.shape[0], 1))])
+            gt_keypoints_rgb_hom = (extrinsic_4x4 @ gt_keypoints_hom.T).T
+            gt_keypoints_for_rgb = gt_keypoints_rgb_hom[:, :3]
+        
+        # Project 3D keypoints to 2D
+        keypoints_2d = project_3d_to_2d(gt_keypoints_for_rgb, intrinsic)
+        
+        # Plot RGB with 2D skeleton overlay
+        plot_2d_skeleton_on_image(axes[plot_idx], rgb_image.copy(), keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('RGB + GT 2D Overlay')
+    plot_idx += 1
+    
+    # Depth image with GT projected 2D keypoints
+    if depth_image is not None and 'depth_camera' in batch:
+        depth_camera = batch['depth_camera'][sample_idx]
+        intrinsic = depth_camera['intrinsic']
+        extrinsic = depth_camera['extrinsic']
+        
+        if not isinstance(intrinsic, np.ndarray):
+            intrinsic = intrinsic.cpu().numpy()
+        if not isinstance(extrinsic, np.ndarray):
+            extrinsic = extrinsic.cpu().numpy()
+        
+        # Transform keypoints if anchor is not depth
+        gt_keypoints_for_depth = gt_keypoints_3d.copy()
+        if anchor_key != 'input_depth':
+            # Need to transform from anchor frame to depth frame
+            # Convert 3x4 to 4x4
+            extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+            # Transform to depth camera space
+            gt_keypoints_hom = np.hstack([gt_keypoints_for_depth, np.ones((gt_keypoints_for_depth.shape[0], 1))])
+            gt_keypoints_depth_hom = (extrinsic_4x4 @ gt_keypoints_hom.T).T
+            gt_keypoints_for_depth = gt_keypoints_depth_hom[:, :3]
+        
+        # Project 3D keypoints to 2D
+        keypoints_2d = project_3d_to_2d(gt_keypoints_for_depth, intrinsic)
+        
+        # Handle both single-channel and 3-channel depth images
+        depth_for_overlay = depth_image.copy()
+        if depth_for_overlay.ndim == 3 and depth_for_overlay.shape[-1] == 3:
+            depth_for_overlay = depth_for_overlay[:, :, 0]
+        
+        # Convert grayscale to RGB for overlay with better contrast
+        depth_nonzero = depth_for_overlay[depth_for_overlay > 0]
+        if len(depth_nonzero) > 0:
+            vmin, vmax = np.percentile(depth_nonzero, [2, 98])
+            depth_image_norm = np.clip((depth_for_overlay - vmin) / (vmax - vmin + 1e-6) * 255, 0, 255).astype(np.uint8)
+        else:
+            depth_image_norm = depth_for_overlay.astype(np.uint8)
+        depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
+        
+        # Plot depth with 2D skeleton overlay
+        plot_2d_skeleton_on_image(axes[plot_idx], depth_image_rgb, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('Depth + GT 2D Overlay')
+    plot_idx += 1
+    
+    # RGB image with Pred projected 2D keypoints
+    if rgb_image is not None and 'rgb_camera' in batch:
+        rgb_camera = batch['rgb_camera'][sample_idx]
+        intrinsic = rgb_camera['intrinsic']
+        extrinsic = rgb_camera['extrinsic']
+        
+        if not isinstance(intrinsic, np.ndarray):
+            intrinsic = intrinsic.cpu().numpy()
+        if not isinstance(extrinsic, np.ndarray):
+            extrinsic = extrinsic.cpu().numpy()
+        
+        # Transform keypoints if anchor is not RGB
+        pred_keypoints_for_rgb = pred_keypoints_3d.copy()
+        if anchor_key != 'input_rgb':
+            # Need to transform from anchor frame to RGB frame
+            extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+            pred_keypoints_hom = np.hstack([pred_keypoints_for_rgb, np.ones((pred_keypoints_for_rgb.shape[0], 1))])
+            pred_keypoints_rgb_hom = (extrinsic_4x4 @ pred_keypoints_hom.T).T
+            pred_keypoints_for_rgb = pred_keypoints_rgb_hom[:, :3]
+        
+        # Project 3D keypoints to 2D
+        keypoints_2d = project_3d_to_2d(pred_keypoints_for_rgb, intrinsic)
+        
+        # Plot RGB with 2D skeleton overlay
+        plot_2d_skeleton_on_image(axes[plot_idx], rgb_image.copy(), keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('RGB + Pred 2D Overlay')
+    plot_idx += 1
+    
+    # Depth image with Pred projected 2D keypoints
+    if depth_image is not None and 'depth_camera' in batch:
+        depth_camera = batch['depth_camera'][sample_idx]
+        intrinsic = depth_camera['intrinsic']
+        extrinsic = depth_camera['extrinsic']
+        
+        if not isinstance(intrinsic, np.ndarray):
+            intrinsic = intrinsic.cpu().numpy()
+        if not isinstance(extrinsic, np.ndarray):
+            extrinsic = extrinsic.cpu().numpy()
+        
+        # Transform keypoints if anchor is not depth
+        pred_keypoints_for_depth = pred_keypoints_3d.copy()
+        if anchor_key != 'input_depth':
+            # Need to transform from anchor frame to depth frame
+            extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+            pred_keypoints_hom = np.hstack([pred_keypoints_for_depth, np.ones((pred_keypoints_for_depth.shape[0], 1))])
+            pred_keypoints_depth_hom = (extrinsic_4x4 @ pred_keypoints_hom.T).T
+            pred_keypoints_for_depth = pred_keypoints_depth_hom[:, :3]
+        
+        # Project 3D keypoints to 2D
+        keypoints_2d = project_3d_to_2d(pred_keypoints_for_depth, intrinsic)
+        
+        # Handle both single-channel and 3-channel depth images
+        depth_for_overlay = depth_image.copy()
+        if depth_for_overlay.ndim == 3 and depth_for_overlay.shape[-1] == 3:
+            depth_for_overlay = depth_for_overlay[:, :, 0]
+        
+        # Convert grayscale to RGB for overlay with better contrast
+        depth_nonzero = depth_for_overlay[depth_for_overlay > 0]
+        if len(depth_nonzero) > 0:
+            vmin, vmax = np.percentile(depth_nonzero, [2, 98])
+            depth_image_norm = np.clip((depth_for_overlay - vmin) / (vmax - vmin + 1e-6) * 255, 0, 255).astype(np.uint8)
+        else:
+            depth_image_norm = depth_for_overlay.astype(np.uint8)
+        depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
+        
+        # Plot depth with 2D skeleton overlay
+        plot_2d_skeleton_on_image(axes[plot_idx], depth_image_rgb, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('Depth + Pred 2D Overlay')
+    plot_idx += 1
 
     plt.tight_layout()
     return fig
