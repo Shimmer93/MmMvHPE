@@ -146,7 +146,11 @@ class TransformerAggregator(nn.Module):
         register_tokens_normal, register_tokens_anchor = self.expand_special_tokens(self.register_token, B, T)
 
         # Concatenate special tokens with patch tokens
-        anchor_idx = self.anchor_map.get(kwargs.get('anchor_key', None), -1)
+        anchor_key = kwargs.get('anchor_key', None)
+        # Handle batched anchor_key (list) - take first element since it should be same for all in batch
+        if isinstance(anchor_key, (list, tuple)):
+            anchor_key = anchor_key[0] if len(anchor_key) > 0 else None
+        anchor_idx = self.anchor_map.get(anchor_key, -1)
 
         features_list = []
         Ns = []
