@@ -15,7 +15,7 @@ from modules.mamba import *
 from modules.utils_mamba import Group, Encoder
 from modules.point_4d_convolution import *
 
-class MAMBA4D(nn.Module):
+class MAMBA4DEncoder(nn.Module):
     def __init__(self, radius, nsamples, spatial_stride,                                # P4DConv: spatial
                  temporal_kernel_size, temporal_stride,                                 # P4DConv: temporal
                  emb_relu,                                                              # embedding: relu
@@ -53,15 +53,26 @@ class MAMBA4D(nn.Module):
                             drop_out_in_block=drop_out_in_block,
                             drop_path=drop_path)
 
-        self.mlp_head = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, mlp_dim),
-            nn.GELU(),
-            nn.Linear(mlp_dim, num_classes),
-        )
+        # self.mlp_head = nn.Sequential(
+        #     nn.LayerNorm(dim),
+        #     nn.Linear(dim, mlp_dim),
+        #     nn.GELU(),
+        #     nn.Linear(mlp_dim, num_classes),
+        # )
 
     def forward(self, input):                                                                                                               # [B, L, N, 3]
         device = input.get_device()
+
+        if self.mode == 'only_h':
+            input_feat = input[:,:,:,2:3].clone()
+        elif self.mode == 'xyz':
+            input_feat = input[:,:,:,:3].clone()
+        elif self.mode == 'd':
+            input_feat = input[:,:,:,3:4].clone()
+        elif self.mode == 'all':
+            input_feat = input[:,:,:,3:5].clone()
+        xyzs, features = self.tube_embedding(input[:,:,:,:3], input_feat.permute(0,1,3,2))
+
         xyzs, features = self.tube_embedding(input)                                                                                         # [B, L, n, 3], [B, L, C, n] 
 
         xyzts = []
@@ -109,7 +120,8 @@ class MAMBA4D(nn.Module):
             embedding = self.emb_relu(embedding)
 
         output = self.mambaBlocks(embedding)
-        output = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
-        output = self.mlp_head(output)
+        output = output.reshape(B, L, -1, output.shape[-1])  # B L N C
+        # output = torch.max(input=output, dim=1, keepdim=False, out=None)[0]
+        # output = self.mlp_head(output)
 
         return output

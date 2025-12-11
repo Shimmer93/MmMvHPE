@@ -66,8 +66,8 @@ def set_2d_ax_limits(ax, bounds, dims=[0, 1], padding=0.1):
     bounds_arr = np.array([min_x, max_x, min_y, max_y, min_z, max_z])
     ax.set_aspect('equal')
     
-    min_vals = bounds_arr[::2][dims]
-    max_vals = bounds_arr[1::2][dims]
+    min_vals = bounds_arr[np.array(dims) * 2]
+    max_vals = bounds_arr[np.array(dims) * 2 + 1]
     ranges = max_vals - min_vals
     
     ax.set_xlim(min_vals[0] - padding * ranges[0], max_vals[0] + padding * ranges[0])

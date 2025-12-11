@@ -34,7 +34,7 @@ def _process_single_sample(args):
     cv2.imwrite(out_rgb_fn, rgb_img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
 
     # Process Depth
-    depth_img = cv2.imread(depth_fn, cv2.IMREAD_UNCHANGED)
+    depth_img = cv2.imread(depth_fn)
     if depth_img is None:
         return
     depth_img = cv2.resize(depth_img, depth_out_size, interpolation=cv2.INTER_NEAREST)
@@ -89,7 +89,7 @@ def preprocess_mmfi(root_dir, rgb_dir, out_dir, rgb_out_size, depth_out_size, nu
 
 if __name__ == '__main__':
     root_dir = '/data/shared/MMFi_Dataset'
-    rgb_dir = '/data/shared/MMFi_rgb_Dataset'
+    rgb_dir = '/data/shared/MMFi_Defaced_RGB'
     out_dir = 'data/mmfi'
     rgb_out_size = (256, 192)
     depth_out_size = (256, 192)

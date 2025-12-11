@@ -7,8 +7,9 @@ import os
 import torch
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, LearningRateMonitor
-from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.strategies.ddp import DDPStrategy
+import wandb
 
 from datasets.data_api import LitDataModule
 from models.model_api import LitModel
@@ -43,11 +44,22 @@ def main(args):
         LearningRateMonitor(logging_interval='step')
     ]
 
-    logger = TensorBoardLogger(
-                    save_dir='logs', 
-                    name=args.exp_name,
-                    version=args.version,
-                    default_hp_metric=False)
+    if args.use_wandb:
+        logger = WandbLogger(
+            project=args.exp_name,
+            name=args.version,
+            save_dir='logs',
+            offline=args.wandb_offline,
+            log_model=False,
+            job_type='test' if args.test or args.predict else 'train'
+        )
+    else:
+        logger = TensorBoardLogger(
+            save_dir='logs', 
+            name=args.exp_name,
+            version=args.version,
+            default_hp_metric=False
+        )
     logger.log_hyperparams(args)
 
     trainer_kwargs = {
@@ -108,6 +120,9 @@ def main(args):
         if args.dev == 0:
             trainer.test(ckpt_path="best", datamodule=dm)
 
+    if args.use_wandb:
+        wandb.finish()
+
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('-c', '--cfg', type=str, default='cfg/test.yaml')
@@ -124,12 +139,15 @@ if __name__ == '__main__':
     parser.add_argument('--pin_memory', action='store_true')
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--save_test_preds', action='store_true')
     parser.add_argument('--predict', action='store_true')
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--exp_name', type=str, default='fasternet')
     parser.add_argument("--version", type=str, default="0")
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--compile', action='store_true', help='Use torch.compile (PyTorch 2.0+)')
+    parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases logger')
+    parser.add_argument('--wandb_offline', action='store_true', help='Run wandb in offline mode')
 
     args = parser.parse_args()
     cfg = load_cfg(args.cfg)

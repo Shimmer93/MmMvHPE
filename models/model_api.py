@@ -6,9 +6,12 @@ import os
 import pickle
 from einops import rearrange
 import matplotlib.pyplot as plt
+import wandb
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
+from misc.smpl import SMPL
+from misc.utils import torch2numpy
 
 class LitModel(L.LightningModule):
 
@@ -42,6 +45,9 @@ class LitModel(L.LightningModule):
             self.load_state_dict(torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict'], strict=False)
 
         self.metrics = {metric['name']: create_metric(metric['name'], metric['params']) for metric in hparams.metrics}
+
+        if self.hparams.save_test_preds:
+            self.test_preds = []
 
     @property
     def with_rgb(self):
@@ -179,7 +185,7 @@ class LitModel(L.LightningModule):
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
         if batch_idx == 0:
-            self.visualize(batch, pred_dict)
+            self.visualize(batch, pred_dict, stage="val")
 
     def test_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
@@ -200,9 +206,9 @@ class LitModel(L.LightningModule):
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
         num_batches = sum(self.trainer.num_test_batches) # list of ints
-        visualize_interval = max(1, num_batches // 20)
+        visualize_interval = max(1, num_batches // 5)
         if batch_idx in range(0, num_batches, visualize_interval):
-            self.visualize(batch, pred_dict)
+            self.visualize(batch, pred_dict, stage="test", batch_idx=batch_idx)
     
     def predict_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
@@ -218,11 +224,80 @@ class LitModel(L.LightningModule):
 
         return pred_dict
 
-    def visualize(self, batch, pred_dict):
+        if self.hparams.save_test_preds:
+            batch_size = len(batch['sample_id'])
+            for i in range(batch_size):
+                self.test_preds.append({
+                    'sample_id': batch['sample_id'][i],
+                    'pred_cameras': torch2numpy(pred_dict['pred_cameras'][i]) if 'pred_cameras' in pred_dict else None,
+                    'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
+                    'gt_keypoints': torch2numpy(batch['gt_keypoints'][i]) if 'gt_keypoints' in batch else None
+                })
+
+    def on_test_epoch_end(self):
+        if not self.hparams.save_test_preds:
+            return
+
+        # save local preds to tmp and gather later
+        tmp_path = os.path.join(self.trainer.default_root_dir, f'tmp_test_preds_rank_{self.global_rank}.pkl')
+        with open(tmp_path, 'wb') as f:
+            pickle.dump(self.test_preds, f)
+        self.test_preds = []  # free memory
+
+        # Synchronize all processes
+        if hasattr(self.trainer.strategy, 'barrier'):
+            self.trainer.strategy.barrier()
+
+        if self.global_rank == 0:
+            # gather all preds
+            gathered_preds = []
+            for rank in range(self.trainer.world_size):
+                tmp_path = os.path.join(self.trainer.default_root_dir, f'tmp_test_preds_rank_{rank}.pkl')
+                with open(tmp_path, 'rb') as f:
+                    preds_rank = pickle.load(f)
+                    gathered_preds.extend(preds_rank)
+                os.remove(tmp_path)  # clean up
+
+            # Build final predictions dictionary
+            final_preds = {'sample_ids': [item['sample_id'] for item in gathered_preds]}
+            
+            # Check and stack each prediction type
+            has_cameras = any(item['pred_cameras'] is not None for item in gathered_preds)
+            has_pred_keypoints = any(item['pred_keypoints'] is not None for item in gathered_preds)
+            has_gt_keypoints = any(item['gt_keypoints'] is not None for item in gathered_preds)
+            
+            final_preds['pred_cameras'] = np.stack([item['pred_cameras'] for item in gathered_preds]) if has_cameras else None
+            final_preds['pred_keypoints'] = np.stack([item['pred_keypoints'] for item in gathered_preds]) if has_pred_keypoints else None
+            final_preds['gt_keypoints'] = np.stack([item['gt_keypoints'] for item in gathered_preds]) if has_gt_keypoints else None
+
+            # sort by sample_ids
+            sorted_indices = np.argsort(final_preds['sample_ids'])
+            final_preds['sample_ids'] = [final_preds['sample_ids'][i] for i in sorted_indices]
+            
+            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints']:
+                if final_preds[key] is not None:
+                    final_preds[key] = final_preds[key][sorted_indices]
+
+            save_path = os.path.join('logs', self.hparams.exp_name, self.hparams.version, f'{self.hparams.model_name}_test_predictions.pkl')
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, 'wb') as f:
+                pickle.dump(final_preds, f)
+            print(f'Saved test predictions to {save_path}')
+
+    def visualize(self, batch, pred_dict, stage="val", batch_idx=None):
         skl_format = self.hparams.vis_skl_format if hasattr(self.hparams, 'vis_skl_format') else None
         vis_denorm_params = self.hparams.vis_denorm_params if hasattr(self.hparams, 'vis_denorm_params') else None
         fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params)
-        self.logger.experiment.add_figure('visualization', fig, global_step=self.global_step)
+
+        if batch_idx is None:
+            tag = f"{stage}_visualization"
+        else:
+            tag = f"{stage}_visualization/batch_{batch_idx}"
+
+        if self.hparams.use_wandb:
+            self.logger.log_image(key=tag, images=[fig])
+        else:
+            self.logger.experiment.add_figure(tag, fig, global_step=self.global_step)
         plt.close(fig)
 
     def configure_optimizers(self):
