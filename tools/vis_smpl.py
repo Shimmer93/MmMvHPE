@@ -7,14 +7,28 @@ import os.path as osp
 import rerun as rr
 import time
 
-from third_party.Pose_to_SMPL import SMPL
+import sys
+import os.path as osp
+sys.path.append(osp.dirname(osp.dirname(osp.abspath(__file__))))
+from models import SMPL
 
-def load_pred_file(pred_file):
+def load_pred_file(pred_file, pred_smpl_file):
     preds = load(pred_file)
+    preds_smpl = load(pred_smpl_file)
+    min_len = len(preds['sample_ids'])
+
+    for key in preds_smpl:
+        if (key not in preds or preds[key] is None) and preds_smpl[key] is not None:
+            preds[key] = preds_smpl[key]
+            min_len = min(min_len, len(preds[key]))
+    for key in preds:
+        if preds[key] is not None:
+            preds[key] = preds[key][:min_len]
+
     sorted_indices = np.argsort(preds['sample_ids'])
     preds['sample_ids'] = [preds['sample_ids'][i] for i in sorted_indices]
 
-    for key in ['pred_cameras', 'pred_keypoints', 'pred_pose', 'pred_beta', 'pred_center',
+    for key in ['pred_keypoints', 'pred_pose', 'pred_beta', 'pred_center',
         'gt_keypoints', 'gt_pose', 'gt_beta', 'gt_center']:
         if key in preds and preds[key] is not None:
             preds[key] = preds[key][sorted_indices]
@@ -166,13 +180,14 @@ def vis_batch_in_rerun(input_data, output_data, faces, port=8097):
         print("\nShutting down visualization server.")
 
 if __name__ == '__main__':
-    pred_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev/20251210_001128/TestModel_1208_test_predictions_smpl.pkl'
+    pred_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev/20251210_001128/TestModel_1208_test_predictions.pkl'
+    pred_smpl_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev/20251210_001128/TestModel_1208_test_predictions_smpl2.pkl'
     data_root = '/home/zpengac/mmhpe/MmMvHPE/data/mmfi'
     dataset = 'mmfi_preproc'
 
-    preds = load_pred_file(pred_file)
+    preds = load_pred_file(pred_file, pred_smpl_file)
 
-    smpl_model = SMPL(model_path='/home/zpengac/mmhpe/Pose_to_SMPL/smplpytorch/native/models/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl')
+    smpl_model = SMPL(model_path='/home/zpengac/mmhpe/MmMvHPE/weights/basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl')
     faces = smpl_model.th_faces.numpy()
 
     batch_size = 32
