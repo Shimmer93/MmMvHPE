@@ -3,6 +3,7 @@ from argparse import Namespace
 from collections import OrderedDict
 import time
 from contextlib import contextmanager
+import pickle
 
 def load_cfg(cfg):
     hyp = None
@@ -39,3 +40,12 @@ def timer(name):
     yield
     elapsed = (time.perf_counter() - start) * 1000
     print(f"{name}: {elapsed:.2f} ms")
+
+def load(file_path):
+    with open(file_path, 'rb') as f:
+        data = pickle.load(f)
+    return data
+
+def dump(data, file_path):
+    with open(file_path, 'wb') as f:
+        pickle.dump(data, f)

@@ -1,16 +1,25 @@
 import cv2
-from mmengine import load
 import numpy as np
 import torch
 import os
 import os.path as osp
 import rerun as rr
 import time
+from tqdm import tqdm
+try:
+    from segment_anything import sam_model_registry, SamPredictor
+    from ultralytics import YOLO
+    SAM_AVAILABLE = True
+except ImportError:
+    print("Please install segment_anything and ultralytics packages to use the masking functionality.")
+    SAM_AVAILABLE = False
 
 import sys
 import os.path as osp
 sys.path.append(osp.dirname(osp.dirname(osp.abspath(__file__))))
 from models import SMPL
+from misc.skeleton import H36MSkeleton
+from misc.utils import load
 
 def load_pred_file(pred_file, pred_smpl_file):
     preds = load(pred_file)
@@ -20,7 +29,7 @@ def load_pred_file(pred_file, pred_smpl_file):
     for key in preds_smpl:
         if (key not in preds or preds[key] is None) and preds_smpl[key] is not None:
             preds[key] = preds_smpl[key]
-            min_len = min(min_len, len(preds[key]))
+    #         min_len = min(min_len, len(preds[key]))
     for key in preds:
         if preds[key] is not None:
             preds[key] = preds[key][:min_len]
@@ -67,6 +76,45 @@ def get_input_data(sample_id, dataset='mmfi_preproc', data_root='data/mmfi'):
         case _:
             raise NotImplementedError(f'Unknown dataset: {dataset}')
 
+def mask_image(batch_imgs, model_type='vit_b', model_path='weights/sam_vit_b_01ec64.pth'):
+    # batch_imgs: B x H x W x 3 (RGB) numpy array
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # 1. Load Models
+    yolo_model = YOLO('yolov8n.pt')  # Pretrained YOLOv8n model
+
+    sam_checkpoint = model_path
+    sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+    sam.to(device=device)
+    predictor = SamPredictor(sam)
+
+    batch_masks = []
+    for img in tqdm(batch_imgs):
+        # 2. Run YOLO Detection
+        results = yolo_model(img, classes=[0], max_det=1, verbose=False)  # Person class only
+
+        if len(results[0].boxes) == 0:
+            # No person detected, return empty box
+            box = np.array([0, 0, img.shape[1], img.shape[0]])
+        else:
+            box = results[0].boxes.xyxy.cpu().numpy()[0]  # Get the best box
+
+        # 3. Generate Mask with SAM
+        predictor.set_image(img)
+        masks, _, _ = predictor.predict(
+            box=box,
+            multimask_output=False
+        )
+        single_mask = masks[0]  # Shape: [H, W]
+        batch_masks.append(single_mask)
+
+    batch_masks = np.stack(batch_masks, axis=0)  # B x H x W
+    
+    # keep only the person region
+    new_imgs = batch_imgs * batch_masks[:, :, :, np.newaxis]
+
+    return new_imgs
+
 def process_batch(smpl_model: SMPL, batch, meta, dataset='mmfi', data_root='data/mmfi'):
     batch_ids = batch['sample_ids']
     batch_gt_pose = batch['gt_pose']
@@ -82,6 +130,7 @@ def process_batch(smpl_model: SMPL, batch, meta, dataset='mmfi', data_root='data
     batch_pred_verts = get_verts(smpl_model, batch_pred_pose, batch_pred_beta)
     batch_pred_verts /= meta['pred_rot'][np.newaxis, np.newaxis, :]
     batch_pred_verts += batch['pred_center'][:, np.newaxis, :]
+    batch_pred_verts[..., 1] -= 0.2  # lift up a bit for better visualization
 
     input_data = {'rgb': [], 'depth': [], 'lidar': [], 'mmwave': []}
     for id in batch_ids:
@@ -123,55 +172,98 @@ def compute_vertex_normals(vertices, faces):
     
     return normals
 
-def vis_batch_in_rerun(input_data, output_data, faces, port=8097):
+def compute_edge_segments(kps, edges):
+    # kps: B x N x 3
+    # edges: M x 2
+    edges = np.array(edges)
+    batch_size = kps.shape[0]
+    edge_segments = np.zeros((batch_size, edges.shape[0], 2, 3))
+    # for i in range(batch_size):
+    edge_segments[:, :, 0, :] = kps[:, edges[:, 0], :]
+    edge_segments[:, :, 1, :] = kps[:, edges[:, 1], :]
+    return edge_segments
+
+def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
     rr.init("mmhpe_visualization")
     server_uri = rr.serve_grpc(grpc_port=port+1)
     rr.serve_web_viewer(web_port=port, open_browser=False, connect_to=server_uri)
 
-    rr.log("gt_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
-    rr.log("pred_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
-    rr.log("lidar_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
-    rr.log("mmwave_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
+    rr.log("pred_smpl_world_front", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
+    rr.log("pred_smpl_world_side", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
+    # rr.log("gt_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    # rr.log("pred_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    rr.log("lidar_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    rr.log("mmwave_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+
+    if SAM_AVAILABLE:
+        segs = mask_image(np.array(input_data['rgb']))
 
     # Set a nice skin-tone color
     num_verts = output_data['gt_verts'][0].shape[0]
     vertex_colors = np.ones((num_verts, 4), dtype=np.uint8)
     vertex_colors[:, :3] = [220, 180, 150]  # RGB skin tone
-    vertex_colors[:, 3] = 255  # Alpha
+    vertex_colors[:, 3] = 64  # Alpha
+
+    pred_bones = compute_edge_segments(output_data['pred_kps'], edges)
 
     for frame_idx in range(len(output_data['gt_verts'])):
         rr.set_time(timeline='time', sequence=frame_idx)
+
+        # Log images
+        rr.log("rgb", rr.Image(input_data['rgb'][frame_idx]))
+        # rr.log("depth", rr.Image(input_data['depth'][frame_idx]))
+        if SAM_AVAILABLE:
+            rr.log("segmented_rgb", rr.Image(segs[frame_idx]))
+        
+        # Log point clouds
+        rr.log("lidar_world/lidar", rr.Points3D(input_data['lidar'][frame_idx]))
+        rr.log("mmwave_world/mmwave", rr.Points3D(input_data['mmwave'][frame_idx][:, :3], radii=0.03, colors=[225,184,230]))
 
         # Compute normals for this frame
         gt_normals = compute_vertex_normals(output_data['gt_verts'][frame_idx], faces)
         pred_normals = compute_vertex_normals(output_data['pred_verts'][frame_idx], faces)
         
         # Log mesh with normals
-        rr.log("gt_smpl_world/smpl_mesh", rr.Mesh3D(
-            vertex_positions=output_data['gt_verts'][frame_idx],
-            triangle_indices=faces,
-            vertex_normals=gt_normals,
-            vertex_colors=vertex_colors,
-            albedo_factor=[0.8, 0.8, 0.8, 1.0],
-        ))
-        rr.log("gt_smpl_world/gt_keypoints", rr.Points3D(output_data['gt_kps'][frame_idx][:, :3]))
-
-        rr.log("pred_smpl_world/smpl_mesh", rr.Mesh3D(
+        # rr.log("gt_smpl_world/smpl_mesh", rr.Mesh3D(
+            # vertex_positions=output_data['gt_verts'][frame_idx],
+        rr.log("pred_smpl_world_front/smpl_mesh", rr.Mesh3D(
             vertex_positions=output_data['pred_verts'][frame_idx],
             triangle_indices=faces,
             vertex_normals=pred_normals,
-            vertex_colors=vertex_colors,
-            albedo_factor=[0.8, 0.8, 0.8, 1.0],
+            # vertex_colors=vertex_colors,
+            albedo_factor=[1.0, 1.0, 1.0, 0.3],
         ))
-        rr.log("pred_smpl_world/pred_keypoints", rr.Points3D(output_data['pred_kps'][frame_idx][:, :3]))
+        # rr.log("gt_smpl_world/gt_keypoints", rr.Points3D(output_data['gt_kps'][frame_idx][:, :3]))
+        rr.log("pred_smpl_world_front/pred_keypoints", rr.Points3D(
+            output_data['pred_kps'][frame_idx][:, :3],
+            colors=[0, 127, 127],
+            radii=0.01,
+        ))
+        rr.log("pred_smpl_world_front/pred_skeleton", rr.LineStrips3D(
+            strips=pred_bones[frame_idx],
+            colors=[0, 127, 127],
+        ))
+
+        # rr.log("pred_smpl_world/smpl_mesh", rr.Mesh3D(
+        #     vertex_positions=output_data['pred_verts'][frame_idx],
+        rr.log("pred_smpl_world_side/smpl_mesh", rr.Mesh3D(
+            vertex_positions=output_data['pred_verts'][frame_idx],
+            triangle_indices=faces,
+            vertex_normals=pred_normals,
+            # vertex_colors=vertex_colors,
+            albedo_factor=[1.0, 1.0, 1.0, 0.3],
+        ))
+        # rr.log("pred_smpl_world/pred_keypoints", rr.Points3D(output_data['pred_kps'][frame_idx][:, :3]))
+        rr.log("pred_smpl_world_side/pred_keypoints", rr.Points3D(
+            output_data['pred_kps'][frame_idx][:, :3],
+            colors=[0, 127, 127],
+            radii=0.01,
+        ))
+        rr.log("pred_smpl_world_side/pred_skeleton", rr.LineStrips3D(
+            strips=pred_bones[frame_idx],
+            colors=[0, 127, 127],
+        ))
         
-        # Log images
-        rr.log("rgb", rr.Image(input_data['rgb'][frame_idx]))
-        rr.log("depth", rr.Image(input_data['depth'][frame_idx]))
-        
-        # Log point clouds
-        rr.log("lidar_world/lidar", rr.Points3D(input_data['lidar'][frame_idx]))
-        rr.log("mmwave_world/mmwave", rr.Points3D(input_data['mmwave'][frame_idx][:, :3]))
 
     try:
         while True:
@@ -190,7 +282,10 @@ if __name__ == '__main__':
     smpl_model = SMPL(model_path='/home/zpengac/mmhpe/MmMvHPE/weights/basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl')
     faces = smpl_model.th_faces.numpy()
 
-    batch_size = 32
+    edges = H36MSkeleton.bones
+
+    batch_size = 297
+    i_batch = 0 # 0 90 160
     batch = {}
     meta = {}
     for key in preds:
@@ -198,7 +293,7 @@ if __name__ == '__main__':
             case 'gt_rot' | 'pred_rot':
                 meta[key] = preds[key]
             case _ if preds[key] is not None:
-                batch[key] = preds[key][0:batch_size]
+                batch[key] = preds[key][i_batch * batch_size : (i_batch + 1) * batch_size]
 
     input_data, output_data = process_batch(
         smpl_model,
@@ -208,4 +303,4 @@ if __name__ == '__main__':
         data_root=data_root,
     )
 
-    vis_batch_in_rerun(input_data, output_data, faces, port=8097)
+    vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097)
