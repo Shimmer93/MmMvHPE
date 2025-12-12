@@ -112,6 +112,10 @@ class H36MDataset(BaseDataset):
                     if camera_id not in self.cameras:
                         continue
 
+                    # Skip S5 SA4 and S7 SA15 (missing depth data)
+                    if (subject == "S5" and action_id == "04") or (subject == "S7" and action_id == "15"):
+                        continue
+
                     # Count available frames
                     frame_files = glob.glob(osp.join(seq_dir, "*.jpg"))
                     num_frames = len(frame_files)
