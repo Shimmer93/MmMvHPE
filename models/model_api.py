@@ -10,7 +10,6 @@ import wandb
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
-from misc.smpl import SMPL
 from misc.utils import torch2numpy
 
 class LitModel(L.LightningModule):
