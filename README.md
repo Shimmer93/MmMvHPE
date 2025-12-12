@@ -4,33 +4,17 @@ Multimodal Multiview Human Pose Estimation
 ## Installation
 
 ```bash
-conda create -n mmhpe python=3.10 -y
-conda activate mmhpe
+mamba create -n mmhpe python=3.12 -y
+mamba activate mmhpe
 
-conda install pytorch==2.2.0 torchvision==0.17.0 pytorch-cuda=11.8 lightning=2.1 -c pytorch -c conda-forge -c nvidia
+mamba install pytorch=2.5.1 torchvision=0.20.1 pytorch-cuda lightning uv -c conda-forge
 
-pip install -U openmim
-mim install mmengine
-mim install "mmcv==2.0.1"
-mim install "mmdet==3.1.0"
-
-pip install git+https://github.com/state-spaces/mamba.git
-
-pip install --no-build-isolation git+https://github.com/mattloper/chumpy
-mim install "mmpose==1.3.2"
+uv pip install scikit-learn einops tensorboard tensorboardX cdflib wandb rerun-sdk smplpytorch timm ultralytics rich opencv-python
+uv pip install --no-build-isolation git+https://github.com/mattloper/chumpy
+uv pip install git+https://github.com/facebookresearch/segment-anything.git
+uv pip install git+https://github.com/state-spaces/mamba.git # not needed for now, takes quite a long time to install
 
 cd models/pc_encoders/modules
-python setup.py install // adjust cuda and gcc version if needed
+python setup.py install # adjust cuda and gcc version if needed
 cd ../../..
-
-# pip install spconv-cu118
-# mkdir third_party
-# cd third_party
-# git clone https://github.com/open-mmlab/OpenPCDet.git
-# cd OpenPCDet
-# pip install -r requirements.txt
-# python setup.py develop
-# cd ../..
-
-pip install scikit-learn "numpy<2" "opencv-python<4.8" einops tensorboard tensorboardX cdflib wandb rerun smplpytorch
 ```
