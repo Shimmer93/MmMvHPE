@@ -122,7 +122,7 @@ aggregator:
     num_register_tokens: 4
     aa_order: ['single', 'global', 'cross']
     aa_block_size: 1
-    depth: 12
+    depth: 6
     block_type: 'Block'
     num_heads: 8
     mlp_ratio: 2.0

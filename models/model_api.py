@@ -209,6 +209,16 @@ class LitModel(L.LightningModule):
         if batch_idx in range(0, num_batches, visualize_interval):
             self.visualize(batch, pred_dict, stage="test", batch_idx=batch_idx)
     
+        if self.hparams.save_test_preds:
+            batch_size = len(batch['sample_id'])
+            for i in range(batch_size):
+                self.test_preds.append({
+                    'sample_id': batch['sample_id'][i],
+                    'pred_cameras': torch2numpy(pred_dict['pred_cameras'][i]) if 'pred_cameras' in pred_dict else None,
+                    'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
+                    'gt_keypoints': torch2numpy(batch['gt_keypoints'][i]) if 'gt_keypoints' in batch else None
+                })
+
     def predict_step(self, batch, batch_idx):
         feats = self.extract_features(batch)
         feats_agg = self.aggregate_features(feats, batch)
@@ -222,16 +232,6 @@ class LitModel(L.LightningModule):
             pred_dict['pred_keypoints'] = preds_keypoint
 
         return pred_dict
-
-        if self.hparams.save_test_preds:
-            batch_size = len(batch['sample_id'])
-            for i in range(batch_size):
-                self.test_preds.append({
-                    'sample_id': batch['sample_id'][i],
-                    'pred_cameras': torch2numpy(pred_dict['pred_cameras'][i]) if 'pred_cameras' in pred_dict else None,
-                    'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
-                    'gt_keypoints': torch2numpy(batch['gt_keypoints'][i]) if 'gt_keypoints' in batch else None
-                })
 
     def on_test_epoch_end(self):
         if not self.hparams.save_test_preds:
