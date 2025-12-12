@@ -5,5 +5,6 @@ from .regression_head import RegressionKeypointHead  # noqa: F401, F403
 __all__ = [
     'XFiRegressionHead',
     'VGGTCameraHead',
-    'RegressionKeypointHead'
+    'RegressionKeypointHead',
+    'RegressionCameraHead'
 ]

@@ -87,7 +87,7 @@ aggregator:
     num_register_tokens: 4
     aa_order: ['single', 'global', 'cross']
     aa_block_size: 1
-    depth: 12
+    depth: 6
     block_type: 'Block'
     num_heads: 8
     mlp_ratio: 2.0
@@ -106,16 +106,17 @@ keypoint_head:
         params: null
         weight: 1.0
 camera_head:
-  name: 'VGGTCameraHead'
+  name: 'RegressionCameraHead'
   params:
-    dim_in: 768
-    trunk_depth: 2
-    num_heads: 2
-    mlp_ratio: 1
+    emb_size: 768
+    num_params: 9
+    weight_trans: 1.0
+    weight_rot: 1.0
+    weight_focal: 0.5
     losses:
-      - name: 'MSELoss'
+      - name: 'L1Loss'
         params: null
-        weight: 0.3
+        weight: 1.0
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
