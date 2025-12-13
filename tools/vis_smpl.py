@@ -6,6 +6,9 @@ import os.path as osp
 import rerun as rr
 import time
 from tqdm import tqdm
+import pyvista as pv
+from PIL import Image
+import matplotlib.pyplot as plt
 try:
     from segment_anything import sam_model_registry, SamPredictor
     from ultralytics import YOLO
@@ -188,21 +191,13 @@ def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
     server_uri = rr.serve_grpc(grpc_port=port+1)
     rr.serve_web_viewer(web_port=port, open_browser=False, connect_to=server_uri)
 
-    rr.log("pred_smpl_world_front", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
-    rr.log("pred_smpl_world_side", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
     # rr.log("gt_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
-    # rr.log("pred_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    rr.log("pred_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
     rr.log("lidar_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
     rr.log("mmwave_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
 
     if SAM_AVAILABLE:
         segs = mask_image(np.array(input_data['rgb']))
-
-    # Set a nice skin-tone color
-    num_verts = output_data['gt_verts'][0].shape[0]
-    vertex_colors = np.ones((num_verts, 4), dtype=np.uint8)
-    vertex_colors[:, :3] = [220, 180, 150]  # RGB skin tone
-    vertex_colors[:, 3] = 64  # Alpha
 
     pred_bones = compute_edge_segments(output_data['pred_kps'], edges)
 
@@ -220,48 +215,38 @@ def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
         rr.log("mmwave_world/mmwave", rr.Points3D(input_data['mmwave'][frame_idx][:, :3], radii=0.03, colors=[225,184,230]))
 
         # Compute normals for this frame
-        gt_normals = compute_vertex_normals(output_data['gt_verts'][frame_idx], faces)
+        # gt_normals = compute_vertex_normals(output_data['gt_verts'][frame_idx], faces)
         pred_normals = compute_vertex_normals(output_data['pred_verts'][frame_idx], faces)
         
         # Log mesh with normals
         # rr.log("gt_smpl_world/smpl_mesh", rr.Mesh3D(
-            # vertex_positions=output_data['gt_verts'][frame_idx],
-        rr.log("pred_smpl_world_front/smpl_mesh", rr.Mesh3D(
-            vertex_positions=output_data['pred_verts'][frame_idx],
-            triangle_indices=faces,
-            vertex_normals=pred_normals,
-            # vertex_colors=vertex_colors,
-            albedo_factor=[1.0, 1.0, 1.0, 0.3],
-        ))
+        #     vertex_positions=output_data['gt_verts'][frame_idx],
+        #     triangle_indices=faces,
+        #     vertex_normals=pred_normals,
+        #     vertex_colors=vertex_colors,
+        #     albedo_factor=[1.0, 1.0, 1.0, 0.3],
+        # ))
         # rr.log("gt_smpl_world/gt_keypoints", rr.Points3D(output_data['gt_kps'][frame_idx][:, :3]))
-        rr.log("pred_smpl_world_front/pred_keypoints", rr.Points3D(
-            output_data['pred_kps'][frame_idx][:, :3],
-            colors=[0, 127, 127],
-            radii=0.01,
-        ))
-        rr.log("pred_smpl_world_front/pred_skeleton", rr.LineStrips3D(
-            strips=pred_bones[frame_idx],
-            colors=[0, 127, 127],
-        ))
 
-        # rr.log("pred_smpl_world/smpl_mesh", rr.Mesh3D(
-        #     vertex_positions=output_data['pred_verts'][frame_idx],
-        rr.log("pred_smpl_world_side/smpl_mesh", rr.Mesh3D(
+        # rr.log("pred_smpl_world/pred_skeleton", rr.LineStrips3D(
+        #     strips=pred_bones[frame_idx],
+        #     colors=[0, 127, 127],
+        # ))
+
+        rr.log("pred_smpl_world/smpl_mesh", rr.Mesh3D(
             vertex_positions=output_data['pred_verts'][frame_idx],
             triangle_indices=faces,
             vertex_normals=pred_normals,
-            # vertex_colors=vertex_colors,
-            albedo_factor=[1.0, 1.0, 1.0, 0.3],
+            albedo_factor=[0.86, 0.7, 0.59, 0.3],
         ))
-        # rr.log("pred_smpl_world/pred_keypoints", rr.Points3D(output_data['pred_kps'][frame_idx][:, :3]))
-        rr.log("pred_smpl_world_side/pred_keypoints", rr.Points3D(
+        rr.log("pred_smpl_world/pred_keypoints", rr.Points3D(
             output_data['pred_kps'][frame_idx][:, :3],
-            colors=[0, 127, 127],
-            radii=0.01,
+            colors=[0, 180, 180],
+            radii=0.02,
         ))
-        rr.log("pred_smpl_world_side/pred_skeleton", rr.LineStrips3D(
+        rr.log("pred_smpl_world/pred_skeleton", rr.LineStrips3D(
             strips=pred_bones[frame_idx],
-            colors=[0, 127, 127],
+            colors=[0, 180, 180],
         ))
         
 
@@ -285,7 +270,7 @@ if __name__ == '__main__':
     edges = H36MSkeleton.bones
 
     batch_size = 297
-    i_batch = 0 # 0 90 160
+    i_batch = 160 # 0 90 160
     batch = {}
     meta = {}
     for key in preds:

@@ -1,0 +1,190 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 10
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'MMFiPreprocessedDataset'
+  params:
+    data_root: &data_root 'data/mmfi'
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
+    split_to_use: &split_to_use 'random_split'
+    protocol: &protocol 'protocol3'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: false
+val_dataset:
+  name: 'MMFiPreprocessedDataset'
+  params:
+    data_root: *data_root
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: *split_config
+    split_to_use: *split_to_use
+    protocol: *protocol
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: true
+test_dataset:
+  name: 'MMFiPreprocessedDataset'
+  params:
+    data_root: *data_root
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: *split_config
+    split_to_use: *split_to_use
+    protocol: *protocol
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0001
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 2
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: TestModel_1213
+backbone_rgb:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+backbone_depth:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+backbone_lidar:
+  name: 'P4TEncoder'
+  params:
+    radius: 0.7
+    nsamples: 32
+    spatial_stride: 8
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    depth: 5
+    heads: 8
+    dim_head: 64
+    mlp_dim: 1024
+    features: 3
+    mode: 'xyz'
+  has_temporal: true
+backbone_mmwave:
+  name: 'P4TEncoder'
+  params:
+    radius: 0.7
+    nsamples: 32
+    spatial_stride: 8
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    depth: 5
+    heads: 8
+    dim_head: 64
+    mlp_dim: 1024
+    features: 2
+    mode: 'all'
+  has_temporal: true
+aggregator:
+  name: 'TransformerAggregatorV2'
+  params:
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 256
+    num_register_tokens: 4
+    aa_order: ['single', 'spatial', 'cross_2d_3d', 'cross_token', 'gcn']
+    aa_block_size: 1
+    depth: 5
+    block_type: 'Block'
+    skeleton_type: 'mmfi'
+    num_heads: 8
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
+    use_grad_ckpt: False
+    max_spatial_seq_len: 1000
+keypoint_head:
+  name: 'RegressionKeypointHeadV2'
+  params:
+    emb_size: 256
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  # - name: VideoResize
+  #   params:
+  #     size: [192, 256]
+  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'zero_one'
+      keys: ['input_depth']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: PCPad
+    params:
+      num_points: 256
+      pad_mode: 'repeat'
+      keys: ['input_mmwave']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0, 0.0, 0.0]
+  depth_std: [255.0, 255.0, 255.0]

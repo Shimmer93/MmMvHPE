@@ -10,7 +10,6 @@ import wandb
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
-from misc.smpl import SMPL
 from misc.utils import torch2numpy
 
 class LitModel(L.LightningModule):
@@ -160,6 +159,15 @@ class LitModel(L.LightningModule):
         for loss_name, (loss_value, loss_weight) in loss_dict.items():
             loss += loss_value * loss_weight
             log_dict[f'train_{loss_name}'] = loss_value
+            
+            if loss_name == 'attn_weights':
+                # Log attention weights to WandB
+                attn_weights = loss_value  # shape: B, M
+                avg_attn_weights = attn_weights.mean(dim=0)  # shape: M
+                for i, weight in enumerate(avg_attn_weights):
+                    log_dict[f'train_modality_{i}_attn_weight'] = weight.item()
+                if self.hparams.use_wandb:
+                    wandb.log({"train_attn_weights": wandb.Histogram(torch2numpy(avg_attn_weights))}, step=self.global_step)
 
         log_dict['train_loss'] = loss
 

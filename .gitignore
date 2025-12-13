@@ -4,6 +4,7 @@ play.ipynb
 logs
 data
 weights
+*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
