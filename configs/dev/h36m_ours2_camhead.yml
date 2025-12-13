@@ -134,7 +134,7 @@ metrics:
 train_pipeline: &train_pipeline
   - name: VideoResize
     params:
-      size: [480, 640]
+      size: [256, 256]
       keep_ratio: false
       keys: ['input_rgb', 'input_depth']
   - name: VideoNormalize
