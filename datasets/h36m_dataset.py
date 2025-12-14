@@ -19,6 +19,7 @@ class H36MDataset(BaseDataset):
     def __init__(
         self,
         data_root: str = "/data/shared/H36M-Toolbox",
+        unit: str = "m",
         pipeline: List[dict] = [],
         split: str = "train",
         modality_names: Sequence[str] = ["rgb", "depth"],
@@ -33,6 +34,7 @@ class H36MDataset(BaseDataset):
         super().__init__(pipeline=pipeline)
         self.h36m_root = data_root
         self.split = split
+        self.unit = unit
         self.seq_len = seq_len
         self.seq_step = seq_step
         self.causal = causal
@@ -59,6 +61,12 @@ class H36MDataset(BaseDataset):
             self.anchor_key = "input_rgb" if "rgb" in modality_names else f"input_{modality_names[0]}"
         else:
             self.anchor_key = anchor_key
+        # Validate unit
+        if unit not in {"mm", "m"}:
+            warnings.warn(
+                f"Invalid unit: {unit}. Defaulting to 'm'."
+            )
+            self.unit = "m"
 
         # Dataset paths
         self.images_root = f"{data_root}/images"
@@ -326,6 +334,10 @@ class H36MDataset(BaseDataset):
                 # Bring the skeleton to 17 joints instead of the original 32
                 joints_to_remove = [4, 5, 9, 10, 11, 16, 20, 21, 22, 23, 24, 28, 29, 30, 31]
                 gt_keypoints = np.delete(gt_keypoints, joints_to_remove, axis=0)
+            
+            # Convert to meters if specified
+            if self.unit == "m":
+                gt_keypoints = gt_keypoints / 1000.0
 
         else:
             # Raise error if pose data is missing
@@ -363,6 +375,9 @@ class H36MDataset(BaseDataset):
             cx = float(rgb_camera_param[3][0])
             cy = float(rgb_camera_param[3][1])
 
+            # Convert translation to meters if specified
+            T_scaled = T / 1000.0 if self.unit == "m" else T
+            
             rgb_camera_dict = {
                 "intrinsic": np.array(
                     [
@@ -372,7 +387,7 @@ class H36MDataset(BaseDataset):
                     ],
                     dtype=np.float32,
                 ),
-                "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
+                "extrinsic": np.hstack((R, T_scaled.reshape(3, 1))).astype(np.float32),
             }
 
         # Get depth camera parameters (assume same extrinsics as camera 02 for now, intrinsics calculated manually)
@@ -386,6 +401,10 @@ class H36MDataset(BaseDataset):
             fy = 231.2
             cx = 88.0
             cy = 72.0
+            
+            # Convert translation to meters if specified
+            T_scaled = T / 1000.0 if self.unit == "m" else T
+            
             depth_camera_dict = {
                 "intrinsic": np.array(
                     [
@@ -395,7 +414,7 @@ class H36MDataset(BaseDataset):
                     ],
                     dtype=np.float32,
                 ),
-                "extrinsic": np.hstack((R, T.reshape(3, 1))).astype(np.float32),
+                "extrinsic": np.hstack((R, T_scaled.reshape(3, 1))).astype(np.float32),
             }
 
         # Transform extrinsics and keypoints to anchor_key coordinate system
