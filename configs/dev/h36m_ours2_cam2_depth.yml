@@ -18,7 +18,7 @@ train_dataset:
     data_root: &data_root '/data/shared/H36M-Toolbox'
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['01','02','03','04']
+    cameras: ['02']
     split: "train"
     seq_len: 1       
     seq_step: 1
@@ -30,7 +30,7 @@ val_dataset:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['01','02','03','04']
+    cameras: ['02']
     split: "test"
     seq_len: 1
     seq_step: 1
@@ -42,7 +42,7 @@ test_dataset:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['01','02','03','04']
+    cameras: ['02']
     split: "test"
     seq_len: 1
     seq_step: 1
@@ -106,18 +106,6 @@ keypoint_head:
     num_classes: 51
     losses:
       - name: 'MSELoss'
-        params: null
-        weight: 1.0
-camera_head:
-  name: 'RegressionCameraHead'
-  params:
-    emb_size: 768
-    num_params: 9
-    weight_trans: 1.0
-    weight_rot: 1.0
-    weight_focal: 0.5
-    losses:
-      - name: 'L1Loss'
         params: null
         weight: 1.0
 # --------------------------------------
