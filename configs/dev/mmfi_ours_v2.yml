@@ -137,7 +137,7 @@ aggregator:
 keypoint_head:
   name: 'RegressionKeypointHeadV2'
   params:
-    emb_size: 256
+    emb_size: 1024
     losses:
       - name: 'MSELoss'
         params: null

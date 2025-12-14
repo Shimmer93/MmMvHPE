@@ -196,9 +196,9 @@ class TransformerAggregatorV2(nn.Module):
             features_mmwave = features_mmwave + spatial_pos_embed[:, :, :features_mmwave.shape[2], :] + temporal_pos_embed
         
         # Expand special tokens
-        camera_tokens_normal, camera_tokens_anchor = self.expand_special_tokens(self.camera_token, B, T)
-        joint_tokens_normal, joint_tokens_anchor = self.expand_special_tokens(self.joint_token, B, T)
-        register_tokens_normal, register_tokens_anchor = self.expand_special_tokens(self.register_token, B, T)
+        camera_tokens_normal, camera_tokens_anchor = self._expand_special_tokens(self.camera_token, B, T)
+        joint_tokens_normal, joint_tokens_anchor = self._expand_special_tokens(self.joint_token, B, T)
+        register_tokens_normal, register_tokens_anchor = self._expand_special_tokens(self.register_token, B, T)
 
         # Concatenate special tokens with patch tokens
         anchor_idx = self.anchor_map.get(kwargs.get('anchor_key', None), -1)
@@ -208,9 +208,9 @@ class TransformerAggregatorV2(nn.Module):
         for i, feat in enumerate([features_rgb, features_depth, features_lidar, features_mmwave]):
             if feat is not None:
                 if i == anchor_idx:
-                    feat = self.insert_special_tokens(feat, camera_tokens_anchor, joint_tokens_anchor, register_tokens_anchor)
+                    feat = self._insert_special_tokens(feat, camera_tokens_anchor, joint_tokens_anchor, register_tokens_anchor)
                 else:
-                    feat = self.insert_special_tokens(feat, camera_tokens_normal, joint_tokens_normal, register_tokens_normal)
+                    feat = self._insert_special_tokens(feat, camera_tokens_normal, joint_tokens_normal, register_tokens_normal)
                 features_list.append(feat)
                 Ns.append(feat.shape[2])
             else:
@@ -218,10 +218,10 @@ class TransformerAggregatorV2(nn.Module):
 
         # Add modality embeddings
         for i, feat in enumerate(features_list):
-            feat = feat + self.modality_embed[:, :, i:i+1, :].unsqueeze(2)  # B, T, N, D
+            feat = feat + self.modality_embed[:, :, i, :].unsqueeze(2)  # B, T, N, D
             features_list[i] = feat
 
-        tokens = torch.cat(features_list, dim=2)  # B, T, N_total, D
+        tokens = torch.cat(features_list, dim=-2)  # B, T, N_total, D
 
         single_idx, global_idx, spatial_idx, temporal_idx, cross_2d_3d_idx, cross_token_idx, gcn_idx = 0, 0, 0, 0, 0, 0, 0
         output_list = []
@@ -328,11 +328,11 @@ class TransformerAggregatorV2(nn.Module):
             tokens_3d = tokens_base[:, :, N_2d:, :].reshape(B, T * N_3d, C)
 
             if self.use_grad_ckpt and self.training:
-                tokens_2d = checkpoint(self.cross_blocks[idx], tokens_2d, tokens_3d, pos, use_reentrant=False)
-                tokens_3d = checkpoint(self.cross_blocks[idx], tokens_3d, tokens_2d, pos, use_reentrant=False)
+                tokens_2d = checkpoint(self.cross_2d_3d_blocks[idx], tokens_2d, tokens_3d, pos, use_reentrant=False)
+                tokens_3d = checkpoint(self.cross_2d_3d_blocks[idx], tokens_3d, tokens_2d, pos, use_reentrant=False)
             else:
-                tokens_2d_new = self.cross_blocks[idx](tokens_2d, context=tokens_3d, pos=pos)
-                tokens_3d_new = self.cross_blocks[idx](tokens_3d, context=tokens_2d, pos=pos)
+                tokens_2d_new = self.cross_2d_3d_blocks[idx](tokens_2d, context=tokens_3d, pos=pos)
+                tokens_3d_new = self.cross_2d_3d_blocks[idx](tokens_3d, context=tokens_2d, pos=pos)
                 tokens_2d, tokens_3d = tokens_2d_new, tokens_3d_new
 
             new_tokens = tokens_base.clone()
@@ -553,12 +553,12 @@ class TransformerAggregatorV2(nn.Module):
         for n in Ns:
             if n > 0:
                 # Take the first 2 tokens of each modality and clone to break view relationship
-                token_slices.append(tokens[:, :, cumsum:cumsum + 1 + self.joints, :].contiguous())
+                token_slices.append(tokens[:, :, cumsum:cumsum + 1 + self.num_joints, :].contiguous())
             cumsum += n
 
         if len(token_slices) == 0:
             # Handle edge case where all Ns are zero
-            return tokens.new_zeros(B, 0, T, 1 + self.joints, C)
+            return tokens.new_zeros(B, 0, T, 1 + self.num_joints, C)
 
-        output = torch.stack(token_slices, dim=1)  # B, M, T, 1 + self.joints, C
+        output = torch.stack(token_slices, dim=1)  # B, M, T, 1 + self.num_joints, C
         return output

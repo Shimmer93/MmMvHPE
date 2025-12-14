@@ -94,8 +94,8 @@ def pampjpe_func(preds, gts, reduce=True):
     pampjpe = np.zeros([N, num_joints])
 
     for n in range(N):
-        frame_pred = preds[n, 0]
-        frame_gt = gts[n, 0]
+        frame_pred = preds[n]
+        frame_gt = gts[n]
         _, Z, T, b, c = compute_similarity_transform(frame_gt, frame_pred, compute_optimal_scale=True)
         frame_pred = (b * frame_pred.dot(T)) + c
         pampjpe[n] = np.sqrt(np.sum(np.square(frame_pred - frame_gt), axis=1))
