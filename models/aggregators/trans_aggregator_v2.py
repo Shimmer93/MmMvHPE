@@ -254,7 +254,8 @@ class TransformerAggregatorV2(nn.Module):
                     case _:
                         raise ValueError(f"Unknown attention type: {aa_type}")
                 output_per_block.extend(intermediates)
-            output_per_block = torch.sum(torch.stack(output_per_block), dim=0)
+            output_per_block = torch.concat(output_per_block, dim=-1)  # B, M, T, 1 + num_joints, D * num_intermediates
+            # output_per_block = torch.sum(torch.stack(output_per_block), dim=0)
             output_list.append(output_per_block)
         
         return output_list

@@ -25,9 +25,9 @@ class RegressionKeypointHeadV2(BaseHead):
         x = x[:, :, :, 1:, :]  # Use the last token (skeleton token)
         
         # Average over temporal dimension first: B, M, J, C
-        x = x.mean(dim=2)
+        x = x.mean(dim=[1,2])
         
-        x = rearrange(x, 'b m j c -> b j (m c)')  # B, J, M*C
+        # x = rearrange(x, 'b m j c -> b j (m c)')  # B, J, M*C
 
         x = self.norm(x)
         x = self.mlp(x)
