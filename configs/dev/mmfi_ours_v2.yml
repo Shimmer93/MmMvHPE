@@ -67,7 +67,7 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_1208
+model_name: TestModel_1213
 backbone_rgb:
   name: 'TimmWrapper'
   params:
@@ -115,15 +115,16 @@ backbone_mmwave:
     mode: 'all'
   has_temporal: true
 aggregator:
-  name: 'TransformerAggregator'
+  name: 'TransformerAggregatorV2'
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 256
     num_register_tokens: 4
-    aa_order: ['single', 'global', 'cross']
+    aa_order: ['single', 'spatial', 'cross_2d_3d', 'cross_token', 'gcn']
     aa_block_size: 1
-    depth: 6
+    depth: 5
     block_type: 'Block'
+    skeleton_type: 'mmfi'
     num_heads: 8
     mlp_ratio: 2.0
     qkv_bias: true
@@ -131,11 +132,12 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
+    use_grad_ckpt: False
+    max_spatial_seq_len: 1000
 keypoint_head:
-  name: 'RegressionKeypointHead'
+  name: 'RegressionKeypointHeadV2'
   params:
-    emb_size: 768
-    num_classes: 51
+    emb_size: 1024
     losses:
       - name: 'MSELoss'
         params: null

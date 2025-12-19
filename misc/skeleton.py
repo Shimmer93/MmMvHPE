@@ -30,6 +30,46 @@ def get_left_right_bones(bones, left_indices, right_indices, flip_indices):
         right_bones.append(right_bone)
 
     return left_bones, right_bones
+
+def edge2mat(link, num_node):
+    A = np.zeros((num_node, num_node))
+    for i, j in link:
+        A[j, i] = 1
+    return A
+
+def normalize_digraph(A):
+    Dl = np.sum(A, 0)
+    h, w = A.shape
+    Dn = np.zeros((w, w))
+    for i in range(w):
+        if Dl[i] > 0:
+            Dn[i, i] = Dl[i] ** (-1)
+    AD = np.dot(A, Dn)
+    return AD
+
+def get_adjacency_matrix(bones, num_joints):
+    A = np.zeros((num_joints, num_joints))
+    for bone in bones:
+        A[bone[0], bone[1]] = 1
+        A[bone[1], bone[0]] = 1
+    for i in range(num_joints):
+        A[i, i] = 1
+    return A
+
+def get_spatial_graph(num_node, self_link, inward, outward):
+    I = edge2mat(self_link, num_node)
+    In = normalize_digraph(edge2mat(inward, num_node))
+    Out = normalize_digraph(edge2mat(outward, num_node))
+    A = np.stack((I, In, Out))
+    return A
+
+def get_adjacency_matrix(bones, num_joints):
+    self_link = [(i, i) for i in range(num_joints)]
+    inward = [(j, i) for (i, j) in bones]
+    outward = [(i, j) for (i, j) in bones]
+    A = get_spatial_graph(num_joints, self_link, inward, outward)
+    return A
+
         
 class COCOSkeleton:
     joint_names = [

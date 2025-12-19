@@ -162,6 +162,8 @@ class TransformerAggregator(nn.Module):
                 Ns.append(0)
         
         features_cat = torch.cat(features_list, dim=2)  # B, T, N_total, C
+        # N_total = 1+1+num_register_tokens+N_rgb + 1+1+num_register_tokens+N_depth + 
+        #           1+1+num_register_tokens+N_lidar + 1+1+num_register_tokens+N_mmwave
 
         N_cumsum = torch.tensor([0] + Ns, device=features_cat.device).cumsum(0)
         mask_input = torch.zeros(B, T, N_cumsum[-1], dtype=torch.long, device=features_cat.device)
