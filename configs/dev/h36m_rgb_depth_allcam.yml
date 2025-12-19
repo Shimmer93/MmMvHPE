@@ -3,8 +3,8 @@ benchmark: true
 deterministic: false
 pretrained: false
 sync_batchnorm: false
-clip_grad: 1.0
-precision: 32
+clip_grad: null
+precision: 16
 max_steps: &max_steps 20000
 val_check_interval: 500
 limit_val_batches: 100
@@ -49,7 +49,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.005
+  lr: &lr 0.0005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters

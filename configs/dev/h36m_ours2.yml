@@ -53,7 +53,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
