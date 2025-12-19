@@ -7,7 +7,7 @@ Multimodal Multiview Human Pose Estimation
 mamba create -n mmhpe python=3.12 -y
 mamba activate mmhpe
 
-mamba install pytorch=2.5.1 torchvision=0.20.1 pytorch-cuda lightning uv -c conda-forge
+mamba install pytorch=2.5.1 torchvision=0.20.1 lightning uv -c conda-forge
 
 uv pip install scikit-learn einops tensorboard tensorboardX cdflib wandb rerun-sdk smplpytorch timm ultralytics rich opencv-python
 uv pip install --no-build-isolation git+https://github.com/mattloper/chumpy
