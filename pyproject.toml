@@ -19,7 +19,6 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "segment-anything",
     "smplpytorch>=0.0.8",
-    "spconv>=2.3.8",
     "spconv-cu124>=2.3.8",
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.4",
@@ -41,3 +40,10 @@ spconv = { git = "https://github.com/traveller59/spconv.git" }
 members = [
     "models/pc_encoders/modules",
 ]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+torch-scatter = ["torch"]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }

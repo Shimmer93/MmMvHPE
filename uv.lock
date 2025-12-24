@@ -368,26 +368,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cumm"
-version = "0.7.11"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "fire" },
-    { name = "numpy" },
-    { name = "pccm" },
-    { name = "pybind11" },
-    { name = "sympy" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/21/637ec00c09ebba31f464d63e740e537e546616d460e07e4fd95ddacda3cb/cumm-0.7.11-cp312-cp312-macosx_14_0_universal2.whl", hash = "sha256:a17c11cd598f769d412e81733fc88d4644550d054b579c4ad43fb1c89a251391", size = 1384278, upload-time = "2024-12-15T13:34:51.41Z" },
-    { url = "https://files.pythonhosted.org/packages/70/3c/8f48684b001c296d75586a961923e6b629728b0fd16ca8a003d22211766c/cumm-0.7.11-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:96ad9d959a42f2ab768228956ad8af6cf8628f6eefe8edb7de3f9f13f4c92773", size = 2633058, upload-time = "2024-12-15T13:57:04.152Z" },
-    { url = "https://files.pythonhosted.org/packages/e4/4b/d466f9498e387bd39f18979c416dbfec2cf395126350c0a8c888da27f219/cumm-0.7.11-cp312-cp312-win_amd64.whl", hash = "sha256:29bc8a4f1e174845cecbd9b018dcfc3fc8b337a7f1ba90c8cb7fd8a63aa61e93", size = 1170405, upload-time = "2024-12-15T13:34:25.888Z" },
-    { url = "https://files.pythonhosted.org/packages/21/86/1a1f5ace1e3ac0d6ff6d85390b1d8f9d24caf0dbaa3eb8e1c85668db857f/cumm-0.7.11-cp313-cp313-macosx_14_0_universal2.whl", hash = "sha256:0a98021dd0db13bbeeffde2250b8235db194636ada8f4be33b1fde21d766bd2f", size = 1384761, upload-time = "2024-12-15T13:34:53.047Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/4d/f80a99cf0e38c6e8f40e523d2a65dc097938abf0efb264c961bf0e5a1328/cumm-0.7.11-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f138997700f174d87d86f0293d5699121a37b5ba2874df4268ab533636fcb700", size = 2636345, upload-time = "2024-12-15T13:57:07.133Z" },
-    { url = "https://files.pythonhosted.org/packages/f8/35/0d34382267ba36257f4d918784c8e88308b5f798e4fdf23f7245fd9c9d29/cumm-0.7.11-cp313-cp313-win_amd64.whl", hash = "sha256:596d2f0722055e4631a941e797c6ac60115cae256c6b42bfd711d99b3cd360b0", size = 1171107, upload-time = "2024-12-15T13:36:39.406Z" },
-]
-
-[[package]]
 name = "cumm-cu124"
 version = "0.7.11"
 source = { registry = "https://pypi.org/simple" }
@@ -1061,7 +1041,6 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "segment-anything" },
     { name = "smplpytorch" },
-    { name = "spconv" },
     { name = "spconv-cu124" },
     { name = "tensorboard" },
     { name = "tensorboardx" },
@@ -1089,7 +1068,6 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "segment-anything", git = "https://github.com/facebookresearch/segment-anything.git" },
     { name = "smplpytorch", specifier = ">=0.0.8" },
-    { name = "spconv", git = "https://github.com/traveller59/spconv.git" },
     { name = "spconv-cu124", specifier = ">=2.3.8" },
     { name = "tensorboard", specifier = ">=2.20.0" },
     { name = "tensorboardx", specifier = ">=2.6.4" },
@@ -2168,19 +2146,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/16/b3/0ea0c906ce4236efed823e0469fa1f9dfa330f05fc42d36bfbdf25c37f2f/smplpytorch-0.0.8.tar.gz", hash = "sha256:35a011206985c993dccea63e7a4d77bc71369baa0fd58f36ebcad6da3af38779", size = 9517, upload-time = "2019-07-17T08:01:08.824Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/c2/27a2e0739670c19c52da1f90ebb576c2d64eb93a8c397461db2a41365e9f/smplpytorch-0.0.8-py3-none-any.whl", hash = "sha256:059a398a3f10acf74f8da7fca8bba870f6504523cd3df6f52264b496c37b0a4a", size = 22862, upload-time = "2019-07-17T08:01:07.034Z" },
-]
-
-[[package]]
-name = "spconv"
-version = "2.3.8"
-source = { git = "https://github.com/traveller59/spconv.git#263d6b47425ef843c82f997b12d8b714013d216c" }
-dependencies = [
-    { name = "ccimport" },
-    { name = "cumm" },
-    { name = "fire" },
-    { name = "numpy" },
-    { name = "pccm" },
-    { name = "pybind11" },
 ]
 
 [[package]]
