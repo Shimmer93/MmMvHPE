@@ -31,6 +31,13 @@ def delete_prefix_from_state_dict(state_dict, prefix):
             new_state_dict[k] = v
     return new_state_dict
 
+def load_state_dict_part(model, state_dict, prefix):
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            new_state_dict[k[len(prefix):]] = v
+    model.load_state_dict(new_state_dict, strict=False)
+
 def exists_and_is_true(hparams, key):
     return hasattr(hparams, key) and getattr(hparams, key)
 

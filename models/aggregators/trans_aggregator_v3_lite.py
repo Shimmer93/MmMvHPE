@@ -205,7 +205,7 @@ class SkeletonGuidedGCN(nn.Module):
         
         # Add skeleton-guided aggregation (lightweight)
         skeleton_features = torch.einsum('vw,bmtwc->bmtvc', 
-                                         self.skeleton_adj, 
+                                         self.skeleton_adj.sum(dim=0), 
                                          refined)
         refined = refined + self.skeleton_scale * skeleton_features
         
