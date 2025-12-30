@@ -110,9 +110,9 @@ class HumanDataset(BaseDataset):
         elif self.split == "test":
             valid_persons = set(person_ids[split_idx:])
         elif self.split == "train_mini":
-            valid_persons = set(person_ids[:1])
+            valid_persons = set(person_ids[:16]) # first 16 persons for mini train
         elif self.split == "test_mini":
-            valid_persons = set(person_ids[split_idx:split_idx+1])
+            valid_persons = set(person_ids[split_idx:split_idx+4]) # 4 persons for mini test
         else:
             valid_persons = set(person_ids)
         
@@ -376,14 +376,12 @@ class HumanDataset(BaseDataset):
                 cam_params = cameras[cam_key]
                 K = np.array(cam_params['K'], dtype=np.float32)
                 R = np.array(cam_params['R'], dtype=np.float32)
+                # HUMMAN camera T values are already in meters
                 T = np.array(cam_params['T'], dtype=np.float32).reshape(3, 1)
-                
-                # Convert translation to meters if specified
-                T_scaled = T / 1000.0 if self.unit == "m" else T
                 
                 rgb_camera_dict = {
                     "intrinsic": K,
-                    "extrinsic": np.hstack((R, T_scaled)).astype(np.float32),
+                    "extrinsic": np.hstack((R, T)).astype(np.float32),
                 }
                 sample["rgb_camera"] = rgb_camera_dict
         
@@ -407,14 +405,12 @@ class HumanDataset(BaseDataset):
                 cam_params = cameras[cam_key]
                 K = np.array(cam_params['K'], dtype=np.float32)
                 R = np.array(cam_params['R'], dtype=np.float32)
+                # HUMMAN camera T values are already in meters
                 T = np.array(cam_params['T'], dtype=np.float32).reshape(3, 1)
-                
-                # Convert translation to meters if specified
-                T_scaled = T / 1000.0 if self.unit == "m" else T
                 
                 depth_camera_dict = {
                     "intrinsic": K,
-                    "extrinsic": np.hstack((R, T_scaled)).astype(np.float32),
+                    "extrinsic": np.hstack((R, T)).astype(np.float32),
                 }
                 sample["depth_camera"] = depth_camera_dict
         
