@@ -178,7 +178,6 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
         output_list = []
 
         for _ in range(self.aa_block_num):
-            output_per_block = []
             for aa_type in self.aa_order:
                 match aa_type:
                     case "single":
@@ -195,11 +194,7 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
                         )
                     case _:
                         raise ValueError(f"Unknown attention type: {aa_type}")
-                output_per_block.extend(intermediates)
-
-            if output_per_block:
-                output_per_block = torch.concat(output_per_block, dim=-1)
-                output_list.append(output_per_block)
+            output_list.append(intermediates[-1])
 
         return output_list
 

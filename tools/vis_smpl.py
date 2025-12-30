@@ -6,7 +6,6 @@ import os.path as osp
 import rerun as rr
 import time
 from tqdm import tqdm
-import pyvista as pv
 from PIL import Image
 import matplotlib.pyplot as plt
 try:

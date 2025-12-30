@@ -13,41 +13,47 @@ train_dataset:
   name: 'MMFiPreprocessedDataset'
   params:
     data_root: &data_root 'data/mmfi'
-    modality_names: ['lidar']
+    modality_names: ['rgb']
     split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
     split_to_use: &split_to_use 'random_split'
     protocol: &protocol 'protocol3'
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     test_mode: false
+    bbox_file: 'data/mmfi/rgb_boxes.json'
+    bbox_target_size: [224, 224]
 val_dataset:
   name: 'MMFiPreprocessedDataset'
   params:
     data_root: *data_root
-    modality_names: ['lidar']
+    modality_names: ['rgb']
     split_config: *split_config
     split_to_use: *split_to_use
     protocol: *protocol
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     test_mode: true
+    bbox_file: 'data/mmfi/rgb_boxes.json'
+    bbox_target_size: [224, 224]
 test_dataset:
   name: 'MMFiPreprocessedDataset'
   params:
     data_root: *data_root
-    modality_names: ['lidar']
+    modality_names: ['rgb']
     split_config: *split_config
     split_to_use: *split_to_use
     protocol: *protocol
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     test_mode: true
+    bbox_file: 'data/mmfi/rgb_boxes.json'
+    bbox_target_size: [224, 224]
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -67,7 +73,7 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_V2_GlobalJoint_LiDAR
+model_name: TestModel_V2_GlobalJoint_RGB_BBox
 backbone_rgb:
   name: 'TimmWrapper'
   params:
@@ -81,22 +87,12 @@ backbone_depth:
     pretrained: true
   has_temporal: false
 backbone_lidar:
-  name: 'P4TEncoder'
+  name: 'PointTransformerV3'
   params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
-    temporal_kernel_size: 3
-    temporal_stride: 1
-    emb_relu: false
-    dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 3
-    mode: 'xyz'
-  has_temporal: true
+    in_channels: 3
+    cls_mode: true
+    grid_size: 0.01
+  has_temporal: false
 backbone_mmwave:
   name: 'P4TEncoder'
   params:
@@ -118,7 +114,7 @@ aggregator:
   name: 'TransformerAggregatorV2GlobalJoint'
   params:
     input_dims: [384, 384, 512, 512]
-    embed_dim: 256
+    embed_dim: 512
     num_register_tokens: 4
     aa_order: ['single', 'cross_joint', 'gcn']
     aa_block_size: 1
@@ -157,18 +153,12 @@ metrics:
 train_pipeline: &train_pipeline
   # - name: VideoResize
   #   params:
-  #     size: [192, 256]
-  #     keys: ['input_rgb', 'input_depth']
-  - name: PCPad
+  #     size: [384, 512]
+  #     keys: ['input_rgb']
+  - name: VideoNormalize
     params:
-      num_points: 512
-      pad_mode: 'repeat'
-      keys: ['input_lidar']
-  # - name: PCPad
-  #   params:
-  #     num_points: 256
-  #     pad_mode: 'repeat'
-  #     keys: ['input_mmwave']
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
   - name: ToTensor
     params: null
 val_pipeline: *train_pipeline

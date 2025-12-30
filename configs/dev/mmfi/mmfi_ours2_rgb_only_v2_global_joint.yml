@@ -108,11 +108,11 @@ aggregator:
   name: 'TransformerAggregatorV2GlobalJoint'
   params:
     input_dims: [384, 384, 512, 512]
-    embed_dim: 256
+    embed_dim: 512
     num_register_tokens: 4
-    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_order: ['single', 'cross_joint']
     aa_block_size: 1
-    depth: 6
+    depth: 3
     block_type: 'Block'
     skeleton_type: 'mmfi'
     num_heads: 8
@@ -126,7 +126,7 @@ aggregator:
 keypoint_head:
   name: 'RegressionKeypointHeadV2'
   params:
-    emb_size: 768
+    emb_size: 1536
     losses:
       - name: 'MSELoss'
         params: null
@@ -145,10 +145,10 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: VideoResize
-  #   params:
-  #     size: [192, 256]
-  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoResize
+    params:
+      size: [192, 256]
+      keys: ['input_rgb']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'

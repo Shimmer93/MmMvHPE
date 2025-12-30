@@ -18,7 +18,9 @@ class RegressionKeypointHeadV2(BaseHead):
 
     def forward(self, x):
         if isinstance(x, list):
-            x = x[-1]
+            # print(len(x))
+            x = torch.concatenate(x, dim=-1)
+        # print(x.shape)
         # x.shape: B, M, T, J+1, C
         B, M, T, N, C = x.shape
 
