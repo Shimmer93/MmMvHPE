@@ -1,13 +1,13 @@
 """
-Generate 3D keypoints from SMPL parameters for Humman dataset.
+Generate 3D keypoints and mesh vertices from SMPL parameters for Humman dataset.
 
 This script processes all sequences in the Humman dataset and generates 3D keypoints
-from SMPL parameters using the SMPL model. The keypoints are saved as keypoints_3d.npz
-in each sequence directory.
+and mesh vertices from SMPL parameters using the SMPL model. The keypoints and vertices
+are saved as keypoints_3d.npz in each sequence directory.
 
 Usage:
     python tools/generate_humman_keypoints.py --data_root /data/shared/humman_release_v1.0_point \
-                                               --smpl_model_path /path/to/smpl/models
+                                               --smpl_model_path weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl
 """
 
 import os
@@ -25,9 +25,9 @@ sys.path.append(osp.dirname(osp.dirname(osp.abspath(__file__))))
 from models.smpl.smpl import SMPL
 
 
-def convert_smpl_to_keypoints(smpl_model, global_orient, body_pose, betas, transl, device='cuda'):
+def convert_smpl_to_keypoints_and_vertices(smpl_model, global_orient, body_pose, betas, transl, device='cuda'):
     """
-    Convert SMPL parameters to 3D keypoints.
+    Convert SMPL parameters to 3D keypoints and mesh vertices.
     
     Args:
         smpl_model: SMPL model instance
@@ -39,6 +39,7 @@ def convert_smpl_to_keypoints(smpl_model, global_orient, body_pose, betas, trans
     
     Returns:
         keypoints_3d: (N, 24, 3) array of 3D joint positions
+        vertices: (N, 6890, 3) array of mesh vertices
     """
     N = global_orient.shape[0]
     
@@ -65,21 +66,24 @@ def convert_smpl_to_keypoints(smpl_model, global_orient, body_pose, betas, trans
     with torch.no_grad():
         output = smpl_model(th_pose, th_betas, th_trans)
         # Output is typically (vertices, joints) or just joints
-        # The joints should be the second element or the only element
         if isinstance(output, (list, tuple)):
-            joints = output[1]  # Typically joints are the second output
+            vertices = output[0]  # Vertices are the first output
+            joints = output[1]    # Joints are the second output
         else:
+            # If only one output, assume it's joints and we need to get vertices separately
             joints = output
+            vertices = None
     
     # Convert back to numpy
     keypoints_3d = joints.cpu().numpy()  # (N, 24, 3)
+    vertices_3d = vertices.cpu().numpy() if vertices is not None else None  # (N, 6890, 3)
     
-    return keypoints_3d
+    return keypoints_3d, vertices_3d
 
 
 def process_sequence(seq_dir, smpl_model, device='cuda', force=False):
     """
-    Process a single sequence: load SMPL params, generate keypoints, save to file.
+    Process a single sequence: load SMPL params, generate keypoints and vertices, save to file.
     
     Args:
         seq_dir: Path to sequence directory
@@ -113,17 +117,22 @@ def process_sequence(seq_dir, smpl_model, device='cuda', force=False):
         
         num_frames = global_orient.shape[0]
         
-        # Convert SMPL to keypoints
-        keypoints_3d = convert_smpl_to_keypoints(
+        # Convert SMPL to keypoints and vertices
+        keypoints_3d, vertices_3d = convert_smpl_to_keypoints_and_vertices(
             smpl_model, global_orient, body_pose, betas, transl, device
         )
         
-        # Save keypoints
-        np.savez_compressed(
-            keypoints_file,
-            keypoints_3d=keypoints_3d,  # (N, 24, 3)
-            num_frames=num_frames
-        )
+        # Save keypoints and vertices
+        save_dict = {
+            'keypoints_3d': keypoints_3d,  # (N, 24, 3)
+            'num_frames': num_frames
+        }
+        
+        # Add vertices if they were generated
+        if vertices_3d is not None:
+            save_dict['vertices'] = vertices_3d  # (N, 6890, 3)
+        
+        np.savez_compressed(keypoints_file, **save_dict)
         
         return True
         
@@ -136,7 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate 3D keypoints from SMPL parameters for Humman dataset")
     parser.add_argument('--data_root', type=str, default='/data/shared/humman_release_v1.0_point',
                         help='Path to Humman dataset root directory')
-    parser.add_argument('--smpl_model_path', type=str, default='weights/basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl',
+    parser.add_argument('--smpl_model_path', type=str, default='weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl',
                         help='Path to SMPL model file')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'],
                         help='Device for computation')
@@ -155,17 +164,13 @@ def main():
         return
     
     # Initialize SMPL model
-    print(f"Loading SMPL model ({args.gender}) from {smpl_model_file}...")
+    print(f"Loading SMPL model from {smpl_model_file}...")
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
     try:
-        smpl_model = SMPL(
-            model_path=smpl_model_file,
-            gender=args.gender
-        ).to(device)
+        smpl_model = SMPL(model_path=smpl_model_file).to(device)
         smpl_model.eval()
         print(f"SMPL model loaded successfully on {device}")
-        print(f"Number of joints: {smpl_model.num_joints}")
     except Exception as e:
         print(f"Error loading SMPL model: {str(e)}")
         print("\nMake sure you have the correct SMPL model files:")
