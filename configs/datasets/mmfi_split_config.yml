@@ -36,17 +36,28 @@ cross_subject_split:
     subjects: [ S05, S10, S15, S20, S25, S30, S35, S40 ]
     actions: all
 
+# manual_split:
+#   train_dataset:
+#     split: training
+#     scenes: None
+#     subjects: [S01]
+#     actions: [A01]
+#   val_dataset:
+#     split: validation
+#     scenes: None
+#     subjects: [S01]
+#     actions: [A22]
 manual_split:
   train_dataset:
     split: training
     scenes: None
-    subjects: [S01]
-    actions: [A01]
+    subjects: [S01, S02, S03, S04]
+    actions: [A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12, A13, A14, A15, A16, A17, A18, A19, A20, A21]
   val_dataset:
     split: validation
     scenes: None
-    subjects: [S01]
-    actions: [A22]
+    subjects: [S01, S02, S03, S04]
+    actions: [A22, A23, A24, A25, A26, A27]
 # manual_split:
 #   train_dataset:
 #     split: training

@@ -1,9 +1,10 @@
+import json
 import os
 import os.path as osp
 import cv2
 import numpy as np
 import yaml
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from functools import lru_cache
 from misc.timer import timer
 
@@ -107,7 +108,9 @@ class MMFiDataset(BaseDataset):
                  causal: bool = True,
                  pipeline: List[dict] = [],
                  test_mode: bool = False,
-                 cache_ground_truth: bool = True):
+                 cache_ground_truth: bool = True,
+                 bbox_file: Optional[str] = None,
+                 bbox_target_size: Optional[Tuple[int, int]] = None):
         
         super().__init__(pipeline=pipeline)
 
@@ -129,6 +132,9 @@ class MMFiDataset(BaseDataset):
         self.causal = causal
         self.test_mode = test_mode
         self.cache_ground_truth = cache_ground_truth
+        self.bbox_file = bbox_file
+        self.bbox_target_size = bbox_target_size
+        self._bbox_map = self._load_bbox_map(bbox_file) if bbox_file else None
 
         # Pre-load and cache data
         self.data_split = self.load_data_split()
@@ -246,6 +252,7 @@ class MMFiDataset(BaseDataset):
             with timer('Read RGB frame'):
                 frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = self._maybe_crop_with_bbox(frame, frame_path)
         elif modality == 'depth':
             # Specify depth reading mode
             with timer('Read Depth frame'):
@@ -258,6 +265,67 @@ class MMFiDataset(BaseDataset):
         else:
             raise ValueError(f'Modality {modality} not supported.')
         return frame
+
+    def _load_bbox_map(self, bbox_file: str) -> Dict[str, List[Dict[str, Any]]]:
+        with open(bbox_file, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        bbox_map = {}
+        for path, boxes in raw.items():
+            norm_path = osp.normpath(path)
+            bbox_map[norm_path] = boxes
+        return bbox_map
+
+    def _get_bbox_for_image(self, frame_path: str):
+        if not self._bbox_map:
+            return None
+        candidates = [
+            osp.normpath(frame_path),
+            osp.normpath(osp.relpath(frame_path, self.rgb_root)),
+            osp.normpath(osp.relpath(frame_path, self.data_root)),
+        ]
+        for key in candidates:
+            if key in self._bbox_map:
+                boxes = self._bbox_map[key]
+                return boxes[0] if boxes else None
+        return None
+
+    def _maybe_crop_with_bbox(self, frame: np.ndarray, frame_path: str) -> np.ndarray:
+        if self.bbox_target_size is None:
+            return frame
+        bbox_info = self._get_bbox_for_image(frame_path)
+        target_w, target_h = self.bbox_target_size
+        if bbox_info is None:
+            return cv2.resize(frame, (target_w, target_h))
+
+        x1, y1, x2, y2 = bbox_info["bbox"]
+        h, w = frame.shape[:2]
+        x1 = max(0, min(w - 1, int(round(x1))))
+        y1 = max(0, min(h - 1, int(round(y1))))
+        x2 = max(0, min(w, int(round(x2))))
+        y2 = max(0, min(h, int(round(y2))))
+        box_w = max(1, x2 - x1)
+        box_h = max(1, y2 - y1)
+
+        target_ratio = target_w / target_h
+        box_ratio = box_w / box_h
+
+        if box_ratio < target_ratio:
+            new_w = int(round(target_ratio * box_h))
+            pad = (new_w - box_w) // 2
+            x1 = max(0, x1 - pad)
+            x2 = min(w, x1 + new_w)
+            x1 = max(0, x2 - new_w)
+        elif box_ratio > target_ratio:
+            new_h = int(round(box_w / target_ratio))
+            pad = (new_h - box_h) // 2
+            y1 = max(0, y1 - pad)
+            y2 = min(h, y1 + new_h)
+            y1 = max(0, y2 - new_h)
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return cv2.resize(frame, (target_w, target_h))
+        return cv2.resize(crop, (target_w, target_h))
     
     def __len__(self):
         return len(self.data_split)
@@ -414,6 +482,7 @@ class MMFiPreprocessedDataset(MMFiDataset):
             # with timer('Read RGB frame'):
             frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = self._maybe_crop_with_bbox(frame, frame_path)
         elif modality == 'depth':
             # Specify depth reading mode
             # with timer('Read Depth frame'):

@@ -10,7 +10,7 @@ import wandb
 
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
-from misc.utils import torch2numpy
+from misc.utils import torch2numpy, load_state_dict_part
 
 class LitModel(L.LightningModule):
 
@@ -23,15 +23,31 @@ class LitModel(L.LightningModule):
         if self.with_rgb:
             self.backbone_rgb = create_model(self.hparams.backbone_rgb['name'], self.hparams.backbone_rgb['params'])
             self.has_temporal_rgb = self.hparams.backbone_rgb['has_temporal']
+            if hasattr(self.hparams, 'pretrained_rgb_path'):
+                print("Loading pretrained RGB backbone from:", self.hparams.pretrained_rgb_path)
+                state_dict_rgb = torch.load(self.hparams.pretrained_rgb_path, map_location=self.device)['state_dict']
+                load_state_dict_part(self.backbone_rgb, state_dict_rgb, prefix='backbone_rgb.')
         if self.with_depth:
             self.backbone_depth = create_model(self.hparams.backbone_depth['name'], self.hparams.backbone_depth['params'])
             self.has_temporal_depth = self.hparams.backbone_depth['has_temporal']
+            if hasattr(self.hparams, 'pretrained_depth_path'):
+                print("Loading pretrained Depth backbone from:", self.hparams.pretrained_depth_path)
+                state_dict_depth = torch.load(self.hparams.pretrained_depth_path, map_location=self.device)['state_dict']
+                load_state_dict_part(self.backbone_depth, state_dict_depth, prefix='backbone_depth.')
         if self.with_lidar:
             self.backbone_lidar = create_model(self.hparams.backbone_lidar['name'], self.hparams.backbone_lidar['params'])
             self.has_temporal_lidar = self.hparams.backbone_lidar['has_temporal']
+            if hasattr(self.hparams, 'pretrained_lidar_path'):
+                print("Loading pretrained LIDAR backbone from:", self.hparams.pretrained_lidar_path)
+                state_dict_lidar = torch.load(self.hparams.pretrained_lidar_path, map_location=self.device)['state_dict']
+                load_state_dict_part(self.backbone_lidar, state_dict_lidar, prefix='backbone_lidar.')
         if self.with_mmwave:
             self.backbone_mmwave = create_model(self.hparams.backbone_mmwave['name'], self.hparams.backbone_mmwave['params'])
             self.has_temporal_mmwave = self.hparams.backbone_mmwave['has_temporal']
+            if hasattr(self.hparams, 'pretrained_mmwave_path'):
+                print("Loading pretrained MMWave backbone from:", self.hparams.pretrained_mmwave_path)
+                state_dict_mmwave = torch.load(self.hparams.pretrained_mmwave_path, map_location=self.device)['state_dict']
+                load_state_dict_part(self.backbone_mmwave, state_dict_mmwave, prefix='backbone_mmwave.')
 
         self.aggregator = create_model(self.hparams.aggregator['name'], self.hparams.aggregator['params'])
 
