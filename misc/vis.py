@@ -270,7 +270,31 @@ def plot_3d_point_cloud(ax, points, color='k', s=1):
     points_ = points[..., :3].reshape(-1, 3)
     ax.scatter(points_[:, 0], points_[:, 1], points_[:, 2], c=color, s=s)
 
-def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None, smpl_model=None, device='cuda'):
+def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None, 
+                                smpl_model_path='weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl', 
+                                device='cuda'):
+    """
+    Visualize a multimodal sample with predictions.
+    
+    Args:
+        batch: Batch data dictionary
+        pred_dict: Prediction dictionary (can contain 'pred_keypoints' or 'pred_smpl')
+        skl_format: Skeleton format ('h36m', 'coco', 'smpl')
+        denorm_params: Denormalization parameters for images
+        smpl_model_path: Path to SMPL model file (default: weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl)
+        device: Device for SMPL model computation
+    """
+    # Lazy load SMPL model if needed
+    smpl_model = None
+    needs_smpl = ('pred_smpl' in pred_dict or 
+                  ('gt_smpl' in batch and 'gt_vertices' not in batch))
+    
+    if needs_smpl:
+        from models.smpl import SMPL
+        smpl_model = SMPL(model_path=smpl_model_path)
+        smpl_model = smpl_model.to(device)
+        smpl_model.eval()
+    
     # Plot the following subplots:
     # Row 1: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
     # Row 2: GT 3D skeleton, GT XY, GT XZ, GT YZ
@@ -366,7 +390,46 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     plot_idx += 1
     
     gt_keypoints_3d = batch['gt_keypoints'][sample_idx].cpu().numpy()
-    pred_keypoints_3d = pred_dict['pred_keypoints'][sample_idx].cpu().numpy()
+    
+    # Load predicted keypoints - handle both SMPL head and keypoint head
+    pred_keypoints_3d = None
+    if 'pred_keypoints' in pred_dict:
+        # Direct keypoint prediction (keypoint_head)
+        pred_keypoints_3d = pred_dict['pred_keypoints'][sample_idx].cpu().numpy()
+    elif 'pred_smpl' in pred_dict and smpl_model is not None:
+        # SMPL parameter prediction (smpl_head) - generate keypoints
+        pred_smpl_data = pred_dict['pred_smpl']
+        if isinstance(pred_smpl_data, dict):
+            # Batch dict format
+            global_orient = pred_smpl_data['global_orient'][sample_idx].cpu().numpy()
+            body_pose = pred_smpl_data['body_pose'][sample_idx].cpu().numpy()
+            betas = pred_smpl_data['betas'][sample_idx].cpu().numpy()
+            transl = pred_smpl_data['transl'][sample_idx].cpu().numpy()
+        else:
+            # List format
+            pred_smpl = pred_smpl_data[sample_idx]
+            global_orient = pred_smpl['global_orient']
+            body_pose = pred_smpl['body_pose']
+            betas = pred_smpl['betas']
+            transl = pred_smpl['transl']
+            
+            if hasattr(global_orient, 'cpu'):
+                global_orient = global_orient.cpu().numpy()
+            if hasattr(body_pose, 'cpu'):
+                body_pose = body_pose.cpu().numpy()
+            if hasattr(betas, 'cpu'):
+                betas = betas.cpu().numpy()
+            if hasattr(transl, 'cpu'):
+                transl = transl.cpu().numpy()
+        
+        # Generate keypoints from SMPL parameters
+        pred_keypoints_3d = get_smpl_joints_from_params(
+            smpl_model, global_orient, body_pose, betas, transl, device=device
+        )
+    
+    if pred_keypoints_3d is None:
+        raise ValueError(f"No predicted keypoints found. pred_dict must contain either 'pred_keypoints' or 'pred_smpl'. Available keys: {list(pred_dict.keys())}")
+    
     bounds = get_bounds(np.concatenate([gt_keypoints_3d, pred_keypoints_3d], axis=0))
     
     # Load GT vertices if available
@@ -414,40 +477,46 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     # Load Pred vertices if available
     pred_vertices = None
     pred_faces = None
-    if smpl_model is not None and 'pred_vertices' in pred_dict and pred_dict['pred_vertices'] is not None:
-        if isinstance(pred_dict['pred_vertices'], list):
-            pred_vertices = pred_dict['pred_vertices'][sample_idx]
-        else:
-            pred_vertices = pred_dict['pred_vertices'][sample_idx]
+    if smpl_model is not None:
+        # Check for direct vertex prediction (less common)
+        if 'pred_vertices' in pred_dict and pred_dict['pred_vertices'] is not None:
+            if isinstance(pred_dict['pred_vertices'], list):
+                pred_vertices = pred_dict['pred_vertices'][sample_idx]
+            else:
+                pred_vertices = pred_dict['pred_vertices'][sample_idx]
+            
+            if pred_vertices is not None:
+                if isinstance(pred_vertices, np.ndarray):
+                    pass
+                elif hasattr(pred_vertices, 'cpu'):
+                    pred_vertices = pred_vertices.cpu().numpy()
+                pred_faces = smpl_model.th_faces.cpu().numpy()
         
-        if pred_vertices is not None:
-            if isinstance(pred_vertices, np.ndarray):
-                pass
-            elif hasattr(pred_vertices, 'cpu'):
-                pred_vertices = pred_vertices.cpu().numpy()
-            pred_faces = smpl_model.th_faces.cpu().numpy()
+        # Generate vertices from SMPL parameters if available
         elif 'pred_smpl' in pred_dict:
             pred_smpl_data = pred_dict['pred_smpl']
-            if isinstance(pred_smpl_data, list):
+            if isinstance(pred_smpl_data, dict):
+                # Batch dict format
+                global_orient = pred_smpl_data['global_orient'][sample_idx].cpu().numpy()
+                body_pose = pred_smpl_data['body_pose'][sample_idx].cpu().numpy()
+                betas = pred_smpl_data['betas'][sample_idx].cpu().numpy()
+                transl = pred_smpl_data['transl'][sample_idx].cpu().numpy()
+            else:
+                # List format
                 pred_smpl = pred_smpl_data[sample_idx]
                 global_orient = pred_smpl['global_orient']
                 body_pose = pred_smpl['body_pose']
                 betas = pred_smpl['betas']
                 transl = pred_smpl['transl']
-            else:
-                global_orient = pred_smpl_data['global_orient'][sample_idx].cpu().numpy()
-                body_pose = pred_smpl_data['body_pose'][sample_idx].cpu().numpy()
-                betas = pred_smpl_data['betas'][sample_idx].cpu().numpy()
-                transl = pred_smpl_data['transl'][sample_idx].cpu().numpy()
-            
-            if hasattr(global_orient, 'cpu'):
-                global_orient = global_orient.cpu().numpy()
-            if hasattr(body_pose, 'cpu'):
-                body_pose = body_pose.cpu().numpy()
-            if hasattr(betas, 'cpu'):
-                betas = betas.cpu().numpy()
-            if hasattr(transl, 'cpu'):
-                transl = transl.cpu().numpy()
+                
+                if hasattr(global_orient, 'cpu'):
+                    global_orient = global_orient.cpu().numpy()
+                if hasattr(body_pose, 'cpu'):
+                    body_pose = body_pose.cpu().numpy()
+                if hasattr(betas, 'cpu'):
+                    betas = betas.cpu().numpy()
+                if hasattr(transl, 'cpu'):
+                    transl = transl.cpu().numpy()
             
             pred_vertices, pred_faces, _ = get_smpl_mesh_from_params(
                 smpl_model, global_orient, body_pose, betas, transl, device=device
