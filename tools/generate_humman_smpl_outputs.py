@@ -6,8 +6,8 @@ and mesh vertices from SMPL parameters using the SMPL model. The keypoints and v
 are saved as keypoints_3d.npz in each sequence directory.
 
 Usage:
-    python tools/generate_humman_keypoints.py --data_root /data/shared/humman_release_v1.0_point \
-                                               --smpl_model_path weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl
+    python tools/generate_humman_smpl_outputs.py --data_root /data/shared/humman_release_v1.0_point \
+                                                   --smpl_model_path weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl
 """
 
 import os
