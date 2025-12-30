@@ -4,9 +4,9 @@ deterministic: false
 pretrained: false
 sync_batchnorm: false
 clip_grad: null
-precision: 32
+precision: 16
 max_steps: &max_steps 20000
-val_check_interval: 1000
+val_check_interval: 500
 limit_val_batches: 100
 
 # --------------------------------------
@@ -16,6 +16,7 @@ train_dataset:
   name: 'H36MDataset'
   params:
     data_root: &data_root '/data/shared/H36M-Toolbox'
+    unit: 'm'
     modality_names: ['rgb', 'depth']
     cameras: ['01','02','03','04']
     split: "train"
@@ -27,6 +28,7 @@ val_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
+    unit: 'm'
     modality_names: ['rgb', 'depth']
     cameras: ['01','02','03','04']
     split: "test"
@@ -38,6 +40,7 @@ test_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
+    unit: 'm'
     modality_names: ['rgb', 'depth']
     cameras: ['01','02','03','04']
     split: "test"
@@ -50,7 +53,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -87,7 +90,7 @@ aggregator:
     num_register_tokens: 4
     aa_order: ['single', 'global', 'cross']
     aa_block_size: 1
-    depth: 12
+    depth: 6
     block_type: 'Block'
     num_heads: 8
     mlp_ratio: 2.0
@@ -122,7 +125,7 @@ metrics:
 train_pipeline: &train_pipeline
   - name: VideoResize
     params:
-      size: [480, 640]
+      size: [256, 256]
       keep_ratio: false
       keys: ['input_rgb', 'input_depth']
   - name: VideoNormalize
@@ -139,3 +142,9 @@ train_pipeline: &train_pipeline
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
+vis_skl_format: 'h36m'  # Skeleton format for visualization
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization: (x - 0) / 255

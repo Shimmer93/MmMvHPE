@@ -6,8 +6,9 @@ sync_batchnorm: false
 clip_grad: null
 precision: 16
 max_steps: &max_steps 20000
-val_check_interval: 500
+val_check_interval: 1000
 limit_val_batches: 100
+
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -68,57 +69,41 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: XFi
+model_name: TestModel_1208
 backbone_rgb:
-  name: 'XFiResNet'
+  name: 'TimmWrapper'
   params:
-    block_type: 'Block'
-    layer_list: [2, 2, 2, 2]
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/RGB_Resnet18.pt'
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
   has_temporal: false
 backbone_depth:
-  name: 'XFiResNet'
+  name: 'TimmWrapper'
   params:
-    block_type: 'Block'
-    layer_list: [2, 2, 2, 2]
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/depth_Resnet18.pt'
-  has_temporal: false
-backbone_lidar:
-  name: 'XFiPointTransformerEncoderLidar'
-  params:
-    input_dim: 3
-    nblocks: 5
-    nneighbor: 16
-    transformer_dim: 512
-    n_points: 1024
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/lidar_all_random.pt'
-  has_temporal: false
-backbone_mmwave:
-  name: 'XFiPointTransformerEncoderMMWave'
-  params:
-    input_dim: 5
-    nblocks: 5
-    nneighbor: 16
-    transformer_dim: 128
-    n_points: 32
-    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/mmwave_all_random_TD.pt'
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
   has_temporal: false
 aggregator:
-  name: 'XFiAggregator'
+  name: 'TransformerAggregator'
   params:
-    input_dim: 512
-    output_dim: 512
-    num_modalities: 4
-    dim_expansion: 2
-    hidden_dim: 512
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 256
+    num_register_tokens: 4
+    aa_order: ['single', 'global', 'cross']
+    aa_block_size: 1
+    depth: 6
+    block_type: 'Block'
     num_heads: 8
-    dim_heads: 64
-    model_depth: 4
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
 keypoint_head:
-  name: 'XFiRegressionHead'
+  name: 'RegressionKeypointHead'
   params:
-    emb_size: 512
-    num_classes: 51  # 17 joints * 3 coordinates
+    emb_size: 768
+    num_classes: 51
     losses:
       - name: 'MSELoss'
         params: null
@@ -133,13 +118,14 @@ metrics:
   - name: 'PAMPJPE'
     params:
       affix: null
+# TODO: create metric for camera error
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
   - name: VideoResize
     params:
-      size: [480, 640]
+      size: [256, 256]
       keep_ratio: false
       keys: ['input_rgb', 'input_depth']
   - name: VideoNormalize
@@ -152,6 +138,8 @@ train_pipeline: &train_pipeline
       keys: ['input_depth']
   - name: ToTensor
     params: null
+  - name: CameraParamToPoseEncoding
+    params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
 vis_skl_format: 'h36m'  # Skeleton format for visualization
@@ -160,5 +148,3 @@ vis_denorm_params:
   rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
   depth_mean: [0.0]
   depth_std: [255.0]  # zero_one normalization: (x - 0) / 255
-
-

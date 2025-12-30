@@ -43,15 +43,9 @@ def compute_similarity_transform(X, Y, compute_optimal_scale=False):
         U,s,Vt = np.linalg.svd(A,full_matrices=False)
     except np.linalg.LinAlgError:
         print("SVD did not converge, using identity rotation")
-        U = np.zeros_like(A)
-        U[0,0] = 1
-        U[1,1] = 1
-        U[2,2] = 1
-        Vt = np.zeros_like(A)
-        Vt[0,0] = 1
-        Vt[1,1] = 1
-        Vt[2,2] = 1
-        s = np.zeros(3)
+        U = np.eye(A.shape[0])
+        Vt = np.eye(A.shape[0])
+        s = np.zeros(A.shape[0])
 
     V = Vt.T
     T = np.dot(V, U.T)

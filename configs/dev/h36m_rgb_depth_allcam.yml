@@ -15,9 +15,8 @@ train_dataset:
   name: 'H36MDataset'
   params:
     data_root: &data_root '/data/shared/H36M-Toolbox'
-    unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['02']
+    cameras: ['01', '02', '03', '04']
     split: "train"
     seq_len: 1       
     seq_step: 1
@@ -27,9 +26,8 @@ val_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
-    unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['02']
+    cameras: ['01', '02', '03', '04']
     split: "test"
     seq_len: 1
     seq_step: 1
@@ -39,9 +37,8 @@ test_dataset:
   name: 'H36MDataset'
   params:
     data_root: *data_root
-    unit: 'm'
     modality_names: ['rgb', 'depth']
-    cameras: ['02']
+    cameras: ['01', '02', '03', '04']
     split: "test"
     seq_len: 1
     seq_step: 1
@@ -52,7 +49,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
