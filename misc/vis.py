@@ -1,6 +1,13 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+from matplotlib.collections import PolyCollection
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from .skeleton import JOINT_COLOR_MAP, H36MSkeleton, COCOSkeleton, SMPLSkeleton
+
+# SMPL model color constants
+SMPL_MESH_COLOR = [0.65, 0.75, 0.85]  # Light blue for mesh
+SMPL_MESH_EDGE_COLOR = [0.3, 0.4, 0.5]  # Darker blue for edges
 
 def project_3d_to_2d(points_3d, intrinsic_matrix):
     """Project 3D points in camera coordinates to 2D image coordinates.
@@ -115,14 +122,15 @@ def plot_2d_skeleton_on_image(ax, image, keypoints_2d, edges=None, color_map=JOI
     
     Args:
         ax: matplotlib axis
-        image: RGB image array (H, W, 3)
+        image: RGB image array (H, W, 3), or None if image already shown on axis
         keypoints_2d: 2D keypoint coordinates (N, 2) in image space
         edges: list of (i, j) tuples representing skeleton bones
         color_map: color map for joints
         linewidth: line width for bones
         s: marker size for joints
     """
-    ax.imshow(image)
+    if image is not None:
+        ax.imshow(image)
     
     # Plot bones
     if edges is not None:
@@ -139,6 +147,121 @@ def plot_2d_skeleton_on_image(ax, image, keypoints_2d, edges=None, color_map=JOI
     ax.axis('off')
 
 
+def get_smpl_joints_from_params(smpl_model, global_orient, body_pose, betas, transl, device='cuda'):
+    """Get 3D joint positions from SMPL parameters."""
+    single_sample = global_orient.ndim == 1
+    if single_sample:
+        global_orient = global_orient[np.newaxis, :]
+        body_pose = body_pose[np.newaxis, :]
+        betas = betas[np.newaxis, :]
+        transl = transl[np.newaxis, :]
+    
+    N = global_orient.shape[0]
+    pose = np.concatenate([global_orient, body_pose], axis=1)
+    
+    expected_betas = smpl_model.th_betas.shape[1]
+    if betas.shape[1] < expected_betas:
+        betas_padded = np.zeros((N, expected_betas), dtype=betas.dtype)
+        betas_padded[:, :betas.shape[1]] = betas
+        betas = betas_padded
+    
+    th_pose = torch.from_numpy(pose).float().to(device)
+    th_betas = torch.from_numpy(betas).float().to(device)
+    th_trans = torch.from_numpy(transl).float().to(device)
+    
+    smpl_model = smpl_model.to(device)
+    smpl_model.eval()
+    with torch.no_grad():
+        verts, joints = smpl_model(th_pose, th_betas, th_trans)
+    
+    joints = joints.cpu().numpy()
+    if single_sample:
+        joints = joints[0]
+    
+    return joints
+
+
+def get_smpl_mesh_from_params(smpl_model, global_orient, body_pose, betas, transl, device='cuda'):
+    """Get mesh vertices and faces from SMPL parameters."""
+    single_sample = global_orient.ndim == 1
+    if single_sample:
+        global_orient = global_orient[np.newaxis, :]
+        body_pose = body_pose[np.newaxis, :]
+        betas = betas[np.newaxis, :]
+        transl = transl[np.newaxis, :]
+    
+    N = global_orient.shape[0]
+    pose = np.concatenate([global_orient, body_pose], axis=1)
+    
+    expected_betas = smpl_model.th_betas.shape[1]
+    if betas.shape[1] < expected_betas:
+        betas_padded = np.zeros((N, expected_betas), dtype=betas.dtype)
+        betas_padded[:, :betas.shape[1]] = betas
+        betas = betas_padded
+    
+    th_pose = torch.from_numpy(pose).float().to(device)
+    th_betas = torch.from_numpy(betas).float().to(device)
+    th_trans = torch.from_numpy(transl).float().to(device)
+    
+    smpl_model = smpl_model.to(device)
+    smpl_model.eval()
+    with torch.no_grad():
+        verts, joints = smpl_model(th_pose, th_betas, th_trans)
+    
+    faces = smpl_model.th_faces.cpu().numpy()
+    vertices = verts.cpu().numpy()
+    joints = joints.cpu().numpy()
+    
+    if single_sample:
+        vertices = vertices[0]
+        joints = joints[0]
+    
+    return vertices, faces, joints
+
+
+def plot_smpl_mesh_3d(ax, vertices, faces, color=SMPL_MESH_COLOR, alpha=0.5, 
+                      edge_color=None, linewidth=0.1):
+    """Plot SMPL mesh in 3D."""
+    mesh_faces = vertices[faces]
+    mesh = Poly3DCollection(mesh_faces, alpha=alpha)
+    mesh.set_facecolor(color)
+    if edge_color is not None:
+        mesh.set_edgecolor(edge_color)
+        mesh.set_linewidth(linewidth)
+    else:
+        mesh.set_edgecolor('none')
+    ax.add_collection3d(mesh)
+    return mesh
+
+
+def plot_smpl_mesh_2d(ax, vertices, faces, intrinsic_matrix, color=SMPL_MESH_COLOR, 
+                      alpha=0.3, edge_color=SMPL_MESH_EDGE_COLOR, linewidth=0.2):
+    """Plot projected SMPL mesh in 2D."""
+    vertices_2d = project_3d_to_2d(vertices, intrinsic_matrix)
+    depths = vertices[:, 2]
+    face_depths = depths[faces].mean(axis=1)
+    sorted_indices = np.argsort(-face_depths)
+    triangles = vertices_2d[faces[sorted_indices]]
+    poly_collection = PolyCollection(
+        triangles, 
+        facecolors=[(*color, alpha)] * len(triangles),
+        edgecolors=edge_color,
+        linewidths=linewidth
+    )
+    ax.add_collection(poly_collection)
+    return poly_collection
+
+
+def plot_smpl_mesh_on_image(ax, image, vertices, faces, intrinsic_matrix,
+                            color=SMPL_MESH_COLOR, alpha=0.4, 
+                            edge_color=None, linewidth=0.1):
+    """Plot projected SMPL mesh overlaid on an image."""
+    ax.imshow(image)
+    plot_smpl_mesh_2d(ax, vertices, faces, intrinsic_matrix, 
+                      color=color, alpha=alpha, edge_color=edge_color, linewidth=linewidth)
+    ax.axis('off')
+
+
 def plot_2d_point_cloud(ax, points, dims=[0, 1], color='k', s=1):
     points_ = points[..., :3].reshape(-1, 3)
     ax.scatter(points_[:, dims[0]], points_[:, dims[1]], c=color, s=s)
@@ -147,7 +270,7 @@ def plot_3d_point_cloud(ax, points, color='k', s=1):
     points_ = points[..., :3].reshape(-1, 3)
     ax.scatter(points_[:, 0], points_[:, 1], points_[:, 2], c=color, s=s)
 
-def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None):
+def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None, smpl_model=None, device='cuda'):
     # Plot the following subplots:
     # Row 1: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
     # Row 2: GT 3D skeleton, GT XY, GT XZ, GT YZ
@@ -246,27 +369,130 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     pred_keypoints_3d = pred_dict['pred_keypoints'][sample_idx].cpu().numpy()
     bounds = get_bounds(np.concatenate([gt_keypoints_3d, pred_keypoints_3d], axis=0))
     
-    # GT 3D skeleton
+    # Load GT vertices if available
+    gt_vertices = None
+    gt_faces = None
+    if smpl_model is not None and 'gt_vertices' in batch and batch['gt_vertices'] is not None:
+        if isinstance(batch['gt_vertices'], list):
+            gt_vertices = batch['gt_vertices'][sample_idx]
+        else:
+            gt_vertices = batch['gt_vertices'][sample_idx]
+        
+        if gt_vertices is not None:
+            if isinstance(gt_vertices, np.ndarray):
+                pass
+            elif hasattr(gt_vertices, 'cpu'):
+                gt_vertices = gt_vertices.cpu().numpy()
+            gt_faces = smpl_model.th_faces.cpu().numpy()
+        elif 'gt_smpl' in batch:
+            gt_smpl_data = batch['gt_smpl']
+            if isinstance(gt_smpl_data, list):
+                gt_smpl = gt_smpl_data[sample_idx]
+                global_orient = gt_smpl['global_orient']
+                body_pose = gt_smpl['body_pose']
+                betas = gt_smpl['betas']
+                transl = gt_smpl['transl']
+            else:
+                global_orient = gt_smpl_data['global_orient'][sample_idx].cpu().numpy()
+                body_pose = gt_smpl_data['body_pose'][sample_idx].cpu().numpy()
+                betas = gt_smpl_data['betas'][sample_idx].cpu().numpy()
+                transl = gt_smpl_data['transl'][sample_idx].cpu().numpy()
+            
+            if hasattr(global_orient, 'cpu'):
+                global_orient = global_orient.cpu().numpy()
+            if hasattr(body_pose, 'cpu'):
+                body_pose = body_pose.cpu().numpy()
+            if hasattr(betas, 'cpu'):
+                betas = betas.cpu().numpy()
+            if hasattr(transl, 'cpu'):
+                transl = transl.cpu().numpy()
+            
+            gt_vertices, gt_faces, _ = get_smpl_mesh_from_params(
+                smpl_model, global_orient, body_pose, betas, transl, device=device
+            )
+    
+    # Load Pred vertices if available
+    pred_vertices = None
+    pred_faces = None
+    if smpl_model is not None and 'pred_vertices' in pred_dict and pred_dict['pred_vertices'] is not None:
+        if isinstance(pred_dict['pred_vertices'], list):
+            pred_vertices = pred_dict['pred_vertices'][sample_idx]
+        else:
+            pred_vertices = pred_dict['pred_vertices'][sample_idx]
+        
+        if pred_vertices is not None:
+            if isinstance(pred_vertices, np.ndarray):
+                pass
+            elif hasattr(pred_vertices, 'cpu'):
+                pred_vertices = pred_vertices.cpu().numpy()
+            pred_faces = smpl_model.th_faces.cpu().numpy()
+        elif 'pred_smpl' in pred_dict:
+            pred_smpl_data = pred_dict['pred_smpl']
+            if isinstance(pred_smpl_data, list):
+                pred_smpl = pred_smpl_data[sample_idx]
+                global_orient = pred_smpl['global_orient']
+                body_pose = pred_smpl['body_pose']
+                betas = pred_smpl['betas']
+                transl = pred_smpl['transl']
+            else:
+                global_orient = pred_smpl_data['global_orient'][sample_idx].cpu().numpy()
+                body_pose = pred_smpl_data['body_pose'][sample_idx].cpu().numpy()
+                betas = pred_smpl_data['betas'][sample_idx].cpu().numpy()
+                transl = pred_smpl_data['transl'][sample_idx].cpu().numpy()
+            
+            if hasattr(global_orient, 'cpu'):
+                global_orient = global_orient.cpu().numpy()
+            if hasattr(body_pose, 'cpu'):
+                body_pose = body_pose.cpu().numpy()
+            if hasattr(betas, 'cpu'):
+                betas = betas.cpu().numpy()
+            if hasattr(transl, 'cpu'):
+                transl = transl.cpu().numpy()
+            
+            pred_vertices, pred_faces, _ = get_smpl_mesh_from_params(
+                smpl_model, global_orient, body_pose, betas, transl, device=device
+            )
+    
+    # GT 3D skeleton + mesh overlay
     plot_3d_skeleton(axes[plot_idx], gt_keypoints_3d, edges=bones)
-    set_3d_ax_limits(axes[plot_idx], bounds)
-    axes[plot_idx].set_title('GT 3D Skeleton')
+    if gt_vertices is not None and gt_faces is not None:
+        plot_smpl_mesh_3d(axes[plot_idx], gt_vertices, gt_faces, alpha=0.3)
+        mesh_bounds = get_bounds(gt_vertices)
+        set_3d_ax_limits(axes[plot_idx], mesh_bounds)
+    else:
+        set_3d_ax_limits(axes[plot_idx], bounds)
+    axes[plot_idx].set_title('GT 3D Skeleton + Mesh' if gt_vertices is not None else 'GT 3D Skeleton')
     plot_idx += 1
-    # GT projections
+    # GT projections + mesh overlay
     for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
         plot_2d_skeleton(axes[plot_idx], gt_keypoints_3d, dims=dims, edges=bones)
+        if gt_vertices is not None:
+            vertices_2d_proj = gt_vertices[:, dims]
+            axes[plot_idx].scatter(vertices_2d_proj[:, 0], vertices_2d_proj[:, 1], 
+                                  color=SMPL_MESH_COLOR, s=0.5, alpha=0.3)
         set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
-        axes[plot_idx].set_title(f'GT {plane} Projection')
+        axes[plot_idx].set_title(f'GT {plane} + Mesh' if gt_vertices is not None else f'GT {plane} Projection')
         plot_idx += 1
-    # Pred 3D skeleton
+    # Pred 3D skeleton + mesh overlay + mesh overlay
     plot_3d_skeleton(axes[plot_idx], pred_keypoints_3d, edges=bones)
-    set_3d_ax_limits(axes[plot_idx], bounds)
-    axes[plot_idx].set_title('Predicted 3D Skeleton')
+    if pred_vertices is not None and pred_faces is not None:
+        plot_smpl_mesh_3d(axes[plot_idx], pred_vertices, pred_faces, alpha=0.3,
+                         color=[0.85, 0.65, 0.65])
+        mesh_bounds = get_bounds(pred_vertices)
+        set_3d_ax_limits(axes[plot_idx], mesh_bounds)
+    else:
+        set_3d_ax_limits(axes[plot_idx], bounds)
+    axes[plot_idx].set_title('Pred 3D Skeleton + Mesh' if pred_vertices is not None else 'Predicted 3D Skeleton')
     plot_idx += 1
-    # Pred projections
+    # Pred projections + mesh overlay + mesh overlay
     for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
         plot_2d_skeleton(axes[plot_idx], pred_keypoints_3d, dims=dims, edges=bones)
+        if pred_vertices is not None:
+            vertices_2d_proj = pred_vertices[:, dims]
+            axes[plot_idx].scatter(vertices_2d_proj[:, 0], vertices_2d_proj[:, 1], 
+                                  color=[0.85, 0.65, 0.65], s=0.5, alpha=0.3)
         set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
-        axes[plot_idx].set_title(f'Predicted {plane} Projection')
+        axes[plot_idx].set_title(f'Pred {plane} + Mesh' if pred_vertices is not None else f'Predicted {plane} Projection')
         plot_idx += 1
 
     # Row 4: Overlay 2D projections on RGB and Depth images
@@ -297,9 +523,23 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         # Project 3D keypoints to 2D
         keypoints_2d = project_3d_to_2d(gt_keypoints_for_rgb, intrinsic)
         
+        # Overlay mesh if available
+        if gt_vertices is not None and gt_faces is not None:
+            gt_vertices_for_rgb = gt_vertices.copy()
+            if anchor_key != 'input_rgb':
+                extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+                gt_verts_hom = np.hstack([gt_vertices_for_rgb, np.ones((gt_vertices_for_rgb.shape[0], 1))])
+                gt_verts_rgb_hom = (extrinsic_4x4 @ gt_verts_hom.T).T
+                gt_vertices_for_rgb = gt_verts_rgb_hom[:, :3]
+            
+            plot_smpl_mesh_on_image(axes[plot_idx], rgb_image.copy(), gt_vertices_for_rgb, 
+                                   gt_faces, intrinsic, alpha=0.5, edge_color=None)
+        else:
+            axes[plot_idx].imshow(rgb_image.copy())
+        
         # Plot RGB with 2D skeleton overlay
-        plot_2d_skeleton_on_image(axes[plot_idx], rgb_image.copy(), keypoints_2d, edges=bones)
-        axes[plot_idx].set_title('RGB + GT 2D Overlay')
+        plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('RGB + GT Overlay + Mesh' if gt_vertices is not None else 'RGB + GT 2D Overlay')
     plot_idx += 1
     
     # Depth image with GT projected 2D keypoints
@@ -341,9 +581,23 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             depth_image_norm = depth_for_overlay.astype(np.uint8)
         depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
         
+        # Overlay mesh if available
+        if gt_vertices is not None and gt_faces is not None:
+            gt_vertices_for_depth = gt_vertices.copy()
+            if anchor_key != 'input_depth':
+                extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+                gt_verts_hom = np.hstack([gt_vertices_for_depth, np.ones((gt_vertices_for_depth.shape[0], 1))])
+                gt_verts_depth_hom = (extrinsic_4x4 @ gt_verts_hom.T).T
+                gt_vertices_for_depth = gt_verts_depth_hom[:, :3]
+            
+            plot_smpl_mesh_on_image(axes[plot_idx], depth_image_rgb, gt_vertices_for_depth, 
+                                   gt_faces, intrinsic, alpha=0.5, edge_color=None)
+        else:
+            axes[plot_idx].imshow(depth_image_rgb)
+        
         # Plot depth with 2D skeleton overlay
-        plot_2d_skeleton_on_image(axes[plot_idx], depth_image_rgb, keypoints_2d, edges=bones)
-        axes[plot_idx].set_title('Depth + GT 2D Overlay')
+        plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('Depth + GT Overlay + Mesh' if gt_vertices is not None else 'Depth + GT 2D Overlay')
     plot_idx += 1
     
     # RGB image with Pred projected 2D keypoints
@@ -369,9 +623,23 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         # Project 3D keypoints to 2D
         keypoints_2d = project_3d_to_2d(pred_keypoints_for_rgb, intrinsic)
         
+        # Overlay mesh if available
+        if pred_vertices is not None and pred_faces is not None:
+            pred_vertices_for_rgb = pred_vertices.copy()
+            if anchor_key != 'input_rgb':
+                extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+                pred_verts_hom = np.hstack([pred_vertices_for_rgb, np.ones((pred_vertices_for_rgb.shape[0], 1))])
+                pred_verts_rgb_hom = (extrinsic_4x4 @ pred_verts_hom.T).T
+                pred_vertices_for_rgb = pred_verts_rgb_hom[:, :3]
+            
+            plot_smpl_mesh_on_image(axes[plot_idx], rgb_image.copy(), pred_vertices_for_rgb, 
+                                   pred_faces, intrinsic, color=[0.85, 0.65, 0.65], alpha=0.5, edge_color=None)
+        else:
+            axes[plot_idx].imshow(rgb_image.copy())
+        
         # Plot RGB with 2D skeleton overlay
-        plot_2d_skeleton_on_image(axes[plot_idx], rgb_image.copy(), keypoints_2d, edges=bones)
-        axes[plot_idx].set_title('RGB + Pred 2D Overlay')
+        plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('RGB + Pred Overlay + Mesh' if pred_vertices is not None else 'RGB + Pred 2D Overlay')
     plot_idx += 1
     
     # Depth image with Pred projected 2D keypoints
@@ -411,9 +679,23 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             depth_image_norm = depth_for_overlay.astype(np.uint8)
         depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
         
+        # Overlay mesh if available
+        if pred_vertices is not None and pred_faces is not None:
+            pred_vertices_for_depth = pred_vertices.copy()
+            if anchor_key != 'input_depth':
+                extrinsic_4x4 = np.vstack([extrinsic, [0, 0, 0, 1]])
+                pred_verts_hom = np.hstack([pred_vertices_for_depth, np.ones((pred_vertices_for_depth.shape[0], 1))])
+                pred_verts_depth_hom = (extrinsic_4x4 @ pred_verts_hom.T).T
+                pred_vertices_for_depth = pred_verts_depth_hom[:, :3]
+            
+            plot_smpl_mesh_on_image(axes[plot_idx], depth_image_rgb, pred_vertices_for_depth, 
+                                   pred_faces, intrinsic, color=[0.85, 0.65, 0.65], alpha=0.5, edge_color=None)
+        else:
+            axes[plot_idx].imshow(depth_image_rgb)
+        
         # Plot depth with 2D skeleton overlay
-        plot_2d_skeleton_on_image(axes[plot_idx], depth_image_rgb, keypoints_2d, edges=bones)
-        axes[plot_idx].set_title('Depth + Pred 2D Overlay')
+        plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
+        axes[plot_idx].set_title('Depth + Pred Overlay + Mesh' if pred_vertices is not None else 'Depth + Pred 2D Overlay')
     plot_idx += 1
 
     plt.tight_layout()
