@@ -25,12 +25,17 @@ def main(args):
 
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
-    monitor = 'val_mpjpe'
+    
+    # Determine monitor metric based on head type
+    if hasattr(args, 'smpl_head') and args.smpl_head is not None:
+        monitor = 'val_smpl_mpjpe'
+    else:
+        monitor = 'val_mpjpe'
 
     if hasattr(args, 'epochs'):
-        filename = args.model_name+'-{epoch}-{val_mpjpe:.4f}'
+        filename = args.model_name+'-{epoch}-{'+monitor+':.4f}'
     else:
-        filename = args.model_name+'-{step}-{val_mpjpe:.4f}'
+        filename = args.model_name+'-{step}-{'+monitor+':.4f}'
 
     callbacks = [
         ModelCheckpoint(
