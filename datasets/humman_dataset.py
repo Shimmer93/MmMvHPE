@@ -256,14 +256,58 @@ class HumanDataset(BaseDataset):
             
             if osp.exists(frame_path):
                 frame = cv2.imread(frame_path)
+                
+                # TODO: This is a temporary fallback for corrupted PNG files (CRC errors).
+                # We should fix the dataset by re-downloading/regenerating corrupted files.
+                # See scripts/check_humman_dataset.py to identify corrupted files.
+                if frame is None:
+                    warnings.warn(
+                        f"Failed to load RGB frame (corrupted?): {frame_path}, "
+                        "using fallback"
+                    )
+                    if frames:
+                        # Use previous frame as fallback
+                        frames.append(frames[-1].copy())
+                    else:
+                        # First frame is corrupted - try to find next valid frame
+                        fallback_frame = None
+                        for j in range(i + 1, seq_len):
+                            next_frame_path = osp.join(base_dir, f"{start_frame + j + frame_offset:06d}.png")
+                            if osp.exists(next_frame_path):
+                                fallback_frame = cv2.imread(next_frame_path)
+                                if fallback_frame is not None:
+                                    fallback_frame = cv2.cvtColor(fallback_frame, cv2.COLOR_BGR2RGB)
+                                    break
+                        if fallback_frame is not None:
+                            frames.append(fallback_frame)
+                        else:
+                            # Create a zero placeholder as last resort (512x512 RGB)
+                            frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
+                    continue
+                
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frames.append(frame)
             else:
-                # Handle missing frames by repeating last frame
+                # Handle missing frames
+                warnings.warn(f"RGB frame not found: {frame_path}, using fallback")
                 if frames:
+                    # Repeat last frame
                     frames.append(frames[-1].copy())
                 else:
-                    raise RuntimeError(f"RGB frame not found: {frame_path}")
+                    # First frame is missing - try to find next valid frame
+                    fallback_frame = None
+                    for j in range(i + 1, seq_len):
+                        next_frame_path = osp.join(base_dir, f"{start_frame + j + frame_offset:06d}.png")
+                        if osp.exists(next_frame_path):
+                            fallback_frame = cv2.imread(next_frame_path)
+                            if fallback_frame is not None:
+                                fallback_frame = cv2.cvtColor(fallback_frame, cv2.COLOR_BGR2RGB)
+                                break
+                    if fallback_frame is not None:
+                        frames.append(fallback_frame)
+                    else:
+                        # Create a zero placeholder as last resort (512x512 RGB)
+                        frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
         
         return frames
 
@@ -287,6 +331,37 @@ class HumanDataset(BaseDataset):
                 if depth is None:
                     depth = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
                 
+                # TODO: This is a temporary fallback for corrupted PNG files (CRC errors).
+                # We should fix the dataset by re-downloading/regenerating corrupted files.
+                # See scripts/check_humman_dataset.py to identify corrupted files.
+                if depth is None:
+                    warnings.warn(
+                        f"Failed to load depth frame (corrupted?): {frame_path}, "
+                        "using fallback"
+                    )
+                    if frames:
+                        # Use previous frame as fallback
+                        frames.append(frames[-1].copy())
+                    else:
+                        # First frame is corrupted - try to find next valid frame
+                        fallback_depth = None
+                        for j in range(i + 1, seq_len):
+                            next_frame_path = osp.join(base_dir, f"{start_frame + j:06d}.png")
+                            if osp.exists(next_frame_path):
+                                fallback_depth = cv2.imread(next_frame_path, cv2.IMREAD_ANYDEPTH)
+                                if fallback_depth is not None:
+                                    break
+                        if fallback_depth is not None:
+                            if self.unit == "m":
+                                fallback_depth = fallback_depth.astype(np.float32) / 1000.0
+                            else:
+                                fallback_depth = fallback_depth.astype(np.float32)
+                            frames.append(fallback_depth)
+                        else:
+                            # Create a zero placeholder as last resort (512x512 depth)
+                            frames.append(np.zeros((512, 512), dtype=np.float32))
+                    continue
+                
                 # Convert to float32 and scale to meters
                 depth = depth.astype(np.float32)
                 # Depth is typically in millimeters, convert to meters
@@ -295,11 +370,29 @@ class HumanDataset(BaseDataset):
                     
                 frames.append(depth)
             else:
-                # Handle missing frames by repeating last frame
+                # Handle missing frames
+                warnings.warn(f"Depth frame not found: {frame_path}, using fallback")
                 if frames:
+                    # Repeat last frame
                     frames.append(frames[-1].copy())
                 else:
-                    raise RuntimeError(f"Depth frame not found: {frame_path}")
+                    # First frame is missing - try to find next valid frame
+                    fallback_depth = None
+                    for j in range(i + 1, seq_len):
+                        next_frame_path = osp.join(base_dir, f"{start_frame + j:06d}.png")
+                        if osp.exists(next_frame_path):
+                            fallback_depth = cv2.imread(next_frame_path, cv2.IMREAD_ANYDEPTH)
+                            if fallback_depth is not None:
+                                break
+                    if fallback_depth is not None:
+                        if self.unit == "m":
+                            fallback_depth = fallback_depth.astype(np.float32) / 1000.0
+                        else:
+                            fallback_depth = fallback_depth.astype(np.float32)
+                        frames.append(fallback_depth)
+                    else:
+                        # Create a zero placeholder as last resort (512x512 depth)
+                        frames.append(np.zeros((512, 512), dtype=np.float32))
         
         return frames
 
