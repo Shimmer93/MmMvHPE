@@ -281,12 +281,16 @@ class PCRemoveOutliers():
     
 class DepthToLiDARPC():
     def __init__(self, 
-                 focal_length: float,
+                 focal_length: Optional[float] = None,
                  center: Optional[Sequence[float]] = None,
-                 keys: List[str] = ['input_depth']):
+                 keys: List[str] = ['input_depth'],
+                 camera_key: str = 'depth_camera',
+                 min_depth: float = 1e-6):
         self.focal_length = focal_length
         self.center = center
         self.keys = keys
+        self.camera_key = camera_key
+        self.min_depth = min_depth
 
     def __call__(self, results):
         for key in results.keys():
@@ -296,19 +300,42 @@ class DepthToLiDARPC():
             depth_seq = results[key]
             pc_seq = []
 
+            has_camera = self.camera_key in results
+            if has_camera:
+                camera = results[self.camera_key]
+                K = np.array(camera['intrinsic'], dtype=np.float32)
+                K_inv = np.linalg.inv(K)
+                extrinsic = np.array(camera['extrinsic'], dtype=np.float32)
+                R = extrinsic[:, :3]
+                T = extrinsic[:, 3:].reshape(3, 1)
+            else:
+                if self.focal_length is None:
+                    raise KeyError(
+                        f"Missing camera parameters '{self.camera_key}' in results and no focal_length provided."
+                    )
+
             for depth in depth_seq:
                 H, W = depth.shape
-                if self.center is None:
-                    cx, cy = W / 2.0, H / 2.0
-                else:
-                    cx, cy = self.center
-
                 xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
-                z = depth.flatten()
-                x = (xmap.flatten() - cx) * z / self.focal_length
-                y = (ymap.flatten() - cy) * z / self.focal_length
+                z = depth.reshape(-1)
+                valid = z > self.min_depth
 
-                pc = np.vstack((x, y, z)).T  # (N, 3)
+                if has_camera:
+                    pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0)
+                    rays = K_inv @ pixels
+                    cam_points = rays * z
+                    cam_points = cam_points[:, valid]
+                    cam_points = (R.T @ (cam_points - T)).T
+                    pc = cam_points.astype(np.float32)
+                else:
+                    if self.center is None:
+                        cx, cy = W / 2.0, H / 2.0
+                    else:
+                        cx, cy = self.center
+                    x = (xmap.reshape(-1) - cx) * z / self.focal_length
+                    y = (ymap.reshape(-1) - cy) * z / self.focal_length
+                    pc = np.vstack((x, y, z)).T
+                    pc = pc[valid].astype(np.float32)
                 pc_seq.append(pc)
 
             out_key = key.replace('depth', 'lidar')

@@ -10,9 +10,10 @@ import glob
 
 here = Path(__file__).resolve().parent
 ext_src_root = Path("_ext_src")
-ext_sources = glob.glob(str(ext_src_root / "src" / "*.cpp")) + glob.glob(
-    str(ext_src_root / "src" / "*.cu")
+ext_sources = glob.glob(str((here / ext_src_root / "src") / "*.cpp")) + glob.glob(
+    str((here / ext_src_root / "src") / "*.cu")
 )
+ext_sources = [str(Path(p).resolve().relative_to(here)) for p in ext_sources]
 ext_include = str((here / ext_src_root / "include").resolve())
 
 py_modules = [

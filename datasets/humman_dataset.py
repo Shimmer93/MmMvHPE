@@ -5,13 +5,14 @@ import numpy as np
 import json
 import glob
 import random
+import re
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from datasets.base_dataset import BaseDataset
 import warnings
 
 
-class HumanDataset(BaseDataset):
+class HummanDataset(BaseDataset):
     def __init__(
         self,
         data_root: str = "/data/shared/humman_release_v1.0_point",
@@ -27,6 +28,7 @@ class HumanDataset(BaseDataset):
         pad_seq: bool = False,
         causal: bool = False,
         use_all_pairs: bool = False,  # False: random pair per frame, True: all pairs
+        colocated: bool = False, # If true, only use colocated RGB-Depth pairs
         random_seed: Optional[int] = None,
     ):
         super().__init__(pipeline=pipeline)
@@ -39,6 +41,7 @@ class HumanDataset(BaseDataset):
         self.pad_seq = pad_seq
         self.modality_names = modality_names
         self.use_all_pairs = use_all_pairs
+        self.colocated = colocated
         self.random_seed = random_seed
         
         # Set random seed for reproducibility
@@ -406,6 +409,12 @@ class HumanDataset(BaseDataset):
         if not self.use_all_pairs:
             data_info['rgb_camera'] = random.choice(self.rgb_cameras)
             data_info['depth_camera'] = random.choice(self.depth_cameras)
+
+            if self.colocated:
+                # Ensure selected cameras are colocated
+                if data_info['rgb_camera'] != data_info['depth_camera']:
+                    # If not colocated, set depth camera to rgb camera
+                    data_info['depth_camera'] = data_info['rgb_camera']
         
         # Load camera parameters
         cameras = self._load_camera_params(data_info['seq_dir'])
@@ -633,4 +642,383 @@ class HumanDataset(BaseDataset):
         # Apply pipeline transforms
         sample = self.pipeline(sample)
         
+        return sample
+
+
+class HummanPreprocessedDataset(BaseDataset):
+    def __init__(
+        self,
+        data_root: str,
+        unit: str = "m",
+        pipeline: List[dict] = [],
+        split: str = "train",
+        modality_names: Sequence[str] = ["rgb", "depth"],
+        rgb_cameras: Optional[Sequence[str]] = None,
+        depth_cameras: Optional[Sequence[str]] = None,
+        anchor_key: str = "input_rgb",
+        seq_len: int = 5,
+        seq_step: int = 1,
+        pad_seq: bool = False,
+        causal: bool = False,
+        use_all_pairs: bool = False,
+        random_seed: Optional[int] = None,
+    ):
+        super().__init__(pipeline=pipeline)
+        self.data_root = data_root
+        self.split = split
+        self.unit = unit
+        self.seq_len = seq_len
+        self.seq_step = seq_step
+        self.causal = causal
+        self.pad_seq = pad_seq
+        self.modality_names = modality_names
+        self.use_all_pairs = use_all_pairs
+        self.random_seed = random_seed
+
+        if random_seed is not None:
+            random.seed(random_seed)
+            np.random.seed(random_seed)
+
+        self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
+        self.available_iphone_cameras = ["iphone"]
+
+        if rgb_cameras is None:
+            self.rgb_cameras = self.available_kinect_cameras + self.available_iphone_cameras
+        else:
+            self.rgb_cameras = list(rgb_cameras)
+
+        if depth_cameras is None:
+            self.depth_cameras = self.available_kinect_cameras + self.available_iphone_cameras
+        else:
+            self.depth_cameras = list(depth_cameras)
+
+        valid_modalities = {"rgb", "depth"}
+        invalid_modalities = set(modality_names) - valid_modalities
+        if invalid_modalities:
+            warnings.warn(
+                f"Invalid modality names detected: {invalid_modalities}. "
+                f"Only 'rgb' and 'depth' are supported for Humman dataset."
+            )
+
+        valid_anchor_keys = {f"input_{mod}" for mod in modality_names}
+        if anchor_key not in valid_anchor_keys:
+            warnings.warn(
+                f"Invalid anchor_key: {anchor_key}. "
+                f"Must be one of {valid_anchor_keys}. "
+                f"Defaulting to 'input_rgb'."
+            )
+            self.anchor_key = "input_rgb" if "rgb" in modality_names else f"input_{modality_names[0]}"
+        else:
+            self.anchor_key = anchor_key
+
+        if unit not in {"mm", "m"}:
+            warnings.warn(
+                f"Invalid unit: {unit}. Defaulting to 'm'."
+            )
+            self.unit = "m"
+
+        self._seq_re = re.compile(r"(p\\d+_a\\d+)")
+        self._cam_re = re.compile(r"(kinect_\\d{3}|iphone)")
+        self._frame_re = re.compile(r"(\\d+)$")
+
+        self.file_index = self._index_files()
+        self.data_list = self._build_dataset()
+
+    def _index_files(self):
+        file_index = {m: {} for m in self.modality_names}
+        for modality in self.modality_names:
+            modality_dir = osp.join(self.data_root, modality)
+            if not osp.exists(modality_dir):
+                continue
+            for fn in os.listdir(modality_dir):
+                name, _ = osp.splitext(fn)
+                seq_match = self._seq_re.search(name)
+                cam_match = self._cam_re.search(name)
+                frame_match = self._frame_re.search(name)
+                if not (seq_match and cam_match and frame_match):
+                    continue
+                seq_name = seq_match.group(1)
+                camera = cam_match.group(1)
+                frame_idx = int(frame_match.group(1))
+                file_index[modality].setdefault(seq_name, {}).setdefault(camera, []).append(
+                    (frame_idx, osp.join(modality_dir, fn))
+                )
+
+        for modality in file_index:
+            for seq_name in file_index[modality]:
+                for camera in file_index[modality][seq_name]:
+                    file_index[modality][seq_name][camera].sort(key=lambda x: x[0])
+
+        return file_index
+
+    def _build_dataset(self):
+        data_list = []
+
+        seq_names = set()
+        for modality in self.modality_names:
+            seq_names.update(self.file_index.get(modality, {}).keys())
+        seq_names = sorted(seq_names)
+
+        person_ids = sorted(list(set([s.split("_")[0] for s in seq_names])))
+        split_idx = int(len(person_ids) * 0.8)
+
+        if self.split == "train":
+            valid_persons = set(person_ids[:split_idx])
+        elif self.split == "test":
+            valid_persons = set(person_ids[split_idx:])
+        elif self.split == "train_mini":
+            valid_persons = set(person_ids[:16])
+        elif self.split == "test_mini":
+            valid_persons = set(person_ids[split_idx:split_idx+4])
+        else:
+            valid_persons = set(person_ids)
+
+        for seq_name in seq_names:
+            person_id = seq_name.split("_")[0]
+            if person_id not in valid_persons:
+                continue
+
+            rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
+            depth_cams = list(self.file_index.get("depth", {}).get(seq_name, {}).keys())
+            if "rgb" in self.modality_names and not rgb_cams:
+                continue
+            if "depth" in self.modality_names and not depth_cams:
+                continue
+
+            ref_modality = self.modality_names[0]
+            ref_cams = list(self.file_index.get(ref_modality, {}).get(seq_name, {}).keys())
+            if not ref_cams:
+                continue
+            ref_frames = self.file_index[ref_modality][seq_name][ref_cams[0]]
+            num_frames = len(ref_frames)
+            if num_frames < self.seq_len:
+                continue
+
+            for start_idx in range(0, num_frames - self.seq_len + 1, self.seq_step):
+                if self.use_all_pairs:
+                    for rgb_cam in rgb_cams:
+                        for depth_cam in depth_cams:
+                            data_list.append({
+                                "seq_name": seq_name,
+                                "person_id": person_id,
+                                "start_frame": start_idx,
+                                "num_frames": num_frames,
+                                "rgb_camera": rgb_cam,
+                                "depth_camera": depth_cam,
+                                "rgb_cameras": rgb_cams,
+                                "depth_cameras": depth_cams,
+                            })
+                else:
+                    data_list.append({
+                        "seq_name": seq_name,
+                        "person_id": person_id,
+                        "start_frame": start_idx,
+                        "num_frames": num_frames,
+                        "rgb_camera": None,
+                        "depth_camera": None,
+                        "rgb_cameras": rgb_cams,
+                        "depth_cameras": depth_cams,
+                    })
+
+        return data_list
+
+    def _load_camera_params(self, seq_name):
+        camera_file = osp.join(self.data_root, "cameras", f"{seq_name}_cameras.json")
+        with open(camera_file, "r") as f:
+            cameras = json.load(f)
+        return cameras
+
+    def _load_smpl_params(self, seq_name):
+        smpl_file = osp.join(self.data_root, "smpl", f"{seq_name}_smpl_params.npz")
+        smpl_data = np.load(smpl_file)
+        return {
+            "global_orient": smpl_data["global_orient"],
+            "body_pose": smpl_data["body_pose"],
+            "betas": smpl_data["betas"],
+            "transl": smpl_data["transl"],
+        }
+
+    def _load_keypoints_3d(self, seq_name):
+        keypoints_file = osp.join(self.data_root, "skl", f"{seq_name}_keypoints_3d.npz")
+        if osp.exists(keypoints_file):
+            keypoints_data = np.load(keypoints_file)
+            return keypoints_data["keypoints_3d"]
+        warnings.warn(
+            f"keypoints_3d.npz not found for {seq_name}. "
+            f"Run tools/generate_humman_keypoints.py to precompute keypoints."
+        )
+        return None
+
+    def _load_frames(self, modality, seq_name, camera_name, start_frame):
+        frame_list = self.file_index[modality][seq_name][camera_name]
+        frames = []
+        for i in range(self.seq_len):
+            idx = start_frame + i
+            idx = min(idx, len(frame_list) - 1)
+            frame_path = frame_list[idx][1]
+            if modality == "rgb":
+                frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                frame = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+            frames.append(frame)
+        return frames
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, index):
+        data_info = self.data_list[index].copy()
+
+        if not self.use_all_pairs:
+            if data_info["rgb_camera"] is None and "rgb" in self.modality_names:
+                data_info["rgb_camera"] = random.choice(data_info["rgb_cameras"])
+            if data_info["depth_camera"] is None and "depth" in self.modality_names:
+                data_info["depth_camera"] = random.choice(data_info["depth_cameras"])
+
+        cameras = self._load_camera_params(data_info["seq_name"])
+        smpl_params = self._load_smpl_params(data_info["seq_name"])
+        keypoints_3d = self._load_keypoints_3d(data_info["seq_name"])
+
+        if self.causal:
+            gt_frame_idx = data_info["start_frame"] + self.seq_len - 1
+        else:
+            middle_offset = self.seq_len // 2
+            gt_frame_idx = data_info["start_frame"] + middle_offset
+
+        gt_frame_idx = min(gt_frame_idx, smpl_params["global_orient"].shape[0] - 1)
+
+        gt_smpl = {
+            "global_orient": smpl_params["global_orient"][gt_frame_idx],
+            "body_pose": smpl_params["body_pose"][gt_frame_idx],
+            "betas": smpl_params["betas"][gt_frame_idx],
+            "transl": smpl_params["transl"][gt_frame_idx],
+        }
+
+        if self.unit == "m":
+            gt_smpl["transl"] = gt_smpl["transl"]
+
+        if keypoints_3d is not None:
+            gt_keypoints = keypoints_3d[gt_frame_idx]
+            if self.unit == "m":
+                gt_keypoints = gt_keypoints
+        else:
+            gt_keypoints = None
+
+        sample = {
+            "gt_smpl": gt_smpl,
+            "gt_keypoints": gt_keypoints,
+            "sample_id": (
+                f"{data_info['seq_name']}_rgb_{data_info['rgb_camera']}_"
+                f"depth_{data_info['depth_camera']}_{data_info['start_frame']}"
+            ),
+            "modalities": list(self.modality_names),
+            "anchor_key": self.anchor_key,
+        }
+
+        if "rgb" in self.modality_names:
+            rgb_frames = self._load_frames(
+                "rgb",
+                data_info["seq_name"],
+                data_info["rgb_camera"],
+                data_info["start_frame"],
+            )
+            sample["input_rgb"] = rgb_frames
+            if data_info["rgb_camera"].startswith("kinect"):
+                cam_key = f"kinect_color_{data_info['rgb_camera'].split('_')[1]}"
+            else:
+                cam_key = "iphone"
+            if cam_key in cameras:
+                cam_params = cameras[cam_key]
+                K = np.array(cam_params["K"], dtype=np.float32)
+                R = np.array(cam_params["R"], dtype=np.float32)
+                T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
+                sample["rgb_camera"] = {
+                    "intrinsic": K,
+                    "extrinsic": np.hstack((R, T)).astype(np.float32),
+                }
+
+        if "depth" in self.modality_names:
+            depth_frames = self._load_frames(
+                "depth",
+                data_info["seq_name"],
+                data_info["depth_camera"],
+                data_info["start_frame"],
+            )
+            sample["input_depth"] = depth_frames
+            if data_info["depth_camera"].startswith("kinect"):
+                cam_key = f"kinect_depth_{data_info['depth_camera'].split('_')[1]}"
+            else:
+                cam_key = "iphone"
+            if cam_key in cameras:
+                cam_params = cameras[cam_key]
+                K = np.array(cam_params["K"], dtype=np.float32)
+                R = np.array(cam_params["R"], dtype=np.float32)
+                T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
+                sample["depth_camera"] = {
+                    "intrinsic": K,
+                    "extrinsic": np.hstack((R, T)).astype(np.float32),
+                }
+
+        if "rgb" in self.modality_names and "depth" in self.modality_names:
+            rgb_extrinsic = sample["rgb_camera"]["extrinsic"]
+            depth_extrinsic = sample["depth_camera"]["extrinsic"]
+            rgb_R, rgb_T = rgb_extrinsic[:, :3], rgb_extrinsic[:, 3:]
+            depth_R, depth_T = depth_extrinsic[:, :3], depth_extrinsic[:, 3:]
+
+            if self.anchor_key == "input_rgb":
+                sample["rgb_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+                R_rel = depth_R @ np.linalg.inv(rgb_R)
+                T_rel = depth_T - R_rel @ rgb_T
+                sample["depth_camera"]["extrinsic"] = np.hstack([R_rel, T_rel]).astype(np.float32)
+
+                transl_world = gt_smpl["transl"].reshape(3, 1)
+                transl_rgb = rgb_R @ transl_world + rgb_T
+                sample["gt_smpl"]["transl"] = transl_rgb.flatten()
+
+                if gt_keypoints is not None:
+                    keypoints_world = gt_keypoints.T
+                    keypoints_rgb = rgb_R @ keypoints_world + rgb_T
+                    sample["gt_keypoints"] = keypoints_rgb.T
+
+            elif self.anchor_key == "input_depth":
+                sample["depth_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+                R_rel = rgb_R @ np.linalg.inv(depth_R)
+                T_rel = rgb_T - R_rel @ depth_T
+                sample["rgb_camera"]["extrinsic"] = np.hstack([R_rel, T_rel]).astype(np.float32)
+
+                transl_world = gt_smpl["transl"].reshape(3, 1)
+                transl_depth = depth_R @ transl_world + depth_T
+                sample["gt_smpl"]["transl"] = transl_depth.flatten()
+
+                if gt_keypoints is not None:
+                    keypoints_world = gt_keypoints.T
+                    keypoints_depth = depth_R @ keypoints_world + depth_T
+                    sample["gt_keypoints"] = keypoints_depth.T
+
+        elif self.anchor_key == "input_rgb" and "rgb" in self.modality_names:
+            sample["rgb_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+            rgb_extrinsic = sample["rgb_camera"]["extrinsic"]
+            rgb_R, rgb_T = rgb_extrinsic[:, :3], rgb_extrinsic[:, 3:]
+            transl_world = gt_smpl["transl"].reshape(3, 1)
+            transl_rgb = rgb_R @ transl_world + rgb_T
+            sample["gt_smpl"]["transl"] = transl_rgb.flatten()
+            if gt_keypoints is not None:
+                keypoints_world = gt_keypoints.T
+                keypoints_rgb = rgb_R @ keypoints_world + rgb_T
+                sample["gt_keypoints"] = keypoints_rgb.T
+
+        elif self.anchor_key == "input_depth" and "depth" in self.modality_names:
+            sample["depth_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
+            depth_extrinsic = sample["depth_camera"]["extrinsic"]
+            depth_R, depth_T = depth_extrinsic[:, :3], depth_extrinsic[:, 3:]
+            transl_world = gt_smpl["transl"].reshape(3, 1)
+            transl_depth = depth_R @ transl_world + depth_T
+            sample["gt_smpl"]["transl"] = transl_depth.flatten()
+            if gt_keypoints is not None:
+                keypoints_world = gt_keypoints.T
+                keypoints_depth = depth_R @ keypoints_world + depth_T
+                sample["gt_keypoints"] = keypoints_depth.T
+
+        sample = self.pipeline(sample)
         return sample
