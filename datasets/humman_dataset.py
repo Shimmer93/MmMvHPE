@@ -221,16 +221,23 @@ class HummanDataset(BaseDataset):
         }
     
     def _load_keypoints_3d(self, seq_dir):
-        """Load precomputed 3D keypoints from keypoints_3d.npz."""
+        """Load precomputed 3D keypoints and vertices from keypoints_3d.npz."""
         keypoints_file = osp.join(seq_dir, "keypoints_3d.npz")
         if osp.exists(keypoints_file):
-            keypoints_data = np.load(keypoints_file)
-            return keypoints_data['keypoints_3d']  # (num_frames, 24, 3)
+            data = np.load(keypoints_file)
+            result = {
+                'keypoints_3d': data['keypoints_3d']  # (num_frames, 24, 3)
+            }
+            # Load vertices if available
+            if 'vertices' in data:
+                result['vertices'] = data['vertices']  # (num_frames, 6890, 3)
+            return result
         else:
             warnings.warn(
                 f"keypoints_3d.npz not found in {seq_dir}. "
                 f"Run tools/generate_humman_keypoints.py to precompute keypoints."
             )
+            return None
             return None
 
     def _load_rgb_frames(self, seq_dir, camera_name, start_frame, seq_len):
@@ -252,14 +259,58 @@ class HummanDataset(BaseDataset):
             
             if osp.exists(frame_path):
                 frame = cv2.imread(frame_path)
+                
+                # TODO: This is a temporary fallback for corrupted PNG files (CRC errors).
+                # We should fix the dataset by re-downloading/regenerating corrupted files.
+                # See scripts/check_humman_dataset.py to identify corrupted files.
+                if frame is None:
+                    warnings.warn(
+                        f"Failed to load RGB frame (corrupted?): {frame_path}, "
+                        "using fallback"
+                    )
+                    if frames:
+                        # Use previous frame as fallback
+                        frames.append(frames[-1].copy())
+                    else:
+                        # First frame is corrupted - try to find next valid frame
+                        fallback_frame = None
+                        for j in range(i + 1, seq_len):
+                            next_frame_path = osp.join(base_dir, f"{start_frame + j + frame_offset:06d}.png")
+                            if osp.exists(next_frame_path):
+                                fallback_frame = cv2.imread(next_frame_path)
+                                if fallback_frame is not None:
+                                    fallback_frame = cv2.cvtColor(fallback_frame, cv2.COLOR_BGR2RGB)
+                                    break
+                        if fallback_frame is not None:
+                            frames.append(fallback_frame)
+                        else:
+                            # Create a zero placeholder as last resort (512x512 RGB)
+                            frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
+                    continue
+                
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frames.append(frame)
             else:
-                # Handle missing frames by repeating last frame
+                # Handle missing frames
+                warnings.warn(f"RGB frame not found: {frame_path}, using fallback")
                 if frames:
+                    # Repeat last frame
                     frames.append(frames[-1].copy())
                 else:
-                    raise RuntimeError(f"RGB frame not found: {frame_path}")
+                    # First frame is missing - try to find next valid frame
+                    fallback_frame = None
+                    for j in range(i + 1, seq_len):
+                        next_frame_path = osp.join(base_dir, f"{start_frame + j + frame_offset:06d}.png")
+                        if osp.exists(next_frame_path):
+                            fallback_frame = cv2.imread(next_frame_path)
+                            if fallback_frame is not None:
+                                fallback_frame = cv2.cvtColor(fallback_frame, cv2.COLOR_BGR2RGB)
+                                break
+                    if fallback_frame is not None:
+                        frames.append(fallback_frame)
+                    else:
+                        # Create a zero placeholder as last resort (512x512 RGB)
+                        frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
         
         return frames
 
@@ -283,6 +334,37 @@ class HummanDataset(BaseDataset):
                 if depth is None:
                     depth = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
                 
+                # TODO: This is a temporary fallback for corrupted PNG files (CRC errors).
+                # We should fix the dataset by re-downloading/regenerating corrupted files.
+                # See scripts/check_humman_dataset.py to identify corrupted files.
+                if depth is None:
+                    warnings.warn(
+                        f"Failed to load depth frame (corrupted?): {frame_path}, "
+                        "using fallback"
+                    )
+                    if frames:
+                        # Use previous frame as fallback
+                        frames.append(frames[-1].copy())
+                    else:
+                        # First frame is corrupted - try to find next valid frame
+                        fallback_depth = None
+                        for j in range(i + 1, seq_len):
+                            next_frame_path = osp.join(base_dir, f"{start_frame + j:06d}.png")
+                            if osp.exists(next_frame_path):
+                                fallback_depth = cv2.imread(next_frame_path, cv2.IMREAD_ANYDEPTH)
+                                if fallback_depth is not None:
+                                    break
+                        if fallback_depth is not None:
+                            if self.unit == "m":
+                                fallback_depth = fallback_depth.astype(np.float32) / 1000.0
+                            else:
+                                fallback_depth = fallback_depth.astype(np.float32)
+                            frames.append(fallback_depth)
+                        else:
+                            # Create a zero placeholder as last resort (512x512 depth)
+                            frames.append(np.zeros((512, 512), dtype=np.float32))
+                    continue
+                
                 # Convert to float32 and scale to meters
                 depth = depth.astype(np.float32)
                 # Depth is typically in millimeters, convert to meters
@@ -291,11 +373,29 @@ class HummanDataset(BaseDataset):
                     
                 frames.append(depth)
             else:
-                # Handle missing frames by repeating last frame
+                # Handle missing frames
+                warnings.warn(f"Depth frame not found: {frame_path}, using fallback")
                 if frames:
+                    # Repeat last frame
                     frames.append(frames[-1].copy())
                 else:
-                    raise RuntimeError(f"Depth frame not found: {frame_path}")
+                    # First frame is missing - try to find next valid frame
+                    fallback_depth = None
+                    for j in range(i + 1, seq_len):
+                        next_frame_path = osp.join(base_dir, f"{start_frame + j:06d}.png")
+                        if osp.exists(next_frame_path):
+                            fallback_depth = cv2.imread(next_frame_path, cv2.IMREAD_ANYDEPTH)
+                            if fallback_depth is not None:
+                                break
+                    if fallback_depth is not None:
+                        if self.unit == "m":
+                            fallback_depth = fallback_depth.astype(np.float32) / 1000.0
+                        else:
+                            fallback_depth = fallback_depth.astype(np.float32)
+                        frames.append(fallback_depth)
+                    else:
+                        # Create a zero placeholder as last resort (512x512 depth)
+                        frames.append(np.zeros((512, 512), dtype=np.float32))
         
         return frames
 
@@ -322,8 +422,8 @@ class HummanDataset(BaseDataset):
         # Load SMPL parameters
         smpl_params = self._load_smpl_params(data_info['seq_dir'])
         
-        # Load precomputed 3D keypoints
-        keypoints_3d = self._load_keypoints_3d(data_info['seq_dir'])
+        # Load precomputed 3D keypoints and vertices
+        precomputed_data = self._load_keypoints_3d(data_info['seq_dir'])
         
         # Get ground truth SMPL parameters for this sequence
         # Select frame based on causal or non-causal setting
@@ -347,19 +447,27 @@ class HummanDataset(BaseDataset):
         if self.unit == "m":
             gt_smpl['transl'] = gt_smpl['transl']  # Already in meters
         
-        # Get ground truth 3D keypoints
-        if keypoints_3d is not None:
-            gt_keypoints = keypoints_3d[gt_frame_idx]  # (24, 3) - SMPL joints
-            # Convert to meters if specified (should already be in meters from SMPL)
-            if self.unit == "m":
-                gt_keypoints = gt_keypoints  # Already in meters
-        else:
-            # If keypoints not precomputed, set to None
-            gt_keypoints = None
+        # Get ground truth 3D keypoints and vertices
+        gt_keypoints = None
+        gt_vertices = None
+        
+        if precomputed_data is not None:
+            if 'keypoints_3d' in precomputed_data:
+                gt_keypoints = precomputed_data['keypoints_3d'][gt_frame_idx]  # (24, 3) - SMPL joints
+                # Convert to meters if specified (should already be in meters from SMPL)
+                if self.unit == "m":
+                    gt_keypoints = gt_keypoints  # Already in meters
+            
+            if 'vertices' in precomputed_data:
+                gt_vertices = precomputed_data['vertices'][gt_frame_idx]  # (6890, 3) - SMPL vertices
+                # Convert to meters if specified (should already be in meters from SMPL)
+                if self.unit == "m":
+                    gt_vertices = gt_vertices  # Already in meters
         
         sample = {
             "gt_smpl": gt_smpl,
             "gt_keypoints": gt_keypoints,  # (24, 3) SMPL joints or None if not precomputed
+            "gt_vertices": gt_vertices,  # (6890, 3) SMPL vertices or None if not precomputed
             "sample_id": f"{data_info['seq_name']}_rgb_{data_info['rgb_camera']}_depth_{data_info['depth_camera']}_{data_info['start_frame']}",
             "modalities": list(self.modality_names),
             "anchor_key": self.anchor_key,
@@ -453,6 +561,12 @@ class HummanDataset(BaseDataset):
                     keypoints_rgb = rgb_R @ keypoints_world + rgb_T
                     sample["gt_keypoints"] = keypoints_rgb.T  # (24, 3)
                 
+                # Transform gt_vertices to RGB camera space
+                if gt_vertices is not None:
+                    vertices_world = gt_vertices.T  # (3, 6890)
+                    vertices_rgb = rgb_R @ vertices_world + rgb_T
+                    sample["gt_vertices"] = vertices_rgb.T  # (6890, 3)
+                
             elif self.anchor_key == "input_depth":
                 # Set depth camera to identity (anchor)
                 sample["depth_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
@@ -472,6 +586,12 @@ class HummanDataset(BaseDataset):
                     keypoints_world = gt_keypoints.T  # (3, 24)
                     keypoints_depth = depth_R @ keypoints_world + depth_T
                     sample["gt_keypoints"] = keypoints_depth.T  # (24, 3)
+                
+                # Transform gt_vertices to depth camera space
+                if gt_vertices is not None:
+                    vertices_world = gt_vertices.T  # (3, 6890)
+                    vertices_depth = depth_R @ vertices_world + depth_T
+                    sample["gt_vertices"] = vertices_depth.T  # (6890, 3)
         
         elif self.anchor_key == "input_rgb" and "rgb" in self.modality_names:
             # Only RGB, set to identity
@@ -490,6 +610,12 @@ class HummanDataset(BaseDataset):
                 keypoints_rgb = rgb_R @ keypoints_world + rgb_T
                 sample["gt_keypoints"] = keypoints_rgb.T  # (24, 3)
             
+            # Transform gt_vertices to RGB camera space
+            if gt_vertices is not None:
+                vertices_world = gt_vertices.T  # (3, 6890)
+                vertices_rgb = rgb_R @ vertices_world + rgb_T
+                sample["gt_vertices"] = vertices_rgb.T  # (6890, 3)
+            
         elif self.anchor_key == "input_depth" and "depth" in self.modality_names:
             # Only depth, set to identity
             sample["depth_camera"]["extrinsic"] = np.eye(3, 4, dtype=np.float32)
@@ -506,6 +632,12 @@ class HummanDataset(BaseDataset):
                 keypoints_world = gt_keypoints.T  # (3, 24)
                 keypoints_depth = depth_R @ keypoints_world + depth_T
                 sample["gt_keypoints"] = keypoints_depth.T  # (24, 3)
+            
+            # Transform gt_vertices to depth camera space
+            if gt_vertices is not None:
+                vertices_world = gt_vertices.T  # (3, 6890)
+                vertices_depth = depth_R @ vertices_world + depth_T
+                sample["gt_vertices"] = vertices_depth.T  # (6890, 3)
         
         # Apply pipeline transforms
         sample = self.pipeline(sample)

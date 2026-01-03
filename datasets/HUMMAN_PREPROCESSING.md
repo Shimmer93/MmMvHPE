@@ -1,13 +1,13 @@
 # Humman Dataset Preprocessing
 
-## Generate 3D Keypoints from SMPL
+## Generate 3D Keypoints and Mesh Vertices from SMPL
 
-Before using the Humman dataset, you need to precompute 3D keypoints from SMPL parameters.
+Before using the Humman dataset, you need to precompute 3D keypoints and mesh vertices from SMPL parameters.
 
 ### Prerequisites
 
 1. **Download SMPL models** from [SMPL website](https://smpl.is.tue.mpg.de/)
-2. Extract the models to a directory (e.g., `models/smpl/native/models`)
+2. Extract the models to the `weights/` directory
 3. The directory should contain: `basicModel_neutral_lbs_10_207_0_v1.0.0.pkl`
 
 ### Usage
@@ -17,9 +17,9 @@ Run the preprocessing script:
 ```bash
 conda activate mmhpe
 
-python tools/generate_humman_keypoints.py \
+python tools/generate_humman_smpl_outputs.py \
     --data_root /data/shared/humman_release_v1.0_point \
-    --smpl_model_path models/smpl/native/models \
+    --smpl_model_path weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl \
     --gender neutral \
     --device cuda
 ```
@@ -27,7 +27,7 @@ python tools/generate_humman_keypoints.py \
 ### Options
 
 - `--data_root`: Path to Humman dataset (default: `/data/shared/humman_release_v1.0_point`)
-- `--smpl_model_path`: Path to SMPL model files (default: `models/smpl/native/models`)
+- `--smpl_model_path`: Path to SMPL model file (default: `weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl`)
 - `--gender`: SMPL model gender - `neutral`, `male`, or `female` (default: `neutral`)
 - `--device`: Device for computation - `cuda` or `cpu` (default: `cuda`)
 - `--force`: Force regeneration even if keypoints already exist
@@ -36,19 +36,20 @@ python tools/generate_humman_keypoints.py \
 
 The script will create `keypoints_3d.npz` in each sequence directory with:
 - `keypoints_3d`: (N, 24, 3) array of 3D SMPL joint positions
+- `vertices`: (N, 6890, 3) array of 3D mesh vertices
 - `num_frames`: Number of frames in the sequence
 
 ### Example
 
 ```bash
 # Process all sequences
-python tools/generate_humman_keypoints.py
+python tools/generate_humman_smpl_outputs.py
 
-# Force regenerate all keypoints
-python tools/generate_humman_keypoints.py --force
+# Force regenerate all keypoints and vertices
+python tools/generate_humman_smpl_outputs.py --force
 
 # Use CPU instead of GPU
-python tools/generate_humman_keypoints.py --device cpu
+python tools/generate_humman_smpl_outputs.py --device cpu
 ```
 
 ### SMPL Joint Format
