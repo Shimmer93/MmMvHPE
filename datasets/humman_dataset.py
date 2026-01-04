@@ -717,9 +717,9 @@ class HummanPreprocessedDataset(BaseDataset):
             )
             self.unit = "m"
 
-        self._seq_re = re.compile(r"(p\\d+_a\\d+)")
-        self._cam_re = re.compile(r"(kinect_\\d{3}|iphone)")
-        self._frame_re = re.compile(r"(\\d+)$")
+        self._seq_re = re.compile(r"(p\d+_a\d+)")
+        self._cam_re = re.compile(r"(kinect_\d{3}|iphone)")
+        self._frame_re = re.compile(r"(\d+)$")
 
         self.file_index = self._index_files()
         self.data_list = self._build_dataset()
