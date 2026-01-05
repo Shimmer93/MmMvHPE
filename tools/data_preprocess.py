@@ -20,7 +20,7 @@ def _process_single_sample_mmfi(args):
     new_name = f'{E}_{S}_{A}_{basename}'
 
     out_rgb_fn = osp.join(out_dir, 'rgb', new_name + '.jpg')
-    out_depth_fn = out_rgb_fn.replace('rgb', 'depth')
+    out_depth_fn = out_rgb_fn.replace('rgb', 'depth').replace('.jpg', '.png')
     out_lidar_fn = out_rgb_fn.replace('rgb', 'lidar').replace('.jpg', '.npy')
     out_mmwave_fn = out_rgb_fn.replace('rgb', 'mmwave').replace('.jpg', '.npy')
 
@@ -97,7 +97,7 @@ def _process_single_sample_humman(args):
     basename = basename.split('.')[0]
     new_name = f'{p2}_{p4}_{basename}'
     out_rgb_fn = osp.join(out_dir, 'rgb', new_name + '.jpg')
-    out_depth_fn = out_rgb_fn.replace('rgb', 'depth')
+    out_depth_fn = out_rgb_fn.replace('rgb', 'depth').replace('.jpg', '.png')
 
     # Skip if all outputs already exist (idempotent)
     if os.path.exists(out_rgb_fn) and os.path.exists(out_depth_fn):
@@ -295,7 +295,8 @@ def preprocess_humman(
         _preprocess_humman_root(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers)
     else:
         seq_dirs = sorted(glob(osp.join(root_dir, 'p*_a*')))
-        for chunk_idx, chunk in enumerate(_iter_chunks(seq_dirs, staging_chunk_size), start=1):
+        chunk_iter = _iter_chunks(seq_dirs, staging_chunk_size)
+        for chunk_idx, chunk in enumerate(tqdm(chunk_iter, total=(len(seq_dirs) + staging_chunk_size - 1) // staging_chunk_size), start=1):
             stage_root = tempfile.mkdtemp(prefix=f"humman_stage_{chunk_idx}_", dir=staging_dir)
             _stage_sequence_dirs(chunk, stage_root)
             _preprocess_humman_root(stage_root, out_dir, rgb_out_size, depth_out_size, num_workers)
@@ -311,8 +312,9 @@ if __name__ == '__main__':
     # preprocess_mmfi(root_dir, rgb_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16)
 
     root_dir = '/data/shared/humman_release_v1.0_point'
-    out_dir = 'data/humman'
+    out_dir = '/opt/data/humman'
     rgb_out_size = (320, 180)
-    depth_out_size = (320, 180)
+    depth_out_size = (320, 288)
 
-    preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')
+    preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir=None)
+    # preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')
