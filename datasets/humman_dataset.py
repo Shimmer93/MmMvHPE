@@ -12,6 +12,42 @@ from datasets.base_dataset import BaseDataset
 import warnings
 
 
+def axis_angle_to_matrix_np(axis_angle: np.ndarray) -> np.ndarray:
+    angle = np.linalg.norm(axis_angle)
+    if angle < 1e-8:
+        return np.eye(3, dtype=np.float32)
+    axis = axis_angle / angle
+    x, y, z = axis
+    K = np.array(
+        [
+            [0.0, -z, y],
+            [z, 0.0, -x],
+            [-y, x, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    eye = np.eye(3, dtype=np.float32)
+    return eye + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+
+def matrix_to_axis_angle_np(rot: np.ndarray) -> np.ndarray:
+    trace = np.trace(rot)
+    cos = (trace - 1.0) / 2.0
+    cos = np.clip(cos, -1.0, 1.0)
+    angle = np.arccos(cos)
+    if angle < 1e-8:
+        return np.zeros(3, dtype=np.float32)
+    rx = rot[2, 1] - rot[1, 2]
+    ry = rot[0, 2] - rot[2, 0]
+    rz = rot[1, 0] - rot[0, 1]
+    rvec = np.array([rx, ry, rz], dtype=np.float32)
+    denom = 2.0 * np.sin(angle)
+    if abs(denom) < 1e-6:
+        return 0.5 * rvec
+    axis = rvec / denom
+    return axis * angle
+
+
 class HummanDataset(BaseDataset):
     def __init__(
         self,
@@ -554,6 +590,10 @@ class HummanDataset(BaseDataset):
                 transl_world = gt_smpl['transl'].reshape(3, 1)
                 transl_rgb = rgb_R @ transl_world + rgb_T
                 sample["gt_smpl"]['transl'] = transl_rgb.flatten()
+                global_orient_world = np.asarray(gt_smpl['global_orient'], dtype=np.float32)
+                R_smpl = axis_angle_to_matrix_np(global_orient_world)
+                R_smpl_rgb = rgb_R @ R_smpl
+                sample["gt_smpl"]['global_orient'] = matrix_to_axis_angle_np(R_smpl_rgb)
                 
                 # Transform gt_keypoints to RGB camera space
                 if gt_keypoints is not None:
@@ -580,6 +620,10 @@ class HummanDataset(BaseDataset):
                 transl_world = gt_smpl['transl'].reshape(3, 1)
                 transl_depth = depth_R @ transl_world + depth_T
                 sample["gt_smpl"]['transl'] = transl_depth.flatten()
+                global_orient_world = np.asarray(gt_smpl['global_orient'], dtype=np.float32)
+                R_smpl = axis_angle_to_matrix_np(global_orient_world)
+                R_smpl_depth = depth_R @ R_smpl
+                sample["gt_smpl"]['global_orient'] = matrix_to_axis_angle_np(R_smpl_depth)
                 
                 # Transform gt_keypoints to depth camera space
                 if gt_keypoints is not None:
@@ -603,6 +647,10 @@ class HummanDataset(BaseDataset):
             transl_world = gt_smpl['transl'].reshape(3, 1)
             transl_rgb = rgb_R @ transl_world + rgb_T
             sample["gt_smpl"]['transl'] = transl_rgb.flatten()
+            global_orient_world = np.asarray(gt_smpl['global_orient'], dtype=np.float32)
+            R_smpl = axis_angle_to_matrix_np(global_orient_world)
+            R_smpl_rgb = rgb_R @ R_smpl
+            sample["gt_smpl"]['global_orient'] = matrix_to_axis_angle_np(R_smpl_rgb)
             
             # Transform gt_keypoints to RGB camera space
             if gt_keypoints is not None:
@@ -626,6 +674,10 @@ class HummanDataset(BaseDataset):
             transl_world = gt_smpl['transl'].reshape(3, 1)
             transl_depth = depth_R @ transl_world + depth_T
             sample["gt_smpl"]['transl'] = transl_depth.flatten()
+            global_orient_world = np.asarray(gt_smpl['global_orient'], dtype=np.float32)
+            R_smpl = axis_angle_to_matrix_np(global_orient_world)
+            R_smpl_depth = depth_R @ R_smpl
+            sample["gt_smpl"]['global_orient'] = matrix_to_axis_angle_np(R_smpl_depth)
             
             # Transform gt_keypoints to depth camera space
             if gt_keypoints is not None:
@@ -661,8 +713,9 @@ class HummanPreprocessedDataset(BaseDataset):
         pad_seq: bool = False,
         causal: bool = False,
         use_all_pairs: bool = False,
-        colocated: bool = False,
         random_seed: Optional[int] = None,
+        max_samples: Optional[int] = None,
+        colocated: bool = False,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -674,8 +727,9 @@ class HummanPreprocessedDataset(BaseDataset):
         self.pad_seq = pad_seq
         self.modality_names = modality_names
         self.use_all_pairs = use_all_pairs
-        self.colocated = colocated
         self.random_seed = random_seed
+        self.max_samples = max_samples
+        self.colocated = colocated
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -719,82 +773,46 @@ class HummanPreprocessedDataset(BaseDataset):
             )
             self.unit = "m"
 
+        self._seq_re = re.compile(r"(p\d+_a\d+)")
+        self._cam_re = re.compile(r"(kinect_\d{3}|iphone)")
+        self._frame_re = re.compile(r"(\d+)$")
+
         self.file_index = self._index_files()
         self.data_list = self._build_dataset()
-
-        print(f"HummanPreprocessedDataset initialized with {len(self.data_list)} samples.")
+        if self.max_samples is not None:
+            if self.max_samples <= 0:
+                self.data_list = []
+            else:
+                rng = np.random.RandomState(self.random_seed if self.random_seed is not None else 0)
+                indices = rng.permutation(len(self.data_list))[:self.max_samples]
+                self.data_list = [self.data_list[i] for i in indices]
 
     def _index_files(self):
         file_index = {m: {} for m in self.modality_names}
-        rgb_cameras = set(self.rgb_cameras)
-        depth_cameras = set(self.depth_cameras)
-
         for modality in self.modality_names:
             modality_dir = osp.join(self.data_root, modality)
             if not osp.exists(modality_dir):
                 continue
-            try:
-                entries = os.scandir(modality_dir)
-            except FileNotFoundError:
-                continue
-            with entries:
-                for entry in entries:
-                    if not entry.is_file():
-                        continue
-                    name = entry.name
-                    if "." not in name:
-                        continue
-                    stem = name.rsplit(".", 1)[0]
-                    rest, sep, frame_str = stem.rpartition("_")
-                    if not sep:
-                        continue
-                    try:
-                        frame_idx = int(frame_str)
-                    except ValueError:
-                        continue
-                    parts = rest.split("_")
-                    if len(parts) < 3:
-                        continue
-                    seq_name = "_".join(parts[:2])
-                    if parts[2] == "iphone":
-                        camera = "iphone"
-                    elif parts[2] == "kinect" and len(parts) >= 4:
-                        camera = f"{parts[2]}_{parts[3]}"
-                    else:
-                        continue
-                    if modality == "rgb" and camera not in rgb_cameras:
-                        continue
-                    if modality == "depth" and camera not in depth_cameras:
-                        continue
-                    modality_map = file_index[modality]
-                    modality_map.setdefault(seq_name, {}).setdefault(camera, []).append(
-                        (frame_idx, entry.path)
-                    )
+            for fn in os.listdir(modality_dir):
+                name, _ = osp.splitext(fn)
+                seq_match = self._seq_re.search(name)
+                cam_match = self._cam_re.search(name)
+                frame_match = self._frame_re.search(name)
+                if not (seq_match and cam_match and frame_match):
+                    continue
+                seq_name = seq_match.group(1)
+                camera = cam_match.group(1)
+                frame_idx = int(frame_match.group(1))
+                file_index[modality].setdefault(seq_name, {}).setdefault(camera, []).append(
+                    (frame_idx, osp.join(modality_dir, fn))
+                )
 
-        for modality, seq_map in file_index.items():
-            for seq_name, cam_map in seq_map.items():
-                for camera, frames in cam_map.items():
-                    frames.sort(key=lambda x: x[0])
+        for modality in file_index:
+            for seq_name in file_index[modality]:
+                for camera in file_index[modality][seq_name]:
+                    file_index[modality][seq_name][camera].sort(key=lambda x: x[0])
 
         return file_index
-
-    def _select_ref_camera(self, modality, seq_name):
-        candidates = list(self.file_index.get(modality, {}).get(seq_name, {}).keys())
-        if not candidates:
-            return None
-        if modality == "rgb":
-            for cam in self.rgb_cameras:
-                if cam.startswith("kinect") and cam in candidates:
-                    return cam
-            if "iphone" in candidates:
-                return "iphone"
-        if modality == "depth":
-            for cam in self.depth_cameras:
-                if cam.startswith("kinect") and cam in candidates:
-                    return cam
-            if "iphone" in candidates:
-                return "iphone"
-        return candidates[0]
 
     def _build_dataset(self):
         data_list = []
@@ -814,7 +832,7 @@ class HummanPreprocessedDataset(BaseDataset):
         elif self.split == "train_mini":
             valid_persons = set(person_ids[:16])
         elif self.split == "test_mini":
-            valid_persons = set(person_ids[split_idx:split_idx + 4])
+            valid_persons = set(person_ids[split_idx:split_idx+4])
         else:
             valid_persons = set(person_ids)
 
@@ -823,24 +841,24 @@ class HummanPreprocessedDataset(BaseDataset):
             if person_id not in valid_persons:
                 continue
 
-            camera_file = osp.join(self.data_root, "cameras", f"{seq_name}_cameras.json")
-            smpl_file = osp.join(self.data_root, "smpl", f"{seq_name}_smpl_params.npz")
-            if not (osp.exists(camera_file) and osp.exists(smpl_file)):
-                continue
-
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
             depth_cams = list(self.file_index.get("depth", {}).get(seq_name, {}).keys())
-            # print(rgb_cams, depth_cams)
+            # Filter cameras to only include those requested
+            if self.rgb_cameras:
+                rgb_cams = [c for c in rgb_cams if c in self.rgb_cameras]
+            if self.depth_cameras:
+                depth_cams = [c for c in depth_cams if c in self.depth_cameras]
+
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
             if "depth" in self.modality_names and not depth_cams:
                 continue
 
             ref_modality = self.modality_names[0]
-            ref_cam = self._select_ref_camera(ref_modality, seq_name)
-            if ref_cam is None:
+            ref_cams = list(self.file_index.get(ref_modality, {}).get(seq_name, {}).keys())
+            if not ref_cams:
                 continue
-            ref_frames = self.file_index[ref_modality][seq_name][ref_cam]
+            ref_frames = self.file_index[ref_modality][seq_name][ref_cams[0]]
             num_frames = len(ref_frames)
             if num_frames < self.seq_len:
                 continue
