@@ -714,6 +714,7 @@ class HummanPreprocessedDataset(BaseDataset):
         causal: bool = False,
         use_all_pairs: bool = False,
         random_seed: Optional[int] = None,
+        max_samples: Optional[int] = None,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -726,6 +727,7 @@ class HummanPreprocessedDataset(BaseDataset):
         self.modality_names = modality_names
         self.use_all_pairs = use_all_pairs
         self.random_seed = random_seed
+        self.max_samples = max_samples
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -775,6 +777,13 @@ class HummanPreprocessedDataset(BaseDataset):
 
         self.file_index = self._index_files()
         self.data_list = self._build_dataset()
+        if self.max_samples is not None:
+            if self.max_samples <= 0:
+                self.data_list = []
+            else:
+                rng = np.random.RandomState(self.random_seed if self.random_seed is not None else 0)
+                indices = rng.permutation(len(self.data_list))[:self.max_samples]
+                self.data_list = [self.data_list[i] for i in indices]
 
     def _index_files(self):
         file_index = {m: {} for m in self.modality_names}
@@ -832,6 +841,12 @@ class HummanPreprocessedDataset(BaseDataset):
 
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
             depth_cams = list(self.file_index.get("depth", {}).get(seq_name, {}).keys())
+            # Filter cameras to only include those requested
+            if self.rgb_cameras:
+                rgb_cams = [c for c in rgb_cams if c in self.rgb_cameras]
+            if self.depth_cameras:
+                depth_cams = [c for c in depth_cams if c in self.depth_cameras]
+
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
             if "depth" in self.modality_names and not depth_cams:
