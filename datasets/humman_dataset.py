@@ -661,6 +661,7 @@ class HummanPreprocessedDataset(BaseDataset):
         pad_seq: bool = False,
         causal: bool = False,
         use_all_pairs: bool = False,
+        colocated: bool = False,
         random_seed: Optional[int] = None,
     ):
         super().__init__(pipeline=pipeline)
@@ -673,6 +674,7 @@ class HummanPreprocessedDataset(BaseDataset):
         self.pad_seq = pad_seq
         self.modality_names = modality_names
         self.use_all_pairs = use_all_pairs
+        self.colocated = colocated
         self.random_seed = random_seed
 
         if random_seed is not None:
@@ -717,39 +719,82 @@ class HummanPreprocessedDataset(BaseDataset):
             )
             self.unit = "m"
 
-        self._seq_re = re.compile(r"(p\\d+_a\\d+)")
-        self._cam_re = re.compile(r"(kinect_\\d{3}|iphone)")
-        self._frame_re = re.compile(r"(\\d+)$")
-
         self.file_index = self._index_files()
         self.data_list = self._build_dataset()
 
+        print(f"HummanPreprocessedDataset initialized with {len(self.data_list)} samples.")
+
     def _index_files(self):
         file_index = {m: {} for m in self.modality_names}
+        rgb_cameras = set(self.rgb_cameras)
+        depth_cameras = set(self.depth_cameras)
+
         for modality in self.modality_names:
             modality_dir = osp.join(self.data_root, modality)
             if not osp.exists(modality_dir):
                 continue
-            for fn in os.listdir(modality_dir):
-                name, _ = osp.splitext(fn)
-                seq_match = self._seq_re.search(name)
-                cam_match = self._cam_re.search(name)
-                frame_match = self._frame_re.search(name)
-                if not (seq_match and cam_match and frame_match):
-                    continue
-                seq_name = seq_match.group(1)
-                camera = cam_match.group(1)
-                frame_idx = int(frame_match.group(1))
-                file_index[modality].setdefault(seq_name, {}).setdefault(camera, []).append(
-                    (frame_idx, osp.join(modality_dir, fn))
-                )
+            try:
+                entries = os.scandir(modality_dir)
+            except FileNotFoundError:
+                continue
+            with entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    name = entry.name
+                    if "." not in name:
+                        continue
+                    stem = name.rsplit(".", 1)[0]
+                    rest, sep, frame_str = stem.rpartition("_")
+                    if not sep:
+                        continue
+                    try:
+                        frame_idx = int(frame_str)
+                    except ValueError:
+                        continue
+                    parts = rest.split("_")
+                    if len(parts) < 3:
+                        continue
+                    seq_name = "_".join(parts[:2])
+                    if parts[2] == "iphone":
+                        camera = "iphone"
+                    elif parts[2] == "kinect" and len(parts) >= 4:
+                        camera = f"{parts[2]}_{parts[3]}"
+                    else:
+                        continue
+                    if modality == "rgb" and camera not in rgb_cameras:
+                        continue
+                    if modality == "depth" and camera not in depth_cameras:
+                        continue
+                    modality_map = file_index[modality]
+                    modality_map.setdefault(seq_name, {}).setdefault(camera, []).append(
+                        (frame_idx, entry.path)
+                    )
 
-        for modality in file_index:
-            for seq_name in file_index[modality]:
-                for camera in file_index[modality][seq_name]:
-                    file_index[modality][seq_name][camera].sort(key=lambda x: x[0])
+        for modality, seq_map in file_index.items():
+            for seq_name, cam_map in seq_map.items():
+                for camera, frames in cam_map.items():
+                    frames.sort(key=lambda x: x[0])
 
         return file_index
+
+    def _select_ref_camera(self, modality, seq_name):
+        candidates = list(self.file_index.get(modality, {}).get(seq_name, {}).keys())
+        if not candidates:
+            return None
+        if modality == "rgb":
+            for cam in self.rgb_cameras:
+                if cam.startswith("kinect") and cam in candidates:
+                    return cam
+            if "iphone" in candidates:
+                return "iphone"
+        if modality == "depth":
+            for cam in self.depth_cameras:
+                if cam.startswith("kinect") and cam in candidates:
+                    return cam
+            if "iphone" in candidates:
+                return "iphone"
+        return candidates[0]
 
     def _build_dataset(self):
         data_list = []
@@ -769,7 +814,7 @@ class HummanPreprocessedDataset(BaseDataset):
         elif self.split == "train_mini":
             valid_persons = set(person_ids[:16])
         elif self.split == "test_mini":
-            valid_persons = set(person_ids[split_idx:split_idx+4])
+            valid_persons = set(person_ids[split_idx:split_idx + 4])
         else:
             valid_persons = set(person_ids)
 
@@ -778,18 +823,24 @@ class HummanPreprocessedDataset(BaseDataset):
             if person_id not in valid_persons:
                 continue
 
+            camera_file = osp.join(self.data_root, "cameras", f"{seq_name}_cameras.json")
+            smpl_file = osp.join(self.data_root, "smpl", f"{seq_name}_smpl_params.npz")
+            if not (osp.exists(camera_file) and osp.exists(smpl_file)):
+                continue
+
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
             depth_cams = list(self.file_index.get("depth", {}).get(seq_name, {}).keys())
+            # print(rgb_cams, depth_cams)
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
             if "depth" in self.modality_names and not depth_cams:
                 continue
 
             ref_modality = self.modality_names[0]
-            ref_cams = list(self.file_index.get(ref_modality, {}).get(seq_name, {}).keys())
-            if not ref_cams:
+            ref_cam = self._select_ref_camera(ref_modality, seq_name)
+            if ref_cam is None:
                 continue
-            ref_frames = self.file_index[ref_modality][seq_name][ref_cams[0]]
+            ref_frames = self.file_index[ref_modality][seq_name][ref_cam]
             num_frames = len(ref_frames)
             if num_frames < self.seq_len:
                 continue
@@ -849,19 +900,44 @@ class HummanPreprocessedDataset(BaseDataset):
         )
         return None
 
-    def _load_frames(self, modality, seq_name, camera_name, start_frame):
-        frame_list = self.file_index[modality][seq_name][camera_name]
+    def _load_rgb_frames(self, seq_name, camera_name, start_frame):
+        frame_list = self.file_index["rgb"][seq_name][camera_name]
         frames = []
         for i in range(self.seq_len):
             idx = start_frame + i
             idx = min(idx, len(frame_list) - 1)
             frame_path = frame_list[idx][1]
-            if modality == "rgb":
-                frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            else:
-                frame = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+            frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+            if frame is None:
+                if frames:
+                    frames.append(frames[-1].copy())
+                else:
+                    frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
+                continue
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
+        return frames
+
+    def _load_depth_frames(self, seq_name, camera_name, start_frame):
+        frame_list = self.file_index["depth"][seq_name][camera_name]
+        frames = []
+        for i in range(self.seq_len):
+            idx = start_frame + i
+            idx = min(idx, len(frame_list) - 1)
+            frame_path = frame_list[idx][1]
+            depth = cv2.imread(frame_path, cv2.IMREAD_ANYDEPTH)
+            if depth is None:
+                depth = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                if frames:
+                    frames.append(frames[-1].copy())
+                else:
+                    frames.append(np.zeros((512, 512), dtype=np.float32))
+                continue
+            depth = depth.astype(np.float32)
+            if self.unit == "m":
+                depth = depth / 1000.0
+            frames.append(depth)
         return frames
 
     def __len__(self):
@@ -875,6 +951,10 @@ class HummanPreprocessedDataset(BaseDataset):
                 data_info["rgb_camera"] = random.choice(data_info["rgb_cameras"])
             if data_info["depth_camera"] is None and "depth" in self.modality_names:
                 data_info["depth_camera"] = random.choice(data_info["depth_cameras"])
+
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                if data_info["rgb_camera"] != data_info["depth_camera"]:
+                    data_info["depth_camera"] = data_info["rgb_camera"]       
 
         cameras = self._load_camera_params(data_info["seq_name"])
         smpl_params = self._load_smpl_params(data_info["seq_name"])
@@ -895,15 +975,7 @@ class HummanPreprocessedDataset(BaseDataset):
             "transl": smpl_params["transl"][gt_frame_idx],
         }
 
-        if self.unit == "m":
-            gt_smpl["transl"] = gt_smpl["transl"]
-
-        if keypoints_3d is not None:
-            gt_keypoints = keypoints_3d[gt_frame_idx]
-            if self.unit == "m":
-                gt_keypoints = gt_keypoints
-        else:
-            gt_keypoints = None
+        gt_keypoints = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
 
         sample = {
             "gt_smpl": gt_smpl,
@@ -917,8 +989,7 @@ class HummanPreprocessedDataset(BaseDataset):
         }
 
         if "rgb" in self.modality_names:
-            rgb_frames = self._load_frames(
-                "rgb",
+            rgb_frames = self._load_rgb_frames(
                 data_info["seq_name"],
                 data_info["rgb_camera"],
                 data_info["start_frame"],
@@ -939,8 +1010,7 @@ class HummanPreprocessedDataset(BaseDataset):
                 }
 
         if "depth" in self.modality_names:
-            depth_frames = self._load_frames(
-                "depth",
+            depth_frames = self._load_depth_frames(
                 data_info["seq_name"],
                 data_info["depth_camera"],
                 data_info["start_frame"],
