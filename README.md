@@ -8,7 +8,16 @@ Multimodal Multiview Human Pose Estimation
     curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
     You may need to modify $PATH after installation.
-2. Run the following:
+2. You may want to install python using `uv`:
+    ```
+    uv python install 3.12
+    ```
+3. Run the following:
     ```bash
     uv sync
+    uv pip install torch-scatter --force-reinstall
     ```
+
+## Running
+
+Append `uv run` to the front of your python commands.
