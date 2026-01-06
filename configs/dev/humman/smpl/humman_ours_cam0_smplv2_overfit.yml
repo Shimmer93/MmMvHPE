@@ -4,62 +4,69 @@ deterministic: false
 pretrained: false
 sync_batchnorm: false
 clip_grad: null
-precision: 16
-max_steps: &max_steps 20000
-val_check_interval: 500
-limit_val_batches: 100
+precision: 32
+max_steps: &max_steps 200
+val_check_interval: 1
+limit_val_batches: 1
+batch_size: 1
+batch_size_eva: 1
+freeze_backbones: true
+freeze_aggregator: true
 
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'HumanDataset'
+  name: 'HummanPreprocessedDataset'
   params:
-    data_root: &data_root '/data/shared/humman_release_v1.0_point'
+    data_root: &data_root '/opt/data/humman'
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: null
+    depth_cameras: null
     anchor_key: 'input_rgb'
     split: "train"
-    seq_len: 1       
+    seq_len: 1
     seq_step: 5
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     random_seed: 42
+    max_samples: 1
 val_dataset:
-  name: 'HumanDataset'
+  name: 'HummanPreprocessedDataset'
   params:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: null
+    depth_cameras: null
     anchor_key: 'input_rgb'
-    split: "test"
+    split: "train"
     seq_len: 1
     seq_step: 5
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     random_seed: 42
+    max_samples: 1
 test_dataset:
-  name: 'HumanDataset'
+  name: 'HummanPreprocessedDataset'
   params:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: null
+    depth_cameras: null
     anchor_key: 'input_rgb'
-    split: "test"
+    split: "train"
     seq_len: 1
     seq_step: 5
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     random_seed: 42
+    max_samples: 1
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -111,25 +118,44 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-keypoint_head:
-  name: 'RegressionKeypointHead'
+smpl_head:
+  name: 'SMPLHeadV2'
   params:
     emb_size: 768
-    num_classes: 72  # 24 SMPL joints * 3
-    losses:
-      - name: 'MSELoss'
-        params: null
-        weight: 1.0
+    hidden_dims: [1024, 512]
+    num_betas: 10
+    dropout: 0.1
+    activation: 'gelu'
+    use_smpl_mean: false
+    smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
+    joint_loss_type: 'l1'
+    rot_weight: 1.0
+    root_rot_weight: 1.0
+    body_rot_weight: 1.0
+    use_simple_rot_loss: true
+    simple_rot_weight: 1.0
+    joint_weight: 1
+    transl_weight: 10.0
+    betas_weight: 1.0
+    debug: true
+    debug_every: 1
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
-  - name: 'MPJPE'
+  - name: 'SMPL_MPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
-  - name: 'PAMPJPE'
+  - name: 'SMPL_PAMPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
+  - name: 'SMPL_VertexError'
+    params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
+      affix: null
+
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
