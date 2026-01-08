@@ -49,6 +49,7 @@ members = [
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 torch-scatter = ["torch"]
 pcdet = [{ requirement = "torch", match-runtime = true }]
+chumpy = ["pip"]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }

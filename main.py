@@ -43,6 +43,8 @@ def main(args):
         RichProgressBar(refresh_rate=20),
         LearningRateMonitor(logging_interval='step')
     ]
+    
+    print("[DEBUG]: this is the line 47 of main.py")
 
     if args.use_wandb:
         logger = WandbLogger(
@@ -80,6 +82,7 @@ def main(args):
         'benchmark': args.benchmark,  # cudnn benchmark
         'deterministic': args.deterministic,  # Set True for reproducibility (slower)
     }
+    print("[DEBUG]: this is the line 83 of main.py")
 
     if hasattr(args, 'epochs'):
         print(f'Training for {args.epochs} epochs.')
@@ -148,6 +151,7 @@ if __name__ == '__main__':
     parser.add_argument('--compile', action='store_true', help='Use torch.compile (PyTorch 2.0+)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases logger')
     parser.add_argument('--wandb_offline', action='store_true', help='Run wandb in offline mode')
+    parser.add_argument('--deterministic', action='store_true', help='Set cudnn.deterministic=True for reproducibility')
 
     args = parser.parse_args()
     cfg = load_cfg(args.cfg)

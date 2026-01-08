@@ -8,12 +8,13 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'modules'))
+sys.path.append(os.path.join(ROOT_DIR, 'pc_encoders'))
+print("[DEBUG]: ROOT_DIR:", ROOT_DIR)
 
-from modules.intra_mamba import *
-from modules.mamba import *
-from modules.utils_mamba import Group, Encoder
-from modules.point_4d_convolution import *
+from .modules.intra_mamba import *
+from .modules.mamba import *
+from .modules.utils_mamba import Group, Encoder
+from .modules.point_4d_convolution import *
 
 class MAMBA4DEncoder(nn.Module):
     def __init__(self, radius, nsamples, spatial_stride,                                # P4DConv: spatial
@@ -118,6 +119,9 @@ class MAMBA4DEncoder(nn.Module):
 
         if self.emb_relu:
             embedding = self.emb_relu(embedding)
+            
+        B, L, C, n = features.shape
+        print("[DEBUG]: The embedding shape is, ", features.shape)
 
         output = self.mambaBlocks(embedding)
         output = output.reshape(B, L, -1, output.shape[-1])  # B L N C

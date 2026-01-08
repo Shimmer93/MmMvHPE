@@ -8,7 +8,7 @@ __all__ = [
     'XFiRegressionHead',
     'VGGTCameraHead',
     'RegressionKeypointHead',
-    'RegressionCameraHead'
+    'RegressionCameraHead', 
     'RegressionKeypointHeadV2',
     'RegressionKeypointHeadV3',
     'RegressionKeypointHeadV3Simple',
