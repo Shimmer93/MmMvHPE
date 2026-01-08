@@ -207,22 +207,43 @@ class HummanDataset(BaseDataset):
             if num_frames < self.seq_len:
                 continue
             
+            colocated_cams = None
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                colocated_cams = sorted(set(self.rgb_cameras) & set(self.depth_cameras))
+                if not colocated_cams:
+                    continue
+
             # Create sequences with overlap
             for start_idx in range(0, num_frames - self.seq_len + 1, self.seq_step):
                 if self.use_all_pairs:
                     # Create one entry for each RGB-Depth pair
-                    for rgb_cam in self.rgb_cameras:
-                        for depth_cam in self.depth_cameras:
+                    if self.colocated and colocated_cams is not None:
+                        for cam in colocated_cams:
                             data_info = {
                                 "seq_dir": seq_dir,
                                 "seq_name": seq_name,
                                 "person_id": person_id,
                                 "start_frame": start_idx,
                                 "num_frames": num_frames,
-                                "rgb_camera": rgb_cam,
-                                "depth_camera": depth_cam,
+                                "rgb_camera": cam,
+                                "depth_camera": cam,
+                                "colocated_cameras": colocated_cams,
                             }
                             data_list.append(data_info)
+                    else:
+                        for rgb_cam in self.rgb_cameras:
+                            for depth_cam in self.depth_cameras:
+                                data_info = {
+                                    "seq_dir": seq_dir,
+                                    "seq_name": seq_name,
+                                    "person_id": person_id,
+                                    "start_frame": start_idx,
+                                    "num_frames": num_frames,
+                                    "rgb_camera": rgb_cam,
+                                    "depth_camera": depth_cam,
+                                    "colocated_cameras": colocated_cams,
+                                }
+                                data_list.append(data_info)
                 else:
                     # Create one entry per sequence, camera pair will be randomly selected
                     data_info = {
@@ -233,6 +254,7 @@ class HummanDataset(BaseDataset):
                         "num_frames": num_frames,
                         "rgb_camera": None,  # Will be randomly selected in __getitem__
                         "depth_camera": None,  # Will be randomly selected in __getitem__
+                        "colocated_cameras": colocated_cams,
                     }
                     data_list.append(data_info)
         
@@ -443,14 +465,15 @@ class HummanDataset(BaseDataset):
         
         # If not using all pairs, randomly select camera pair
         if not self.use_all_pairs:
-            data_info['rgb_camera'] = random.choice(self.rgb_cameras)
-            data_info['depth_camera'] = random.choice(self.depth_cameras)
-
-            if self.colocated:
-                # Ensure selected cameras are colocated
-                if data_info['rgb_camera'] != data_info['depth_camera']:
-                    # If not colocated, set depth camera to rgb camera
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                colocated_cams = data_info.get("colocated_cameras") or []
+                if colocated_cams:
+                    data_info['rgb_camera'] = random.choice(colocated_cams)
                     data_info['depth_camera'] = data_info['rgb_camera']
+            if data_info['rgb_camera'] is None and "rgb" in self.modality_names:
+                data_info['rgb_camera'] = random.choice(self.rgb_cameras)
+            if data_info['depth_camera'] is None and "depth" in self.modality_names:
+                data_info['depth_camera'] = random.choice(self.depth_cameras)
         
         # Load camera parameters
         cameras = self._load_camera_params(data_info['seq_dir'])
@@ -713,6 +736,7 @@ class HummanPreprocessedDataset(BaseDataset):
         pad_seq: bool = False,
         causal: bool = False,
         use_all_pairs: bool = False,
+        colocated: bool = False,
         random_seed: Optional[int] = None,
         max_samples: Optional[int] = None,
     ):
@@ -726,6 +750,7 @@ class HummanPreprocessedDataset(BaseDataset):
         self.pad_seq = pad_seq
         self.modality_names = modality_names
         self.use_all_pairs = use_all_pairs
+        self.colocated = colocated
         self.random_seed = random_seed
         self.max_samples = max_samples
 
@@ -851,6 +876,11 @@ class HummanPreprocessedDataset(BaseDataset):
                 continue
             if "depth" in self.modality_names and not depth_cams:
                 continue
+            colocated_cams = None
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                colocated_cams = sorted(set(rgb_cams) & set(depth_cams))
+                if not colocated_cams:
+                    continue
 
             ref_modality = self.modality_names[0]
             ref_cams = list(self.file_index.get(ref_modality, {}).get(seq_name, {}).keys())
@@ -863,18 +893,33 @@ class HummanPreprocessedDataset(BaseDataset):
 
             for start_idx in range(0, num_frames - self.seq_len + 1, self.seq_step):
                 if self.use_all_pairs:
-                    for rgb_cam in rgb_cams:
-                        for depth_cam in depth_cams:
+                    if self.colocated and colocated_cams is not None:
+                        for cam in colocated_cams:
                             data_list.append({
                                 "seq_name": seq_name,
                                 "person_id": person_id,
                                 "start_frame": start_idx,
                                 "num_frames": num_frames,
-                                "rgb_camera": rgb_cam,
-                                "depth_camera": depth_cam,
+                                "rgb_camera": cam,
+                                "depth_camera": cam,
                                 "rgb_cameras": rgb_cams,
                                 "depth_cameras": depth_cams,
+                                "colocated_cameras": colocated_cams,
                             })
+                    else:
+                        for rgb_cam in rgb_cams:
+                            for depth_cam in depth_cams:
+                                data_list.append({
+                                    "seq_name": seq_name,
+                                    "person_id": person_id,
+                                    "start_frame": start_idx,
+                                    "num_frames": num_frames,
+                                    "rgb_camera": rgb_cam,
+                                    "depth_camera": depth_cam,
+                                    "rgb_cameras": rgb_cams,
+                                    "depth_cameras": depth_cams,
+                                    "colocated_cameras": colocated_cams,
+                                })
                 else:
                     data_list.append({
                         "seq_name": seq_name,
@@ -885,6 +930,7 @@ class HummanPreprocessedDataset(BaseDataset):
                         "depth_camera": None,
                         "rgb_cameras": rgb_cams,
                         "depth_cameras": depth_cams,
+                        "colocated_cameras": colocated_cams,
                     })
 
         return data_list
@@ -938,6 +984,13 @@ class HummanPreprocessedDataset(BaseDataset):
         data_info = self.data_list[index].copy()
 
         if not self.use_all_pairs:
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                colocated_cams = data_info.get("colocated_cameras") or []
+                if colocated_cams:
+                    if data_info["rgb_camera"] is None:
+                        data_info["rgb_camera"] = random.choice(colocated_cams)
+                    if data_info["depth_camera"] is None:
+                        data_info["depth_camera"] = data_info["rgb_camera"]
             if data_info["rgb_camera"] is None and "rgb" in self.modality_names:
                 data_info["rgb_camera"] = random.choice(data_info["rgb_cameras"])
             if data_info["depth_camera"] is None and "depth" in self.modality_names:
