@@ -44,7 +44,7 @@ def main(args):
         LearningRateMonitor(logging_interval='step')
     ]
     
-    print("[DEBUG]: this is the line 47 of main.py")
+    # print("[DEBUG]: this is the line 47 of main.py")
 
     if args.use_wandb:
         logger = WandbLogger(
@@ -82,7 +82,7 @@ def main(args):
         'benchmark': args.benchmark,  # cudnn benchmark
         'deterministic': args.deterministic,  # Set True for reproducibility (slower)
     }
-    print("[DEBUG]: this is the line 83 of main.py")
+    # print("[DEBUG]: this is the line 83 of main.py")
 
     if hasattr(args, 'epochs'):
         print(f'Training for {args.epochs} epochs.')
