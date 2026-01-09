@@ -5,7 +5,7 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 16
-epochs: &epochs 20
+epochs: &epochs 50
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -72,7 +72,7 @@ optim_params:
 # --------------------------------------
 sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
-  warmup_epochs: 4
+  warmup_epochs: 10
   max_epochs: *epochs
   warmup_start_lr: 0.00001
   eta_min: 0.00001
@@ -86,12 +86,29 @@ backbone_rgb:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
-backbone_depth:
-  name: 'TimmWrapper'
+# backbone_depth:
+#   name: 'TimmWrapper'
+#   params:
+#     model_name: 'vit_small_patch16_dinov3'
+#     pretrained: true
+#   has_temporal: false
+backbone_lidar:
+  name: 'P4TEncoder'
   params:
-    model_name: 'vit_small_patch16_dinov3'
-    pretrained: true
-  has_temporal: false
+    radius: 0.7
+    nsamples: 32
+    spatial_stride: 8
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    depth: 5
+    heads: 8
+    dim_head: 64
+    mlp_dim: 1024
+    features: 3
+    mode: 'xyz'
+  has_temporal: true
 aggregator:
   name: 'TransformerAggregatorV2GlobalJoint'
   params:
@@ -132,9 +149,9 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: DepthToLiDARPC
-  #   params:
-  #     keys: ['input_depth']
+  - name: DepthToLiDARPC
+    params:
+      keys: ['input_depth']
   - name: VideoResize
     params:
       size: [180, 320]
@@ -145,15 +162,15 @@ train_pipeline: &train_pipeline
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  - name: VideoNormalize
-    params:
-      norm_mode: 'zero_one'
-      keys: ['input_depth']
-  # - name: PCPad
+  # - name: VideoNormalize
   #   params:
-  #     num_points: 1024
-  #     pad_mode: 'repeat'
-  #     keys: ['input_lidar']
+  #     norm_mode: 'zero_one'
+  #     keys: ['input_depth']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
   - name: ToTensor
     params: null
   # - name: CameraParamToPoseEncoding
