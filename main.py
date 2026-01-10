@@ -25,6 +25,8 @@ def main(args):
 
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
+    if getattr(args, "resume", False):
+        model.strict_loading = False
     
     # Determine monitor metric based on head type
     if hasattr(args, 'smpl_head') and args.smpl_head is not None:
