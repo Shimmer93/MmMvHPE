@@ -18,8 +18,8 @@ train_dataset:
     data_root: &data_root '/opt/data/humman'
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
     anchor_key: 'input_rgb'
     split: "train"
     seq_len: 1       
@@ -27,6 +27,7 @@ train_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 val_dataset:
   name: 'HummanPreprocessedDataset'
@@ -34,8 +35,8 @@ val_dataset:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
     anchor_key: 'input_rgb'
     split: "test"
     seq_len: 1
@@ -43,6 +44,7 @@ val_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 test_dataset:
   name: 'HummanPreprocessedDataset'
@@ -50,8 +52,8 @@ test_dataset:
     data_root: *data_root
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009']
     anchor_key: 'input_rgb'
     split: "test"
     seq_len: 1
@@ -59,6 +61,7 @@ test_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 # --------------------------------------
 # Optimizer parameters
@@ -111,24 +114,35 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-keypoint_head:
-  name: 'RegressionKeypointHead'
+smpl_head:
+  name: 'SMPLHeadV2'
   params:
     emb_size: 768
-    num_classes: 72
-    losses:
-      - name: 'MSELoss'
-        params: null
-        weight: 1.0
+    hidden_dims: [1024, 512]
+    num_betas: 10
+    dropout: 0.1
+    activation: 'gelu'
+    use_smpl_mean: false
+    smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
+    joint_loss_type: 'l1'
+    rot_weight: 10
+    root_rot_weight: 0.95
+    body_rot_weight: 0.05
+    joint_weight: 1
+    transl_weight: 10.0
+    betas_weight: 1.0
+    debug: false
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
-  - name: 'MPJPE'
+  - name: 'SMPL_MPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
-  - name: 'PAMPJPE'
+  - name: 'SMPL_PAMPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
 # --------------------------------------
 # Augmentation parameters
@@ -158,4 +172,4 @@ vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
   rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
   depth_mean: [0.0]
-  depth_std: [255.0]  # zero_one normalization
+  depth_std: [1.0]  # zero_one normalization

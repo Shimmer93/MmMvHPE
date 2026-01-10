@@ -27,6 +27,7 @@ train_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 val_dataset:
   name: 'HummanPreprocessedDataset'
@@ -43,6 +44,7 @@ val_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 test_dataset:
   name: 'HummanPreprocessedDataset'
@@ -59,6 +61,7 @@ test_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
+    colocated: true
     random_seed: 42
 # --------------------------------------
 # Optimizer parameters
@@ -158,4 +161,4 @@ vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
   rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
   depth_mean: [0.0]
-  depth_std: [255.0]  # zero_one normalization
+  depth_std: [1.0]  # zero_one normalization

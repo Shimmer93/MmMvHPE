@@ -111,24 +111,35 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-keypoint_head:
-  name: 'RegressionKeypointHead'
+smpl_head:
+  name: 'SMPLHeadV2'
   params:
     emb_size: 768
-    num_classes: 72
-    losses:
-      - name: 'MSELoss'
-        params: null
-        weight: 1.0
+    hidden_dims: [1024, 512]
+    num_betas: 10
+    dropout: 0.1
+    activation: 'gelu'
+    use_smpl_mean: false
+    smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
+    joint_loss_type: 'l1'
+    rot_weight: 10
+    root_rot_weight: 0.95
+    body_rot_weight: 0.05
+    joint_weight: 1
+    transl_weight: 10.0
+    betas_weight: 1.0
+    debug: false
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
-  - name: 'MPJPE'
+  - name: 'SMPL_MPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
-  - name: 'PAMPJPE'
+  - name: 'SMPL_PAMPJPE'
     params:
+      smpl_model_path: 'weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
       affix: null
 # --------------------------------------
 # Augmentation parameters
