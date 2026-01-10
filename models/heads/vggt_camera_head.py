@@ -187,14 +187,30 @@ class VGGTCameraHead(BaseHead):
         return self.camera_head([last_output], num_iterations)
     
     def loss(self, x, data_batch):
-        pred_camera_enc_list = self.forward(x, num_iterations=data_batch.get('num_camera_iterations',4))
+        pred_camera_enc_list = self.forward(x, num_iterations=data_batch.get('num_camera_iterations', 4))
         modalities = data_batch['modalities']
-        assert len(pred_camera_enc_list) == len(modalities), "Number of predicted camera encodings must match number of modalities."
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+
+        pred_camera_enc = pred_camera_enc_list[-1]
+        if pred_camera_enc.shape[1] != len(modalities):
+            raise AssertionError(
+                "Number of predicted camera encodings must match number of modalities."
+            )
 
         losses = {}
         for loss_name, (loss_fn, loss_weight) in self.losses.items():
-            for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
-                losses[f"{loss_name}_{modality}"] = (loss_fn(pred_camera_enc, data_batch[f'gt_camera_{modality}']), loss_weight)
+            for idx, modality in enumerate(modalities):
+                gt_key = f'gt_camera_{modality}'
+                if gt_key not in data_batch:
+                    raise KeyError(
+                        f"Ground truth camera parameters '{gt_key}' not found in data_batch. "
+                        f"Available keys: {list(data_batch.keys())}"
+                    )
+                gt_camera = data_batch[gt_key]
+                if gt_camera.ndim > 2:
+                    gt_camera = gt_camera.mean(dim=1)
+                losses[f"{loss_name}_{modality}"] = (loss_fn(pred_camera_enc[:, idx], gt_camera), loss_weight)
         return losses
     
     def predict(self, x, num_iterations: int = 4):

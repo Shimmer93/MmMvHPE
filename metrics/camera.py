@@ -12,6 +12,33 @@ import torch
 from misc.utils import torch2numpy as to_numpy
 
 
+def _select_pred_modality(pred_cameras, targets, modality):
+    if modality is None or pred_cameras is None:
+        return pred_cameras
+    if pred_cameras.ndim >= 3:
+        modalities = targets.get("modalities") if isinstance(targets, dict) else None
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        if modalities and modality in modalities:
+            idx = list(modalities).index(modality)
+            pred_cameras = pred_cameras[:, idx]
+        else:
+            default_order = ["rgb", "depth", "lidar", "mmwave"]
+            if modality in default_order:
+                idx = default_order.index(modality)
+                if idx < pred_cameras.shape[1]:
+                    pred_cameras = pred_cameras[:, idx]
+    return pred_cameras
+
+
+def _reduce_gt_camera(gt_cameras):
+    if gt_cameras is None:
+        return gt_cameras
+    if gt_cameras.ndim > 2:
+        gt_cameras = gt_cameras.mean(axis=1)
+    return gt_cameras
+
+
 def rotation_error_from_quats(pred_quats, gt_quats):
     """
     Compute geodesic rotation error between predicted and ground truth quaternions.
@@ -175,6 +202,8 @@ class CameraTranslationError:
         
         pred_cameras = to_numpy(pred_cameras)
         gt_cameras = to_numpy(gt_cameras)
+        pred_cameras = _select_pred_modality(pred_cameras, targets, self.modality)
+        gt_cameras = _reduce_gt_camera(gt_cameras)
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -231,6 +260,8 @@ class CameraRotationError:
         
         pred_cameras = to_numpy(pred_cameras)
         gt_cameras = to_numpy(gt_cameras)
+        pred_cameras = _select_pred_modality(pred_cameras, targets, self.modality)
+        gt_cameras = _reduce_gt_camera(gt_cameras)
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -287,6 +318,8 @@ class CameraFoVError:
         
         pred_cameras = to_numpy(pred_cameras)
         gt_cameras = to_numpy(gt_cameras)
+        pred_cameras = _select_pred_modality(pred_cameras, targets, self.modality)
+        gt_cameras = _reduce_gt_camera(gt_cameras)
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -345,6 +378,8 @@ class CameraFocalError:
         
         pred_cameras = to_numpy(pred_cameras)
         gt_cameras = to_numpy(gt_cameras)
+        pred_cameras = _select_pred_modality(pred_cameras, targets, self.modality)
+        gt_cameras = _reduce_gt_camera(gt_cameras)
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
