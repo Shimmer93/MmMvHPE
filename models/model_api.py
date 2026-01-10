@@ -187,6 +187,8 @@ class LitModel(L.LightningModule):
             log_dict[f'train_{loss_name}'] = loss_value
 
         log_dict['train_loss'] = loss
+        if hasattr(self.aggregator, "camera_param_gate"):
+            log_dict["train_camera_param_gate"] = torch.sigmoid(self.aggregator.camera_param_gate)
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
         return loss
@@ -209,6 +211,8 @@ class LitModel(L.LightningModule):
         log_dict = {}
         for _, metric in self.metrics.items():
             log_dict[f'val_{metric.name}'] = metric(pred_dict, batch)
+        if hasattr(self.aggregator, "camera_param_gate"):
+            log_dict["val_camera_param_gate"] = torch.sigmoid(self.aggregator.camera_param_gate)
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 
@@ -233,6 +237,8 @@ class LitModel(L.LightningModule):
         log_dict = {}
         for _, metric in self.metrics.items():
             log_dict[f'test_{metric.name}'] = metric(pred_dict, batch)
+        if hasattr(self.aggregator, "camera_param_gate"):
+            log_dict["test_camera_param_gate"] = torch.sigmoid(self.aggregator.camera_param_gate)
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
 

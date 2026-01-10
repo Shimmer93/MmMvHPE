@@ -1,5 +1,6 @@
 from .xfi_aggregator import XFiAggregator  # noqa: F401, F403
 from .trans_aggregator import TransformerAggregator  # noqa: F401, F403
+from .trans_aggregator_cam_params import TransformerAggregatorWithCameraParams  # noqa: F401, F403
 from .trans_aggregator_v2 import TransformerAggregatorV2  # noqa: F401, F403
 from .trans_aggregator_v2_global_joint import TransformerAggregatorV2GlobalJoint  # noqa: F401, F403
 from .trans_aggregator_v3 import TransformerAggregatorV3  # noqa: F401, F403
@@ -9,6 +10,7 @@ from .simple_aggregator import SimpleAggregator  # noqa: F401, F403
 __all__ = [
     'XFiAggregator',
     'TransformerAggregator',
+    'TransformerAggregatorWithCameraParams',
     'TransformerAggregatorV2',
     'TransformerAggregatorV2GlobalJoint',
     'TransformerAggregatorV3',
