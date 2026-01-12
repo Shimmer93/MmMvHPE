@@ -286,8 +286,9 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     """
     # Lazy load SMPL model if needed
     smpl_model = None
-    needs_smpl = ('pred_smpl' in pred_dict or 
-                  ('gt_smpl' in batch and 'gt_vertices' not in batch))
+    # needs_smpl = ('pred_smpl' in pred_dict or 
+    #               ('gt_smpl' in batch and 'gt_vertices' not in batch))
+    needs_smpl = 'pred_smpl_params' in pred_dict
     
     if needs_smpl:
         from models.smpl import SMPL
@@ -393,39 +394,12 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     
     # Load predicted keypoints - handle both SMPL head and keypoint head
     pred_keypoints_3d = None
-    if 'pred_keypoints' in pred_dict:
+    if 'pred_smpl_keypoints' in pred_dict:
         # Direct keypoint prediction (keypoint_head)
+        pred_keypoints_3d = pred_dict['pred_smpl_keypoints'][sample_idx].cpu().numpy()
+    elif 'pred_keypoints' in pred_dict:
         pred_keypoints_3d = pred_dict['pred_keypoints'][sample_idx].cpu().numpy()
-    elif 'pred_smpl' in pred_dict and smpl_model is not None:
-        # SMPL parameter prediction (smpl_head) - generate keypoints
-        pred_smpl_data = pred_dict['pred_smpl']
-        if isinstance(pred_smpl_data, dict):
-            # Batch dict format
-            global_orient = pred_smpl_data['global_orient'][sample_idx].cpu().numpy()
-            body_pose = pred_smpl_data['body_pose'][sample_idx].cpu().numpy()
-            betas = pred_smpl_data['betas'][sample_idx].cpu().numpy()
-            transl = pred_smpl_data['transl'][sample_idx].cpu().numpy()
-        else:
-            # List format
-            pred_smpl = pred_smpl_data[sample_idx]
-            global_orient = pred_smpl['global_orient']
-            body_pose = pred_smpl['body_pose']
-            betas = pred_smpl['betas']
-            transl = pred_smpl['transl']
-            
-            if hasattr(global_orient, 'cpu'):
-                global_orient = global_orient.cpu().numpy()
-            if hasattr(body_pose, 'cpu'):
-                body_pose = body_pose.cpu().numpy()
-            if hasattr(betas, 'cpu'):
-                betas = betas.cpu().numpy()
-            if hasattr(transl, 'cpu'):
-                transl = transl.cpu().numpy()
-        
-        # Generate keypoints from SMPL parameters
-        pred_keypoints_3d = get_smpl_joints_from_params(
-            smpl_model, global_orient, body_pose, betas, transl, device=device
-        )
+    
     
     if pred_keypoints_3d is None:
         raise ValueError(f"No predicted keypoints found. pred_dict must contain either 'pred_keypoints' or 'pred_smpl'. Available keys: {list(pred_dict.keys())}")

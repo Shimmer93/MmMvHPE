@@ -128,8 +128,6 @@ class SMPLHeadV2(BaseHead):
         joint_weight: float = 1.0,
         transl_weight: float = 1.0,
         betas_weight: float = 1.0,
-        debug: bool = False,
-        debug_every: int = 100,
         use_simple_rot_loss: bool = False,
         simple_rot_weight: float = 1.0,
     ):
@@ -150,11 +148,6 @@ class SMPLHeadV2(BaseHead):
         self.joint_weight = joint_weight
         self.transl_weight = transl_weight
         self.betas_weight = betas_weight
-        self.debug = debug
-        self.debug_every = max(1, int(debug_every))
-        self._debug_step = 0
-        self._debug_warned = False
-        self._prev_pred_stats = None
         self.use_simple_rot_loss = use_simple_rot_loss
         self.simple_rot_weight = simple_rot_weight
 
@@ -188,26 +181,6 @@ class SMPLHeadV2(BaseHead):
             self._init_smpl_mean()
 
         self._smpl_model = None
-
-    def _is_main_process(self):
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            return torch.distributed.get_rank() == 0
-        return True
-
-    def _debug_tensor(self, name, tensor):
-        if not self.debug or not self._is_main_process():
-            return
-        if tensor is None:
-            print(f"[SMPLHeadV2][debug] {name}: None")
-            return
-        is_finite = torch.isfinite(tensor)
-        if not is_finite.all():
-            num_bad = (~is_finite).sum().item()
-            max_abs = tensor.abs().max().item()
-            if not self._debug_warned:
-                print("[SMPLHeadV2][warn] non-finite values detected; enabling debug output.")
-                self._debug_warned = True
-            print(f"[SMPLHeadV2][debug] {name}: non-finite={num_bad} max_abs={max_abs:.4e}")
 
     def _init_smpl_mean(self):
         identity_6d = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
@@ -246,6 +219,7 @@ class SMPLHeadV2(BaseHead):
         if self.use_smpl_mean:
             params = params + self.mean_params
 
+        # Split flat parameter vector into SMPL fields.
         idx = 0
         global_orient = params[:, idx:idx + self.NUM_GLOBAL_ORIENT]
         idx += self.NUM_GLOBAL_ORIENT
@@ -309,8 +283,6 @@ class SMPLHeadV2(BaseHead):
     def loss(self, x, data_batch):
         pred = self.forward(x)
         device = pred['global_orient'].device
-        self._debug_step += 1
-        do_debug = self.debug and (self._debug_step % self.debug_every == 0)
 
         gt_smpl = data_batch['gt_smpl']
         gt_global_orient, gt_body_pose, gt_betas, gt_transl = self._parse_gt_smpl(gt_smpl, device)
@@ -319,42 +291,12 @@ class SMPLHeadV2(BaseHead):
 
         pred_global_6d = torch.nan_to_num(pred['global_orient'].float(), nan=0.0, posinf=0.0, neginf=0.0)
         pred_body_6d = torch.nan_to_num(pred['body_pose'].float(), nan=0.0, posinf=0.0, neginf=0.0)
-        if do_debug:
-            self._debug_tensor("pred_global_6d", pred_global_6d)
-            self._debug_tensor("pred_body_6d", pred_body_6d)
-            pg_mean = pred_global_6d.mean().item()
-            pg_std = pred_global_6d.std(unbiased=False).item()
-            pb_mean = pred_body_6d.mean().item()
-            pb_std = pred_body_6d.std(unbiased=False).item()
-            delta_msg = ""
-            if self._prev_pred_stats is not None:
-                d_pg_mean = pg_mean - self._prev_pred_stats["pg_mean"]
-                d_pg_std = pg_std - self._prev_pred_stats["pg_std"]
-                d_pb_mean = pb_mean - self._prev_pred_stats["pb_mean"]
-                d_pb_std = pb_std - self._prev_pred_stats["pb_std"]
-                delta_msg = (
-                    f" delta_global_mean={d_pg_mean:.4e} delta_global_std={d_pg_std:.4e} "
-                    f"delta_body_mean={d_pb_mean:.4e} delta_body_std={d_pb_std:.4e}"
-                )
-            print(
-                "[SMPLHeadV2][debug] pred_6d stats "
-                f"global_mean={pg_mean:.4e} global_std={pg_std:.4e} "
-                f"body_mean={pb_mean:.4e} body_std={pb_std:.4e}{delta_msg}"
-            )
-            self._prev_pred_stats = {
-                "pg_mean": pg_mean,
-                "pg_std": pg_std,
-                "pb_mean": pb_mean,
-                "pb_std": pb_std,
-            }
+        # Convert 6D rotations to rotation matrices for loss computation.
         pred_global_rot = compute_rotation_matrix_from_6d(pred_global_6d.reshape(-1, 6))
         pred_global_rot = pred_global_rot.reshape(B, 3, 3)
 
         pred_body_rot = compute_rotation_matrix_from_6d(pred_body_6d.reshape(-1, 6))
         pred_body_rot = pred_body_rot.reshape(B, 23, 3, 3)
-        if do_debug:
-            self._debug_tensor("pred_global_rot", pred_global_rot)
-            self._debug_tensor("pred_body_rot", pred_body_rot)
 
         gt_global_rot = axis_angle_to_matrix(gt_global_orient.float())
         gt_body_rot = axis_angle_to_matrix(gt_body_pose.float().reshape(B, 23, 3))
@@ -362,9 +304,6 @@ class SMPLHeadV2(BaseHead):
         rot_root = geodesic_distance(pred_global_rot, gt_global_rot).mean()
         rot_body = geodesic_distance(pred_body_rot, gt_body_rot).mean()
         rot_loss = (self.root_rot_weight * rot_root) + (self.body_rot_weight * rot_body)
-        if do_debug:
-            self._debug_tensor("rot_root", rot_root)
-            self._debug_tensor("rot_body", rot_body)
 
         simple_rot_loss = torch.zeros((), device=device)
         if self.use_simple_rot_loss:
@@ -380,9 +319,6 @@ class SMPLHeadV2(BaseHead):
         pred_betas = torch.nan_to_num(pred['betas'].float(), nan=0.0, posinf=0.0, neginf=0.0)
         transl_loss = F.l1_loss(pred_transl, gt_transl.float())
         betas_loss = F.mse_loss(pred_betas, gt_betas[:, :self.num_betas].float())
-        if do_debug:
-            self._debug_tensor("transl_loss", transl_loss)
-            self._debug_tensor("betas_loss", betas_loss)
 
         joint_weight = self.joint_weight
         joint_loss = torch.zeros((), device=device)
@@ -394,11 +330,10 @@ class SMPLHeadV2(BaseHead):
             if gt_keypoints.dim() == 2:
                 gt_keypoints = gt_keypoints.unsqueeze(0)
 
+            # Build pose vector for SMPL to compute joints.
             pred_global_aa, pred_body_aa = self._pred_pose_axis_angle((pred_global_rot, pred_body_rot))
             pred_pose = torch.cat([pred_global_aa, pred_body_aa.reshape(B, -1)], dim=1)
             pred_pose = torch.nan_to_num(pred_pose, nan=0.0, posinf=0.0, neginf=0.0)
-            if do_debug:
-                self._debug_tensor("pred_pose_axis_angle", pred_pose)
 
             betas = pred_betas
             expected_betas = self.smpl_model.th_betas.shape[1]
@@ -411,31 +346,13 @@ class SMPLHeadV2(BaseHead):
             transl = pred_transl
             output = smpl_model(pred_pose, betas, transl)
             pred_joints = output[1] if isinstance(output, (list, tuple)) else output
-            if do_debug:
-                self._debug_tensor("pred_joints", pred_joints)
 
             if self.joint_loss_type == 'mse':
                 joint_loss = F.mse_loss(pred_joints, gt_keypoints)
             else:
                 joint_loss = F.l1_loss(pred_joints, gt_keypoints)
-            if do_debug:
-                self._debug_tensor("joint_loss", joint_loss)
         else:
             joint_weight = 0.0
-
-        if do_debug:
-            self._debug_tensor("rot_loss", rot_loss)
-
-        if self.debug and self._is_main_process():
-            loss_checks = {
-                "rot_loss": rot_loss,
-                "joint_loss": joint_loss,
-                "transl_loss": transl_loss,
-                "betas_loss": betas_loss,
-            }
-            for name, value in loss_checks.items():
-                if not torch.isfinite(value).all():
-                    print(f"[SMPLHeadV2][warn] non-finite loss detected: {name}")
 
         losses = {
             'smpl_rot': (rot_loss, self.rot_weight),
