@@ -5,7 +5,7 @@ from einops import rearrange, repeat
 from .base_head import BaseHead
 
 class RegressionKeypointHeadV2(BaseHead):
-    def __init__(self, losses, emb_size=512, num_joints=24, only_last_layer=False):
+    def __init__(self, losses, emb_size=512, num_joints=24, last_n_layers=-1):
         super().__init__(losses)
         self.emb_size = emb_size
         self.num_joints = num_joints
@@ -25,15 +25,14 @@ class RegressionKeypointHeadV2(BaseHead):
             nn.Linear(emb_size//2, 3)
         )
 
-        self.only_last_layer = only_last_layer
+        self.last_n_layers = last_n_layers
 
     def forward(self, x):
         if isinstance(x, list):
-            # print(len(x))
-            if self.only_last_layer:
-                x = x[-1]
-            else:
-                x = torch.concatenate(x, dim=-1)
+            if self.last_n_layers > 0:
+                x = x[-self.last_n_layers:]
+            x = [x_[..., x_.shape[-1] // 2:] for x_ in x]
+            x = torch.concatenate(x, dim=-1)
         # print(x.shape)
         # x.shape: B, M, T, J+1, C
         if x.dim() == 4:

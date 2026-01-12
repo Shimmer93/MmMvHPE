@@ -252,6 +252,7 @@ class LitModel(L.LightningModule):
                     'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
                     'pred_smpl_params': torch2numpy(pred_dict['pred_smpl_params'][i]) if 'pred_smpl_params' in pred_dict else None,
                     'pred_smpl_keypoints': torch2numpy(pred_dict['pred_smpl_keypoints'][i]) if 'pred_smpl_keypoints' in pred_dict else None,
+                    'gt_smpl_params': torch2numpy(batch['gt_smpl_params'][i]) if 'gt_smpl_params' in batch else None,
                     'gt_keypoints': torch2numpy(batch['gt_keypoints'][i]) if 'gt_keypoints' in batch else None
                 })
 
@@ -311,12 +312,13 @@ class LitModel(L.LightningModule):
             final_preds['gt_keypoints'] = np.stack([item['gt_keypoints'] for item in gathered_preds]) if has_gt_keypoints else None
             final_preds['pred_smpl_params'] = np.stack([item['pred_smpl_params'] for item in gathered_preds]) if has_smpl else None
             final_preds['pred_smpl_keypoints'] = np.stack([item['pred_smpl_keypoints'] for item in gathered_preds]) if has_smpl else None
+            final_preds['gt_smpl_params'] = np.stack([item['gt_smpl_params'] for item in gathered_preds]) if has_smpl else None
 
             # sort by sample_ids
             sorted_indices = np.argsort(final_preds['sample_ids'])
             final_preds['sample_ids'] = [final_preds['sample_ids'][i] for i in sorted_indices]
             
-            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints']:
+            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints', 'gt_smpl_params']:
                 if final_preds[key] is not None:
                     final_preds[key] = final_preds[key][sorted_indices]
 

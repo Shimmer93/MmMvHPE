@@ -221,23 +221,45 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
         for _ in range(self.aa_block_size):
             pose_base = torch.cat([smpl_base, joint_base], dim=2)
+            queries_base = pose_base.reshape(
+                pose_base.shape[0],
+                pose_base.shape[1] * (self.num_smpl_tokens + self.num_joints),
+                pose_base.shape[3],
+            )
+            summed_queries = None
+            num_modalities = 0
             for tokens in modality_tokens:
                 if tokens is None:
                     continue
                 B, T, N, C = tokens.shape
-                queries = pose_base.reshape(B, T * (self.num_smpl_tokens + self.num_joints), C)
                 context = tokens.reshape(B, T * N, C)
 
                 if self.use_grad_ckpt and self.training:
                     queries = checkpoint(
-                        self.cross_joint_blocks[idx], queries, context, pos, use_reentrant=False
+                        self.cross_joint_blocks[idx], queries_base, context, pos, use_reentrant=False
                     )
                 else:
-                    queries = self.cross_joint_blocks[idx](queries, context=context, pos=pos)
+                    queries = self.cross_joint_blocks[idx](queries_base, context=context, pos=pos)
 
-                pose_base = queries.reshape(B, T, self.num_smpl_tokens + self.num_joints, C)
-                smpl_base = pose_base[:, :, :self.num_smpl_tokens, :]
-                joint_base = pose_base[:, :, self.num_smpl_tokens:, :]
+                if summed_queries is None:
+                    summed_queries = queries
+                else:
+                    summed_queries = summed_queries + queries
+                num_modalities += 1
+
+            if summed_queries is None:
+                summed_queries = queries_base
+            else:
+                summed_queries = summed_queries / float(num_modalities)
+
+            pose_base = summed_queries.reshape(
+                pose_base.shape[0],
+                pose_base.shape[1],
+                self.num_smpl_tokens + self.num_joints,
+                pose_base.shape[3],
+            )
+            smpl_base = pose_base[:, :, :self.num_smpl_tokens, :]
+            joint_base = pose_base[:, :, self.num_smpl_tokens:, :]
 
             idx += 1
             intermediates.append(self._extract_output_tokens(modality_tokens, smpl_base, joint_base, Ns))

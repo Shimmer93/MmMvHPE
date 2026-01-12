@@ -128,55 +128,59 @@ keypoint_head:
           loss_type: 'MSE'
         weight: 1.0
         alias: 'KeypointMSELoss'
-smpl_head:
-  name: 'VIBETokenHead'
-  params:
-    emb_size: 1024
-    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
-    smpl_mean_params: 'weights/smpl_mean_params.npz'
-    n_iters: 3
-    last_n_layers: 4
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-          root_joint_idx: 0
-        weight: 1.0
-        alias: 'SMPLKeypointMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLPoseMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLShapeMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLRotMatMSELoss'
+# smpl_head:
+#   name: 'VIBETokenHead'
+#   params:
+#     emb_size: 1024
+#     smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
+#     smpl_mean_params: 'weights/smpl_mean_params.npz'
+#     n_iters: 3
+#     last_n_layers: 4
+#     losses:
+#       - name: 'KeypointLoss'
+#         params:
+#           loss_type: 'MSE'
+#           root_joint_idx: 0
+#         weight: 1.0
+#         alias: 'SMPLKeypointMSELoss'
+#       - name: 'MSELoss'
+#         params: null
+#         weight: 1.0
+#         alias: 'SMPLPoseMSELoss'
+#       - name: 'MSELoss'
+#         params: null
+#         weight: 0.1
+#         alias: 'SMPLShapeMSELoss'
+#       - name: 'MSELoss'
+#         params: null
+#         weight: 1.0
+#         alias: 'SMPLRotMatMSELoss'
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
   - name: 'MPJPE'
-    params:
-      use_smpl: true
-      root_joint_idx: 0
+    params: null
   - name: 'PAMPJPE'
-    params:
-      use_smpl: true
-      root_joint_idx: 0
-  - name: 'MPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'MPJPE_no_smpl'
-  - name: 'PAMPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'PAMPJPE_no_smpl'
+    params: null
+  # - name: 'MPJPE'
+  #   params:
+  #     use_smpl: true
+  #     root_joint_idx: 0
+  # - name: 'PAMPJPE'
+  #   params:
+  #     use_smpl: true
+  #     root_joint_idx: 0
+  # - name: 'MPJPE'
+  #   params:
+  #     use_smpl: false
+  #     affix: no_smpl
+  #   alias: 'MPJPE_no_smpl'
+  # - name: 'PAMPJPE'
+  #   params:
+  #     use_smpl: false
+  #     affix: no_smpl
+  #   alias: 'PAMPJPE_no_smpl'
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------

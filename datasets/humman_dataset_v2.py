@@ -63,7 +63,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         pad_seq: bool = False,
         causal: bool = False,
         use_all_pairs: bool = False,
-        random_seed: Optional[int] = None,
         max_samples: Optional[int] = None,
         colocated: bool = False,
     ):
@@ -77,13 +76,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.pad_seq = pad_seq
         self.causal = causal
         self.use_all_pairs = use_all_pairs
-        self.random_seed = random_seed
         self.max_samples = max_samples
         self.colocated = colocated
 
-        if random_seed is not None:
-            random.seed(random_seed)
-            np.random.seed(random_seed)
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
         self.available_iphone_cameras = ["iphone"]
@@ -112,8 +107,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             if self.max_samples <= 0:
                 self.data_list = []
             else:
-                rng = np.random.RandomState(self.random_seed if self.random_seed is not None else 0)
-                indices = rng.permutation(len(self.data_list))[:self.max_samples]
+                indices = random.sample(range(len(self.data_list)), min(self.max_samples, len(self.data_list)))
                 self.data_list = [self.data_list[i] for i in indices]
 
     def _index_files(self):

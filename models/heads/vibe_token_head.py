@@ -131,7 +131,7 @@ class Regressor(nn.Module):
         return output
 
 class VIBETokenHead(BaseHead):
-    def __init__(self, losses, smpl_path, smpl_mean_params, emb_size, n_iters=3, only_last_layer=False):
+    def __init__(self, losses, smpl_path, smpl_mean_params, emb_size, n_iters=3, last_n_layers=-1):
         super().__init__(losses)
         self.emb_size = emb_size
 
@@ -143,14 +143,14 @@ class VIBETokenHead(BaseHead):
 
         self.regressor = Regressor(smpl_path, smpl_mean_params, emb_size=emb_size)
         self.n_iters = n_iters
-        self.only_last_layer = only_last_layer
+        self.last_n_layers = last_n_layers
 
     def forward(self, x):
         if isinstance(x, list):
-            if self.only_last_layer:
-                x = x[-1]
-            else:
-                x = torch.concatenate(x, dim=-1)
+            if self.last_n_layers > 0:
+                x = x[-self.last_n_layers:]
+            x = [x_[..., :x_.shape[-1] // 2] for x_ in x]
+            x = torch.concatenate(x, dim=-1)
         # x.shape: B, T, num_camera_tokens + num_smpl_tokens + num_joints, C
         B, T, N, C = x.shape
         num_camera_tokens = N - 1 - 24

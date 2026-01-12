@@ -10,50 +10,56 @@ epochs: &epochs 20
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDataset'
   params:
     data_root: &data_root '/opt/data/humman'
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
     split: "train"
     seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: true
+    colocated: false
+    random_seed: 42
 val_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDataset'
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
     split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: true
+    colocated: false
+    random_seed: 42
 test_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDataset'
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
     split: "test"
     seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: true
+    colocated: false
+    random_seed: 42
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -73,40 +79,22 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: HummanVIBEToken
+model_name: TestModel_1208
 backbone_rgb:
   name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
-backbone_lidar:
-  name: 'P4TEncoder'
-  params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
-    temporal_kernel_size: 3
-    temporal_stride: 1
-    emb_relu: false
-    dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 3
-    mode: 'xyz'
-  has_temporal: true
 aggregator:
-  name: 'TransformerAggregatorV2GlobalSMPL'
+  name: 'TransformerAggregatorV2GlobalJoint'
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
     num_register_tokens: 4
-    num_smpl_tokens: 1
     aa_order: ['single', 'cross_joint', 'gcn']
     aa_block_size: 1
-    depth: 6
+    depth: 2
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8
@@ -120,70 +108,24 @@ keypoint_head:
   name: 'RegressionKeypointHeadV2'
   params:
     emb_size: 1024
-    num_joints: 24
-    last_n_layers: 4
     losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
+      - name: 'MSELoss'
+        params: null
         weight: 1.0
-        alias: 'KeypointMSELoss'
-smpl_head:
-  name: 'VIBETokenHead'
-  params:
-    emb_size: 1024
-    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
-    smpl_mean_params: 'weights/smpl_mean_params.npz'
-    n_iters: 3
-    last_n_layers: 4
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-          root_joint_idx: 0
-        weight: 1.0
-        alias: 'SMPLKeypointMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLPoseMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLShapeMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLRotMatMSELoss'
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
   - name: 'MPJPE'
     params:
-      use_smpl: true
-      root_joint_idx: 0
+      affix: null
   - name: 'PAMPJPE'
     params:
-      use_smpl: true
-      root_joint_idx: 0
-  - name: 'MPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'MPJPE_no_smpl'
-  - name: 'PAMPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'PAMPJPE_no_smpl'
+      affix: null
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  - name: DepthToLiDARPC
-    params:
-      keys: ['input_depth']
   - name: VideoResize
     params:
       size: [180, 320]
@@ -194,18 +136,15 @@ train_pipeline: &train_pipeline
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  - name: PCPad
-    params:
-      num_points: 1024
-      pad_mode: 'repeat'
-      keys: ['input_lidar']
   - name: ToTensor
     params: null
+  # - name: CameraParamToPoseEncoding
+  #   params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
-vis_skl_format: 'smpl'
+vis_skl_format: 'smpl'  # Skeleton format for visualization
 vis_denorm_params:
-  rgb_mean: [123.675, 116.28, 103.53]
-  rgb_std: [58.395, 57.12, 57.375]
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
   depth_mean: [0.0]
-  depth_std: [255.0]
+  depth_std: [255.0]  # zero_one normalization
