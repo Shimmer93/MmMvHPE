@@ -268,7 +268,8 @@ class LitModel(L.LightningModule):
             pred_dict['pred_keypoints'] = preds_keypoint
         if self.with_smpl_head:
             preds_smpl = self.smpl_head.predict(feats_agg)
-            pred_dict['pred_smpl'] = preds_smpl
+            pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
+            pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
 
         return pred_dict
 
@@ -303,16 +304,19 @@ class LitModel(L.LightningModule):
             has_cameras = any(item['pred_cameras'] is not None for item in gathered_preds)
             has_pred_keypoints = any(item['pred_keypoints'] is not None for item in gathered_preds)
             has_gt_keypoints = any(item['gt_keypoints'] is not None for item in gathered_preds)
+            has_smpl = any('pred_smpl_params' in item for item in gathered_preds)
             
             final_preds['pred_cameras'] = np.stack([item['pred_cameras'] for item in gathered_preds]) if has_cameras else None
             final_preds['pred_keypoints'] = np.stack([item['pred_keypoints'] for item in gathered_preds]) if has_pred_keypoints else None
             final_preds['gt_keypoints'] = np.stack([item['gt_keypoints'] for item in gathered_preds]) if has_gt_keypoints else None
+            final_preds['pred_smpl_params'] = np.stack([item['pred_smpl_params'] for item in gathered_preds]) if has_smpl else None
+            final_preds['pred_smpl_keypoints'] = np.stack([item['pred_smpl_keypoints'] for item in gathered_preds]) if has_smpl else None
 
             # sort by sample_ids
             sorted_indices = np.argsort(final_preds['sample_ids'])
             final_preds['sample_ids'] = [final_preds['sample_ids'][i] for i in sorted_indices]
             
-            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints']:
+            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints']:
                 if final_preds[key] is not None:
                     final_preds[key] = final_preds[key][sorted_indices]
 

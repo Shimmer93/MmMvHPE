@@ -46,6 +46,21 @@ def load_pred_file(pred_file, pred_smpl_file):
 
     return preds
 
+def load_pred_file_new(pred_file):
+    preds = load(pred_file)
+    preds['pred_keypoints'] = preds['pred_smpl_keypoints']
+    smpl_params = preds['pred_smpl_params']
+    preds['pred_body_pose'] = smpl_params[:, 3:72]
+    preds['pred_global_orient'] = np.zeros((smpl_params.shape[0], 3))
+    preds['pred_beta'] = smpl_params[:, 72:82]
+    preds['pred_translation'] = np.zeros((smpl_params.shape[0], 3))
+    preds['gt_body_pose'] = preds['gt_smpl_params'][:, 3:72]
+    preds['gt_global_orient'] = np.zeros((smpl_params.shape[0], 3))
+    preds['gt_beta'] = preds['gt_smpl_params'][:, 72:82]
+    preds['gt_translation'] = np.zeros((smpl_params.shape[0], 3))
+    return preds
+
+
 def get_verts(smpl_model, pose, global_orient, beta, translation, center=None):
     smpl_model.eval()
     with torch.no_grad():
