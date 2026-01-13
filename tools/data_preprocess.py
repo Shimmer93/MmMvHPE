@@ -203,7 +203,7 @@ def _iter_chunks(items, chunk_size):
 
 
 def _stage_sequence_dirs(seq_dirs, stage_root):
-    subdirs_to_copy = ['kinect_color', 'kinect_depth']
+    subdirs_to_copy = ['kinect_color', 'kinect_depth', 'iphone_color', 'iphone_depth']
     for seq_dir in seq_dirs:
         seq_name = osp.basename(seq_dir)
         dst_seq_dir = osp.join(stage_root, seq_name)
@@ -222,8 +222,16 @@ def _stage_sequence_dirs(seq_dirs, stage_root):
 
 
 def _preprocess_humman_root(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers):
-    rgb_fns = glob(osp.join(root_dir, 'p*/kinect_color/kinect_*/*.png'))
-    depth_fns = [fn.replace('kinect_color', 'kinect_depth') for fn in rgb_fns]
+    # kinect_rgb_fns = glob(osp.join(root_dir, 'p*/kinect_color/kinect_*/*.png'))
+    # kinect_depth_fns = [fn.replace('kinect_color', 'kinect_depth') for fn in kinect_rgb_fns]
+
+    iphone_rgb_fns = glob(osp.join(root_dir, 'p*/iphone_color/iphone/*.png'))
+    iphone_depth_fns = [fn.replace('iphone_color', 'iphone_depth') for fn in iphone_rgb_fns]
+
+    rgb_fns = iphone_rgb_fns
+    depth_fns = iphone_depth_fns
+    # rgb_fns = kinect_rgb_fns + iphone_rgb_fns
+    # depth_fns = kinect_depth_fns + iphone_depth_fns
 
     os.makedirs(out_dir, exist_ok=True)
 
@@ -312,9 +320,9 @@ if __name__ == '__main__':
     # preprocess_mmfi(root_dir, rgb_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16)
 
     root_dir = '/data/shared/humman_release_v1.0_point'
-    out_dir = '/opt/data/humman'
+    out_dir = '/opt/data/humman_iphone'
     rgb_out_size = (320, 180)
     depth_out_size = (320, 288)
 
-    preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir=None)
-    # preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')
+    # preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir=None)
+    preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')

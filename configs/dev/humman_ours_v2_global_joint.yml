@@ -5,55 +5,67 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 16
-epochs: &epochs 20
+epochs: &epochs 10
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'HummanDataset'
   params:
-    data_root: &data_root 'data/mmfi'
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
-    split_to_use: &split_to_use 'manual_split'
-    protocol: &protocol 'protocol3'
-    seq_len: 1
-    seq_step: 1
+    data_root: &data_root '/data/shared/humman_release_v1.0_point'
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "train_mini"
+    seq_len: 1       
+    seq_step: 5
     pad_seq: true
     causal: true
-    test_mode: false
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
 val_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'HummanDataset'
   params:
     data_root: *data_root
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: *split_config
-    split_to_use: *split_to_use
-    protocol: *protocol
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "test_mini"
     seq_len: 1
-    seq_step: 1
+    seq_step: 5
     pad_seq: true
     causal: true
-    test_mode: true
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
 test_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'HummanDataset'
   params:
     data_root: *data_root
-    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
-    split_config: *split_config
-    split_to_use: *split_to_use
-    protocol: *protocol
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "test_mini"
     seq_len: 1
-    seq_step: 1
+    seq_step: 5
     pad_seq: true
     causal: true
-    test_mode: true
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -67,14 +79,8 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_1213
+model_name: TestModel_1208
 backbone_rgb:
-  name: 'TimmWrapper'
-  params:
-    model_name: 'vit_small_patch16_dinov3'
-    pretrained: true
-  has_temporal: false
-backbone_depth:
   name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
@@ -97,34 +103,17 @@ backbone_lidar:
     features: 3
     mode: 'xyz'
   has_temporal: true
-backbone_mmwave:
-  name: 'P4TEncoder'
-  params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
-    temporal_kernel_size: 3
-    temporal_stride: 1
-    emb_relu: false
-    dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 2
-    mode: 'all'
-  has_temporal: true
 aggregator:
-  name: 'TransformerAggregatorV2'
+  name: 'TransformerAggregatorV2GlobalJoint'
   params:
     input_dims: [384, 384, 512, 512]
-    embed_dim: 256
+    embed_dim: 512
     num_register_tokens: 4
-    aa_order: ['single', 'spatial', 'cross_2d_3d', 'gcn']
+    aa_order: ['single', 'cross_joint', 'gcn']
     aa_block_size: 1
-    depth: 4
+    depth: 2
     block_type: 'Block'
-    skeleton_type: 'mmfi'
+    skeleton_type: 'smpl'
     num_heads: 8
     mlp_ratio: 2.0
     qkv_bias: true
@@ -132,8 +121,6 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-    use_grad_ckpt: False
-    max_spatial_seq_len: 1000
 keypoint_head:
   name: 'RegressionKeypointHeadV2'
   params:
@@ -156,35 +143,32 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: VideoResize
-  #   params:
-  #     size: [192, 256]
-  #     keys: ['input_rgb', 'input_depth']
+  - name: DepthToLiDARPC
+    params:
+      keys: ['input_depth']
+  - name: VideoResize
+    params:
+      size: [256, 256]
+      keep_ratio: false
+      keys: ['input_rgb']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  - name: VideoNormalize
-    params:
-      norm_mode: 'zero_one'
-      keys: ['input_depth']
   - name: PCPad
     params:
       num_points: 1024
       pad_mode: 'repeat'
       keys: ['input_lidar']
-  - name: PCPad
-    params:
-      num_points: 256
-      pad_mode: 'repeat'
-      keys: ['input_mmwave']
   - name: ToTensor
     params: null
+  # - name: CameraParamToPoseEncoding
+  #   params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
-
+vis_skl_format: 'smpl'  # Skeleton format for visualization
 vis_denorm_params:
-  rgb_mean: [123.675, 116.28, 103.53]
-  rgb_std: [58.395, 57.12, 57.375]
-  depth_mean: [0.0, 0.0, 0.0]
-  depth_std: [255.0, 255.0, 255.0]
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization

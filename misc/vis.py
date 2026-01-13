@@ -271,7 +271,7 @@ def plot_3d_point_cloud(ax, points, color='k', s=1):
     ax.scatter(points_[:, 0], points_[:, 1], points_[:, 2], c=color, s=s)
 
 def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params=None, 
-                                smpl_model_path='weights/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl', 
+                                smpl_model_path='weights/smpl/SMPL_NEUTRAL.pkl', 
                                 device='cuda'):
     """
     Visualize a multimodal sample with predictions.
