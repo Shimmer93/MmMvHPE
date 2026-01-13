@@ -739,6 +739,7 @@ class HummanPreprocessedDataset(BaseDataset):
         colocated: bool = False,
         random_seed: Optional[int] = None,
         max_samples: Optional[int] = None,
+        colocated: bool = False,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -753,6 +754,7 @@ class HummanPreprocessedDataset(BaseDataset):
         self.colocated = colocated
         self.random_seed = random_seed
         self.max_samples = max_samples
+        self.colocated = colocated
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -962,19 +964,44 @@ class HummanPreprocessedDataset(BaseDataset):
         )
         return None
 
-    def _load_frames(self, modality, seq_name, camera_name, start_frame):
-        frame_list = self.file_index[modality][seq_name][camera_name]
+    def _load_rgb_frames(self, seq_name, camera_name, start_frame):
+        frame_list = self.file_index["rgb"][seq_name][camera_name]
         frames = []
         for i in range(self.seq_len):
             idx = start_frame + i
             idx = min(idx, len(frame_list) - 1)
             frame_path = frame_list[idx][1]
-            if modality == "rgb":
-                frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            else:
-                frame = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+            frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+            if frame is None:
+                if frames:
+                    frames.append(frames[-1].copy())
+                else:
+                    frames.append(np.zeros((512, 512, 3), dtype=np.uint8))
+                continue
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
+        return frames
+
+    def _load_depth_frames(self, seq_name, camera_name, start_frame):
+        frame_list = self.file_index["depth"][seq_name][camera_name]
+        frames = []
+        for i in range(self.seq_len):
+            idx = start_frame + i
+            idx = min(idx, len(frame_list) - 1)
+            frame_path = frame_list[idx][1]
+            depth = cv2.imread(frame_path, cv2.IMREAD_ANYDEPTH)
+            if depth is None:
+                depth = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                if frames:
+                    frames.append(frames[-1].copy())
+                else:
+                    frames.append(np.zeros((512, 512), dtype=np.float32))
+                continue
+            depth = depth.astype(np.float32)
+            if self.unit == "m":
+                depth = depth / 1000.0
+            frames.append(depth)
         return frames
 
     def __len__(self):
@@ -996,6 +1023,10 @@ class HummanPreprocessedDataset(BaseDataset):
             if data_info["depth_camera"] is None and "depth" in self.modality_names:
                 data_info["depth_camera"] = random.choice(data_info["depth_cameras"])
 
+            if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
+                if data_info["rgb_camera"] != data_info["depth_camera"]:
+                    data_info["depth_camera"] = data_info["rgb_camera"]       
+
         cameras = self._load_camera_params(data_info["seq_name"])
         smpl_params = self._load_smpl_params(data_info["seq_name"])
         keypoints_3d = self._load_keypoints_3d(data_info["seq_name"])
@@ -1015,15 +1046,7 @@ class HummanPreprocessedDataset(BaseDataset):
             "transl": smpl_params["transl"][gt_frame_idx],
         }
 
-        if self.unit == "m":
-            gt_smpl["transl"] = gt_smpl["transl"]
-
-        if keypoints_3d is not None:
-            gt_keypoints = keypoints_3d[gt_frame_idx]
-            if self.unit == "m":
-                gt_keypoints = gt_keypoints
-        else:
-            gt_keypoints = None
+        gt_keypoints = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
 
         sample = {
             "gt_smpl": gt_smpl,
@@ -1037,8 +1060,7 @@ class HummanPreprocessedDataset(BaseDataset):
         }
 
         if "rgb" in self.modality_names:
-            rgb_frames = self._load_frames(
-                "rgb",
+            rgb_frames = self._load_rgb_frames(
                 data_info["seq_name"],
                 data_info["rgb_camera"],
                 data_info["start_frame"],
@@ -1059,8 +1081,7 @@ class HummanPreprocessedDataset(BaseDataset):
                 }
 
         if "depth" in self.modality_names:
-            depth_frames = self._load_frames(
-                "depth",
+            depth_frames = self._load_depth_frames(
                 data_info["seq_name"],
                 data_info["depth_camera"],
                 data_info["start_frame"],
@@ -1095,10 +1116,6 @@ class HummanPreprocessedDataset(BaseDataset):
                 transl_world = gt_smpl["transl"].reshape(3, 1)
                 transl_rgb = rgb_R @ transl_world + rgb_T
                 sample["gt_smpl"]["transl"] = transl_rgb.flatten()
-                global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
-                R_smpl = axis_angle_to_matrix_np(global_orient_world)
-                R_smpl_rgb = rgb_R @ R_smpl
-                sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_rgb)
 
                 if gt_keypoints is not None:
                     keypoints_world = gt_keypoints.T
@@ -1114,10 +1131,6 @@ class HummanPreprocessedDataset(BaseDataset):
                 transl_world = gt_smpl["transl"].reshape(3, 1)
                 transl_depth = depth_R @ transl_world + depth_T
                 sample["gt_smpl"]["transl"] = transl_depth.flatten()
-                global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
-                R_smpl = axis_angle_to_matrix_np(global_orient_world)
-                R_smpl_depth = depth_R @ R_smpl
-                sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_depth)
 
                 if gt_keypoints is not None:
                     keypoints_world = gt_keypoints.T
@@ -1131,10 +1144,6 @@ class HummanPreprocessedDataset(BaseDataset):
             transl_world = gt_smpl["transl"].reshape(3, 1)
             transl_rgb = rgb_R @ transl_world + rgb_T
             sample["gt_smpl"]["transl"] = transl_rgb.flatten()
-            global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
-            R_smpl = axis_angle_to_matrix_np(global_orient_world)
-            R_smpl_rgb = rgb_R @ R_smpl
-            sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_rgb)
             if gt_keypoints is not None:
                 keypoints_world = gt_keypoints.T
                 keypoints_rgb = rgb_R @ keypoints_world + rgb_T
@@ -1147,10 +1156,6 @@ class HummanPreprocessedDataset(BaseDataset):
             transl_world = gt_smpl["transl"].reshape(3, 1)
             transl_depth = depth_R @ transl_world + depth_T
             sample["gt_smpl"]["transl"] = transl_depth.flatten()
-            global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
-            R_smpl = axis_angle_to_matrix_np(global_orient_world)
-            R_smpl_depth = depth_R @ R_smpl
-            sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_depth)
             if gt_keypoints is not None:
                 keypoints_world = gt_keypoints.T
                 keypoints_depth = depth_R @ keypoints_world + depth_T
