@@ -93,6 +93,8 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         else:
             self.depth_cameras = list(depth_cameras)
 
+        self.lidar_cameras = list(self.depth_cameras)
+
         if unit not in {"mm", "m"}:
             warnings.warn(f"Invalid unit: {unit}. Defaulting to 'm'.")
             self.unit = "m"
@@ -165,14 +167,19 @@ class HummanPreprocessedDatasetV2(BaseDataset):
 
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
             depth_cams = list(self.file_index.get("depth", {}).get(seq_name, {}).keys())
+            lidar_cams = list(self.file_index.get("lidar", {}).get(seq_name, {}).keys())
             if self.rgb_cameras:
                 rgb_cams = [c for c in rgb_cams if c in self.rgb_cameras]
             if self.depth_cameras:
                 depth_cams = [c for c in depth_cams if c in self.depth_cameras]
+            if self.lidar_cameras:
+                lidar_cams = [c for c in lidar_cams if c in self.lidar_cameras]
 
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
             if "depth" in self.modality_names and not depth_cams:
+                continue
+            if "lidar" in self.modality_names and not lidar_cams:
                 continue
 
             ref_modality = self.modality_names[0]
@@ -195,8 +202,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                                 "num_frames": num_frames,
                                 "rgb_camera": rgb_cam,
                                 "depth_camera": depth_cam,
+                                "lidar_camera": depth_cam if lidar_cams else None,
                                 "rgb_cameras": rgb_cams,
                                 "depth_cameras": depth_cams,
+                                "lidar_cameras": lidar_cams,
                             })
                 else:
                     data_list.append({
@@ -206,8 +215,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                         "num_frames": num_frames,
                         "rgb_camera": None,
                         "depth_camera": None,
+                        "lidar_camera": None,
                         "rgb_cameras": rgb_cams,
                         "depth_cameras": depth_cams,
+                        "lidar_cameras": lidar_cams,
                     })
 
         return data_list
@@ -279,6 +290,17 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             frames.append(depth)
         return frames
 
+    def _load_lidar_frames(self, seq_name, camera_name, start_frame):
+        frame_list = self.file_index["lidar"][seq_name][camera_name]
+        frames = []
+        for i in range(self.seq_len):
+            idx = start_frame + i
+            idx = min(idx, len(frame_list) - 1)
+            frame_path = frame_list[idx][1]
+            pc = np.load(frame_path)
+            frames.append(pc.astype(np.float32))
+        return frames
+
     @staticmethod
     def _flatten_pose(global_orient, body_pose):
         global_orient = np.asarray(global_orient, dtype=np.float32).reshape(-1)
@@ -314,9 +336,16 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 data_info["rgb_camera"] = random.choice(data_info["rgb_cameras"])
             if data_info.get("depth_camera") is None and "depth" in self.modality_names:
                 data_info["depth_camera"] = random.choice(data_info["depth_cameras"])
+            if data_info.get("lidar_camera") is None and "lidar" in self.modality_names:
+                if data_info["depth_camera"] is not None:
+                    data_info["lidar_camera"] = data_info["depth_camera"]
+                elif data_info["lidar_cameras"]:
+                    data_info["lidar_camera"] = random.choice(data_info["lidar_cameras"])
             if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
                 if data_info["rgb_camera"] != data_info["depth_camera"]:
                     data_info["depth_camera"] = data_info["rgb_camera"]
+                    if "lidar" in self.modality_names:
+                        data_info["lidar_camera"] = data_info["rgb_camera"]
 
         cameras = self._load_camera_params(data_info["seq_name"])
         smpl_params = self._load_smpl_params(data_info["seq_name"])
@@ -401,6 +430,14 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     "intrinsic": K,
                     "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
                 }
+
+        if "lidar" in self.modality_names:
+            lidar_frames = self._load_lidar_frames(
+                data_info["seq_name"],
+                data_info["lidar_camera"],
+                data_info["start_frame"],
+            )
+            sample["input_lidar"] = lidar_frames
 
         sample = self.pipeline(sample)
         return sample
