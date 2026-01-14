@@ -19,12 +19,12 @@ train_dataset:
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     anchor_key: 'input_rgb'
     split: "train"
-    seq_len: 1       
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
     random_seed: 42
 val_dataset:
   name: 'HummanPreprocessedDataset'
@@ -41,7 +41,7 @@ val_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
     random_seed: 42
 test_dataset:
   name: 'HummanPreprocessedDataset'
@@ -58,7 +58,7 @@ test_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
     random_seed: 42
 # --------------------------------------
 # Optimizer parameters
@@ -74,24 +74,18 @@ sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
   warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00001
-  eta_min: 0.00001
+  warmup_start_lr: 0.0001
+  eta_min: 0.0001
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_1208
+model_name: HummanSMPLToken
 backbone_rgb:
   name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
-# backbone_depth:
-#   name: 'TimmWrapper'
-#   params:
-#     model_name: 'vit_small_patch16_dinov3'
-#     pretrained: true
-#   has_temporal: false
 backbone_lidar:
   name: 'P4TEncoder'
   params:
@@ -110,14 +104,15 @@ backbone_lidar:
     mode: 'xyz'
   has_temporal: true
 aggregator:
-  name: 'TransformerAggregatorV2GlobalJoint'
+  name: 'TransformerAggregatorV2GlobalSMPL'
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
     num_register_tokens: 4
+    num_smpl_tokens: 3
     aa_order: ['single', 'cross_joint', 'gcn']
-    aa_block_size: 1 # 2
-    depth: 2 # 4 6
+    aa_block_size: 2
+    depth: 6
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8
@@ -127,24 +122,39 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-keypoint_head:
-  name: 'RegressionKeypointHeadV2'
+smpl_head:
+  name: 'SMPLTokenHeadV2'
   params:
     emb_size: 512
-    only_last_layer: true
-    losses:
-      - name: 'MSELoss'
-        params: null
-        weight: 1.0
+    num_betas: 10
+    dropout: 0.1
+    use_smpl_mean: false
+    smpl_model_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
+    joint_loss_type: 'l1'
+    rot_weight: 10
+    root_rot_weight: 0.95
+    body_rot_weight: 0.05
+    joint_weight: 1
+    transl_weight: 10.0
+    betas_weight: 1.0
+    debug: false
+    num_joints: 24
+    num_smpl_tokens: 3
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
 metrics:
-  - name: 'MPJPE'
+  - name: 'SMPL_MPJPE'
     params:
+      smpl_model_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
       affix: null
-  - name: 'PAMPJPE'
+  - name: 'SMPL_PAMPJPE'
     params:
+      smpl_model_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
+      affix: null
+  - name: 'SMPL_VertexError'
+    params:
+      smpl_model_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
       affix: null
 # --------------------------------------
 # Augmentation parameters
@@ -163,10 +173,6 @@ train_pipeline: &train_pipeline
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  # - name: VideoNormalize
-  #   params:
-  #     norm_mode: 'zero_one'
-  #     keys: ['input_depth']
   - name: PCPad
     params:
       num_points: 1024
@@ -174,13 +180,11 @@ train_pipeline: &train_pipeline
       keys: ['input_lidar']
   - name: ToTensor
     params: null
-  # - name: CameraParamToPoseEncoding
-  #   params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
-vis_skl_format: 'smpl'  # Skeleton format for visualization
+vis_skl_format: 'smpl'
 vis_denorm_params:
-  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
-  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
   depth_mean: [0.0]
-  depth_std: [255.0]  # zero_one normalization
+  depth_std: [255.0]

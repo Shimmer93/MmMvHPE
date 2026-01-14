@@ -100,33 +100,43 @@ def pampjpe_func(preds, gts, reduce=True):
     return pampjpe
 
 class MPJPE:
-    def __init__(self, affix=None):
+    def __init__(self, affix=None, use_smpl=False, root_joint_idx=-1):
         self.affix = affix
+        self.use_smpl = use_smpl
+        self.root_joint_idx = root_joint_idx
         self.name = f'mpjpe_{affix}' if affix is not None else 'mpjpe'
 
     def __call__(self, preds, targets):
-        if self.affix is not None:
-            pred_keypoints = to_numpy(preds[f'pred_keypoints_{self.affix}'])
-            target_keypoints = to_numpy(targets[f'gt_keypoints_{self.affix}'])
+        if self.use_smpl:
+            pred_keypoints = to_numpy(preds['pred_smpl_keypoints'])
         else:
             pred_keypoints = to_numpy(preds['pred_keypoints'])
-            target_keypoints = to_numpy(targets['gt_keypoints'])
+        target_keypoints = to_numpy(targets['gt_keypoints'])
+
+        if self.root_joint_idx >= 0:
+            pred_keypoints = pred_keypoints - pred_keypoints[..., self.root_joint_idx:self.root_joint_idx+1, :]
+            target_keypoints = target_keypoints - target_keypoints[..., self.root_joint_idx:self.root_joint_idx+1, :]
 
         mpjpe = mpjpe_func(pred_keypoints, target_keypoints, reduce=True)
         return mpjpe
 
 class PAMPJPE:
-    def __init__(self, affix=None):
+    def __init__(self, affix=None, use_smpl=False, root_joint_idx=-1):
         self.affix = affix
+        self.use_smpl = use_smpl
+        self.root_joint_idx = root_joint_idx
         self.name = f'pampjpe_{affix}' if affix is not None else 'pampjpe'
 
     def __call__(self, preds, targets):
-        if self.affix is not None:
-            pred_keypoints = to_numpy(preds[f'pred_keypoints_{self.affix}'])
-            target_keypoints = to_numpy(targets[f'gt_keypoints_{self.affix}'])
+        if self.use_smpl:
+            pred_keypoints = to_numpy(preds['pred_smpl_keypoints'])
         else:
             pred_keypoints = to_numpy(preds['pred_keypoints'])
-            target_keypoints = to_numpy(targets['gt_keypoints'])
+        target_keypoints = to_numpy(targets['gt_keypoints'])
+
+        if self.root_joint_idx >= 0:
+            pred_keypoints = pred_keypoints - pred_keypoints[..., self.root_joint_idx:self.root_joint_idx+1, :]
+            target_keypoints = target_keypoints - target_keypoints[..., self.root_joint_idx:self.root_joint_idx+1, :]
 
         pampjpe = pampjpe_func(pred_keypoints, target_keypoints, reduce=True)
         return pampjpe

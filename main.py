@@ -28,11 +28,7 @@ def main(args):
     if getattr(args, "resume", False):
         model.strict_loading = False
     
-    # Determine monitor metric based on head type
-    if hasattr(args, 'smpl_head') and args.smpl_head is not None:
-        monitor = 'val_smpl_mpjpe'
-    else:
-        monitor = 'val_mpjpe'
+    monitor = 'val_mpjpe'
 
     if hasattr(args, 'epochs'):
         filename = args.model_name+'-{epoch}-{'+monitor+':.4f}'
