@@ -343,5 +343,8 @@ class DepthToLiDARPC():
             results['modalities'].append('lidar')
             del results[key]
             results['modalities'].remove('depth')
+            if 'gt_camera_depth' in results:
+                results['gt_camera_lidar'] = results['gt_camera_depth']
+                del results['gt_camera_depth']
 
         return results
