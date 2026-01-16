@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from models.video_encoders.layers import Mlp
 from models.video_encoders.layers.block import Block
 from .head_act import activate_pose
+from misc.pose_enc import pose_encoding_to_extri_intri
 
 
 class CameraHead(nn.Module):
@@ -143,6 +144,8 @@ class CameraHead(nn.Module):
             )
             pred_pose_enc_list.append(activated_pose)
 
+        # print("Camera head output shape:", pred_pose_enc_list[-1].shape)
+
         return pred_pose_enc_list
 
 
@@ -166,6 +169,7 @@ class VGGTCameraHead(BaseHead):
             trans_act: str = "linear",
             quat_act: str = "linear",
             fl_act: str = "relu",
+            last_n_layers=-1,
     ):
         super().__init__(losses)
         self.camera_head = CameraHead(
@@ -179,22 +183,44 @@ class VGGTCameraHead(BaseHead):
             quat_act=quat_act,
             fl_act=fl_act,
         )
+        self.last_n_layers = last_n_layers
 
     def forward(self, aggregated_tokens_list: list, num_iterations: int = 4) -> list:
-        last_output = aggregated_tokens_list[-1]
+        x = aggregated_tokens_list
+        if self.last_n_layers > 0:
+            x = x[-self.last_n_layers:]
+        x = torch.concatenate(x, dim=-1)
+
+        # x.shape: B, T, num_camera_tokens + num_smpl_tokens + num_joints, C
+        B, T, N, C = x.shape
+        num_camera_tokens = N - 1 - 24
+        x = x[:, -1, :num_camera_tokens, :]
+        x = x.unsqueeze(-2)  
+
+        last_output = x
+        # print("Camera head input shape:", last_output.shape)
+        # last_output = aggregated_tokens_list[-1]
         # B, M, T, N, C = last_output.shape
-        last_output = last_output.mean(dim=2) # Average over temporal dimension
+        # last_output = last_output.mean(dim=2) # Average over temporal dimension
         return self.camera_head([last_output], num_iterations)
     
     def loss(self, x, data_batch):
         pred_camera_enc_list = self.forward(x, num_iterations=data_batch.get('num_camera_iterations',4))
+        pred_camera_encs = pred_camera_enc_list[-1]
+        pred_camera_enc_list = [pred_camera_encs[:,i,...] for i in range(pred_camera_encs.shape[1])]
         modalities = data_batch['modalities']
-        assert len(pred_camera_enc_list) == len(modalities), "Number of predicted camera encodings must match number of modalities."
+        # print("Modalities for camera loss:", modalities)
+        assert pred_camera_encs.shape[1] == len(modalities[0]), "Number of predicted camera encodings must match number of modalities."
 
         losses = {}
         for loss_name, (loss_fn, loss_weight) in self.losses.items():
-            for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
-                losses[f"{loss_name}_{modality}"] = (loss_fn(pred_camera_enc, data_batch[f'gt_camera_{modality}']), loss_weight)
+            for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities[0]):
+                loss_output = loss_fn(pred_camera_enc, data_batch[f'gt_camera_{modality}'])
+                if isinstance(loss_output, dict):
+                    for k, v in loss_output.items():
+                        losses[f"{loss_name}_{modality}_{k}"] = (v, loss_weight)
+                else:
+                    losses[f"{loss_name}_{modality}"] = (loss_output, loss_weight)
         return losses
     
     def predict(self, x, num_iterations: int = 4):
