@@ -181,9 +181,6 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  - name: DepthToLiDARPC
-    params:
-      keys: ['input_depth']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
