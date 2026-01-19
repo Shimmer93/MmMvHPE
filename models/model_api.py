@@ -221,9 +221,9 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_camera_head:
-            preds_camera = self.camera_head.predict(feats_agg)
-            pred_dict['pred_cameras'] = preds_camera
+        # if self.with_camera_head:
+        #     preds_camera = self.camera_head.predict(feats_agg)
+        #     pred_dict['pred_cameras'] = preds_camera
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint

@@ -461,7 +461,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     and "lidar" in sample["modalities"]
                     and "depth" not in sample["modalities"]
                 ):
-                    sample["depth_camera"] = {
+                    sample["lidar_camera"] = {
                         "intrinsic": K,
                         "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
                     }
