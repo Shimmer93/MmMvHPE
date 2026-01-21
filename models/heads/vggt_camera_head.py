@@ -198,11 +198,15 @@ class VGGTCameraHead(BaseHead):
             x = x[-self.last_n_layers:]
         x = torch.concatenate(x, dim=-1)
 
-        # x.shape: B, T, num_camera_tokens + num_smpl_tokens + num_joints, C
-        B, T, N, C = x.shape
-        num_camera_tokens = N - 1 - 24
-        x = x[:, -1, :num_camera_tokens, :]
-        x = x.unsqueeze(-2)  
+        # x shape: B, T, N, C (V2/V3) or B, T, M, S, C (V4)
+        if x.dim() == 5:
+            B, T, M, S, C = x.shape
+            x = x[:, -1, :, :1, :]  # B, M, 1, C
+        else:
+            B, T, N, C = x.shape
+            num_camera_tokens = N - 1 - 24
+            x = x[:, -1, :num_camera_tokens, :]
+            x = x.unsqueeze(-2)
 
         last_output = x
         # print("Camera head input shape:", last_output.shape)
