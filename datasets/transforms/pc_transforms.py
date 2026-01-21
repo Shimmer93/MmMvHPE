@@ -233,6 +233,51 @@ class PCNormalize():
             results[f'{key}_affine'][:3, 3] = (results[f'{key}_affine'][:3, 3] - center) / radius
 
         return results
+
+class PCCenterWithKeypoints():
+    def __init__(
+        self,
+        center_type: str = 'mean',
+        keys: List[str] = ['input_lidar'],
+        keypoints_key: str = 'gt_keypoints',
+        shifted_keypoints_suffix: str = '_pc_centered',
+    ):
+        assert center_type in ['mean', 'median'], "center_type must be 'mean' or 'median'"
+        self.center_type = center_type
+        self.keys = keys
+        self.keypoints_key = keypoints_key
+        self.shifted_keypoints_suffix = shifted_keypoints_suffix
+
+    def __call__(self, results):
+        for key in self.keys:
+            if key not in results:
+                results[f'{key}_affine'] = initialize_affine_matrix()
+                continue
+            pc_seq = results[key]
+            all_ps = np.concatenate(pc_seq, axis=0)
+            if all_ps.size == 0:
+                continue
+
+            if self.center_type == 'mean':
+                center = np.mean(all_ps[:, :3], axis=0)
+            else:
+                center = np.median(all_ps[:, :3], axis=0)
+
+            centered_pc_seq = []
+            for pc in pc_seq:
+                pc[:, :3] = pc[:, :3] - center
+                centered_pc_seq.append(pc)
+            results[key] = centered_pc_seq
+            if f'{key}_affine' not in results:
+                results[f'{key}_affine'] = initialize_affine_matrix()
+            results[f'{key}_affine'][:3, 3] = results[f'{key}_affine'][:3, 3] - center
+
+            if self.keypoints_key in results and results[self.keypoints_key] is not None:
+                shifted = results[self.keypoints_key].copy()
+                shifted[:, :3] = shifted[:, :3] - center
+                results[f'{self.keypoints_key}{self.shifted_keypoints_suffix}_{key}'] = shifted
+
+        return results
     
 class PCRemoveOutliers():
     def __init__(self, 
