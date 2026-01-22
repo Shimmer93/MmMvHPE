@@ -17,12 +17,12 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
         input_dims: List[int] = [512, 512, 512, 512],
         embed_dim: int = 512,
         num_register_tokens: int = 4,
-        num_smpl_tokens: int = 3,
+        num_smpl_tokens: int = 1,
         aa_order: List[str] = ["single", "cross_joint", "gcn"],
         aa_block_size: int = 1,
         depth: int = 24,
         block_type: str = "Block",
-        skeleton_type: str = "mmfi",
+        skeleton_type: str = "smpl",
         num_heads: int = 16,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
@@ -63,8 +63,8 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
             nn.LayerNorm(embed_dim),
         )
 
-        self.camera_token = nn.Parameter(torch.randn(1, 1, 2, 1, embed_dim))
-        self.register_token = nn.Parameter(torch.randn(1, 1, 2, num_register_tokens, embed_dim))
+        self.camera_token = nn.Parameter(torch.randn(1, 1, 1, 1, embed_dim))
+        self.register_token = nn.Parameter(torch.randn(1, 1, 1, num_register_tokens, embed_dim))
         self.smpl_token = nn.Parameter(torch.randn(1, 1, num_smpl_tokens, embed_dim))
         self.joint_token = nn.Parameter(torch.randn(1, 1, self.num_joints, embed_dim))
         self.num_register_tokens = num_register_tokens
@@ -93,6 +93,8 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
             self.single_blocks = nn.ModuleList([block_cls(**block_params) for _ in range(depth)])
         if "cross_joint" in aa_order:
             self.cross_joint_blocks = nn.ModuleList([CABlock(**block_params) for _ in range(depth)])
+        if "joint_to_camera" in aa_order:
+            self.joint_to_camera_blocks = nn.ModuleList([CABlock(**block_params) for _ in range(depth)])
         if "gcn" in aa_order:
             A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
             self.gcn_blocks = nn.ModuleList(
@@ -105,13 +107,6 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
         self.aa_block_num = depth // aa_block_size
 
         self.use_grad_ckpt = use_grad_ckpt
-
-        self.anchor_map = {
-            "input_rgb": 0,
-            "input_depth": 1,
-            "input_lidar": 2,
-            "input_mmwave": 3,
-        }
 
         self.apply(self._init_weights)
 
@@ -152,26 +147,17 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
         if B == 0:
             raise ValueError("At least one modality must be provided.")
 
-        camera_tokens_normal, camera_tokens_anchor = self._expand_special_tokens(self.camera_token, B, T)
-        register_tokens_normal, register_tokens_anchor = self._expand_special_tokens(self.register_token, B, T)
+        camera_tokens = self.camera_token.expand(B, T, -1, -1, -1)[:, :, 0]
+        register_tokens = self.register_token.expand(B, T, -1, -1, -1)[:, :, 0]
         smpl_tokens = self.smpl_token.expand(B, T, -1, -1)
         joint_tokens = self.joint_token.expand(B, T, -1, -1)
 
         # Concatenate special tokens with patch tokens
-        anchor_key = kwargs.get('anchor_key', None)
-        # Handle batched anchor_key (list) - take first element since it should be same for all in batch
-        if isinstance(anchor_key, (list, tuple)):
-            anchor_key = anchor_key[0] if len(anchor_key) > 0 else None
-        anchor_idx = self.anchor_map.get(anchor_key, -1)
-
         modality_tokens = []
         Ns = []
         for i, feat in enumerate([features_rgb, features_depth, features_lidar, features_mmwave]):
             if feat is not None:
-                if i == anchor_idx:
-                    feat = self._insert_special_tokens(feat, camera_tokens_anchor, register_tokens_anchor)
-                else:
-                    feat = self._insert_special_tokens(feat, camera_tokens_normal, register_tokens_normal)
+                feat = self._insert_special_tokens(feat, camera_tokens, register_tokens)
                 feat = feat + self.modality_embed[:, :, i, :].unsqueeze(2)
                 modality_tokens.append(feat)
                 Ns.append(feat.shape[2])
@@ -181,6 +167,7 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
         single_idx = 0
         cross_idx = 0
+        joint_to_camera_idx = 0
         gcn_idx = 0
         output_list = []
 
@@ -194,6 +181,10 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
                     case "cross_joint":
                         smpl_tokens, joint_tokens, cross_idx, intermediates = self._process_cross_joint_attention(
                             smpl_tokens, joint_tokens, modality_tokens, Ns, cross_idx, pos=None
+                        )
+                    case "joint_to_camera":
+                        modality_tokens, joint_to_camera_idx, intermediates = self._process_joint_to_camera_attention(
+                            modality_tokens, smpl_tokens, joint_tokens, Ns, joint_to_camera_idx, pos=None
                         )
                     case "gcn":
                         joint_tokens, gcn_idx, intermediates = self._process_gcn(
@@ -237,28 +228,83 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
         for _ in range(self.aa_block_size):
             pose_base = torch.cat([smpl_base, joint_base], dim=2)
+            queries_base = pose_base.reshape(
+                pose_base.shape[0],
+                pose_base.shape[1] * (self.num_smpl_tokens + self.num_joints),
+                pose_base.shape[3],
+            )
+            summed_queries = None
+            num_modalities = 0
             for tokens in modality_tokens:
                 if tokens is None:
                     continue
                 B, T, N, C = tokens.shape
-                queries = pose_base.reshape(B, T * (self.num_smpl_tokens + self.num_joints), C)
                 context = tokens.reshape(B, T * N, C)
 
                 if self.use_grad_ckpt and self.training:
                     queries = checkpoint(
-                        self.cross_joint_blocks[idx], queries, context, pos, use_reentrant=False
+                        self.cross_joint_blocks[idx], queries_base, context, pos, use_reentrant=False
                     )
                 else:
-                    queries = self.cross_joint_blocks[idx](queries, context=context, pos=pos)
+                    queries = self.cross_joint_blocks[idx](queries_base, context=context, pos=pos)
 
-                pose_base = queries.reshape(B, T, self.num_smpl_tokens + self.num_joints, C)
-                smpl_base = pose_base[:, :, :self.num_smpl_tokens, :]
-                joint_base = pose_base[:, :, self.num_smpl_tokens:, :]
+                if summed_queries is None:
+                    summed_queries = queries
+                else:
+                    summed_queries = summed_queries + queries
+                num_modalities += 1
+
+            if summed_queries is None:
+                summed_queries = queries_base
+            else:
+                summed_queries = summed_queries / float(num_modalities)
+
+            pose_base = summed_queries.reshape(
+                pose_base.shape[0],
+                pose_base.shape[1],
+                self.num_smpl_tokens + self.num_joints,
+                pose_base.shape[3],
+            )
+            smpl_base = pose_base[:, :, :self.num_smpl_tokens, :]
+            joint_base = pose_base[:, :, self.num_smpl_tokens:, :]
 
             idx += 1
             intermediates.append(self._extract_output_tokens(modality_tokens, smpl_base, joint_base, Ns))
 
         return smpl_base, joint_base, idx, intermediates
+
+    def _process_joint_to_camera_attention(self, modality_tokens, smpl_tokens, joint_tokens, Ns, idx, pos=None):
+        intermediates = []
+        tokens_base = modality_tokens
+
+        for _ in range(self.aa_block_size):
+            updated = list(tokens_base)
+            context = joint_tokens.reshape(
+                joint_tokens.shape[0],
+                joint_tokens.shape[1] * self.num_joints,
+                joint_tokens.shape[3],
+            )
+            for i, tokens in enumerate(tokens_base):
+                if tokens is None:
+                    continue
+                B, T, _, C = tokens.shape
+                camera_tokens = tokens[:, :, :1, :].reshape(B, T, C)
+
+                if self.use_grad_ckpt and self.training:
+                    updated_camera = checkpoint(
+                        self.joint_to_camera_blocks[idx], camera_tokens, context, pos, use_reentrant=False
+                    )
+                else:
+                    updated_camera = self.joint_to_camera_blocks[idx](camera_tokens, context=context, pos=pos)
+
+                updated_camera = updated_camera.reshape(B, T, 1, C)
+                updated[i] = torch.cat([updated_camera, tokens[:, :, 1:, :]], dim=2)
+
+            tokens_base = updated
+            idx += 1
+            intermediates.append(self._extract_output_tokens(tokens_base, smpl_tokens, joint_tokens, Ns))
+
+        return tokens_base, idx, intermediates
 
     def _process_gcn(self, smpl_tokens, joint_tokens, modality_tokens, Ns, idx):
         intermediates = []
@@ -278,11 +324,6 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
         return joint_base, idx, intermediates
 
-    def _expand_special_tokens(self, tokens: Tensor, B: int, T: int):
-        tokens = tokens.expand(B, T, -1, -1, -1)
-        tokens_normal, tokens_anchor = tokens[:, :, 0], tokens[:, :, 1]
-        return tokens_normal, tokens_anchor
-
     def _insert_special_tokens(self, features: Tensor, camera_tokens: Tensor, register_tokens: Tensor):
         if features is not None:
             features = torch.cat([camera_tokens, register_tokens, features], dim=2)
@@ -290,16 +331,16 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
     def _extract_output_tokens(self, modality_tokens, smpl_tokens, joint_tokens, Ns):
         B, T, _, C = joint_tokens.shape
-        token_slices = []
+        camera_slices = []
 
         for tokens in modality_tokens:
             if tokens is None:
                 continue
             camera_tokens = tokens[:, :, :1, :].contiguous()
-            token_slices.append(torch.cat([camera_tokens, smpl_tokens, joint_tokens], dim=2))
+            camera_slices.append(camera_tokens)
 
-        if len(token_slices) == 0:
-            return joint_tokens.new_zeros(B, 0, T, 1 + self.num_smpl_tokens + self.num_joints, C)
+        if len(camera_slices) == 0:
+            return joint_tokens.new_zeros(B, T, self.num_smpl_tokens + self.num_joints, C)
 
-        output = torch.stack(token_slices, dim=1)
-        return output
+        camera_tokens = torch.cat(camera_slices, dim=2)
+        return torch.cat([camera_tokens, smpl_tokens, joint_tokens], dim=2)

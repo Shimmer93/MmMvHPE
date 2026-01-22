@@ -22,9 +22,25 @@ class BaseDataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         batch_data = {}
-        for key in batch[0]:
-            if isinstance(batch[0][key], torch.Tensor):
-                batch_data[key] = torch.stack([sample[key] for sample in batch], dim=0)
+        all_keys = set()
+        for sample in batch:
+            all_keys.update(sample.keys())
+
+        for key in all_keys:
+            values = []
+            for sample in batch:
+                if key in sample:
+                    values.append(sample[key])
+                elif key.endswith('_affine'):
+                    values.append(torch.eye(4, dtype=torch.float32))
+                else:
+                    values.append(None)
+
+            if all(isinstance(v, torch.Tensor) for v in values if v is not None):
+                if any(v is None for v in values):
+                    batch_data[key] = values
+                else:
+                    batch_data[key] = torch.stack(values, dim=0)
             else:
-                batch_data[key] = [sample[key] for sample in batch]
+                batch_data[key] = values
         return batch_data

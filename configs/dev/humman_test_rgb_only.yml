@@ -14,12 +14,12 @@ train_dataset:
   params:
     data_root: &data_root '/opt/data/humman'
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     anchor_key: 'input_rgb'
     split: "train"
-    seq_len: 1       
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -31,7 +31,7 @@ val_dataset:
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     anchor_key: 'input_rgb'
@@ -48,7 +48,7 @@ test_dataset:
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['rgb']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     anchor_key: 'input_rgb'
@@ -86,29 +86,6 @@ backbone_rgb:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
-# backbone_depth:
-#   name: 'TimmWrapper'
-#   params:
-#     model_name: 'vit_small_patch16_dinov3'
-#     pretrained: true
-#   has_temporal: false
-backbone_lidar:
-  name: 'P4TEncoder'
-  params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
-    temporal_kernel_size: 3
-    temporal_stride: 1
-    emb_relu: false
-    dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 3
-    mode: 'xyz'
-  has_temporal: true
 aggregator:
   name: 'TransformerAggregatorV2GlobalJoint'
   params:
@@ -116,8 +93,8 @@ aggregator:
     embed_dim: 512
     num_register_tokens: 4
     aa_order: ['single', 'cross_joint', 'gcn']
-    aa_block_size: 1 # 2
-    depth: 2 # 4 6
+    aa_block_size: 1
+    depth: 2
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8
@@ -130,8 +107,7 @@ aggregator:
 keypoint_head:
   name: 'RegressionKeypointHeadV2'
   params:
-    emb_size: 512
-    only_last_layer: true
+    emb_size: 1024
     losses:
       - name: 'MSELoss'
         params: null
@@ -150,9 +126,6 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  - name: DepthToLiDARPC
-    params:
-      keys: ['input_depth']
   - name: VideoResize
     params:
       size: [180, 320]
@@ -163,15 +136,6 @@ train_pipeline: &train_pipeline
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  # - name: VideoNormalize
-  #   params:
-  #     norm_mode: 'zero_one'
-  #     keys: ['input_depth']
-  - name: PCPad
-    params:
-      num_points: 1024
-      pad_mode: 'repeat'
-      keys: ['input_lidar']
   - name: ToTensor
     params: null
   # - name: CameraParamToPoseEncoding
