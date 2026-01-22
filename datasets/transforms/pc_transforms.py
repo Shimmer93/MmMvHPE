@@ -233,6 +233,51 @@ class PCNormalize():
             results[f'{key}_affine'][:3, 3] = (results[f'{key}_affine'][:3, 3] - center) / radius
 
         return results
+
+class PCCenterWithKeypoints():
+    def __init__(
+        self,
+        center_type: str = 'mean',
+        keys: List[str] = ['input_lidar'],
+        keypoints_key: str = 'gt_keypoints',
+        shifted_keypoints_suffix: str = '_pc_centered',
+    ):
+        assert center_type in ['mean', 'median'], "center_type must be 'mean' or 'median'"
+        self.center_type = center_type
+        self.keys = keys
+        self.keypoints_key = keypoints_key
+        self.shifted_keypoints_suffix = shifted_keypoints_suffix
+
+    def __call__(self, results):
+        for key in self.keys:
+            if key not in results:
+                results[f'{key}_affine'] = initialize_affine_matrix()
+                continue
+            pc_seq = results[key]
+            all_ps = np.concatenate(pc_seq, axis=0)
+            if all_ps.size == 0:
+                continue
+
+            if self.center_type == 'mean':
+                center = np.mean(all_ps[:, :3], axis=0)
+            else:
+                center = np.median(all_ps[:, :3], axis=0)
+
+            centered_pc_seq = []
+            for pc in pc_seq:
+                pc[:, :3] = pc[:, :3] - center
+                centered_pc_seq.append(pc)
+            results[key] = centered_pc_seq
+            if f'{key}_affine' not in results:
+                results[f'{key}_affine'] = initialize_affine_matrix()
+            results[f'{key}_affine'][:3, 3] = results[f'{key}_affine'][:3, 3] - center
+
+            if self.keypoints_key in results and results[self.keypoints_key] is not None:
+                shifted = results[self.keypoints_key].copy()
+                shifted[:, :3] = shifted[:, :3] - center
+                results[f'{self.keypoints_key}{self.shifted_keypoints_suffix}_{key}'] = shifted
+
+        return results
     
 class PCRemoveOutliers():
     def __init__(self, 
@@ -276,75 +321,5 @@ class PCRemoveOutliers():
                 filtered_pc_seq.append(pc)
 
             results[key] = filtered_pc_seq
-
-        return results
-    
-class DepthToLiDARPC():
-    def __init__(self, 
-                 focal_length: Optional[float] = None,
-                 center: Optional[Sequence[float]] = None,
-                 keys: List[str] = ['input_depth'],
-                 camera_key: str = 'depth_camera',
-                 min_depth: float = 1e-6):
-        self.focal_length = focal_length
-        self.center = center
-        self.keys = keys
-        self.camera_key = camera_key
-        self.min_depth = min_depth
-
-    def __call__(self, results):
-        for key in results.keys():
-            assert 'lidar' not in key.lower(), f"Key '{key}' seems to already contain LiDAR data."
-
-        for key in self.keys:
-            depth_seq = results[key]
-            pc_seq = []
-
-            has_camera = self.camera_key in results
-            if has_camera:
-                camera = results[self.camera_key]
-                K = np.array(camera['intrinsic'], dtype=np.float32)
-                K_inv = np.linalg.inv(K)
-                extrinsic = np.array(camera['extrinsic'], dtype=np.float32)
-                R = extrinsic[:, :3]
-                T = extrinsic[:, 3:].reshape(3, 1)
-            else:
-                if self.focal_length is None:
-                    raise KeyError(
-                        f"Missing camera parameters '{self.camera_key}' in results and no focal_length provided."
-                    )
-
-            for depth in depth_seq:
-                H, W = depth.shape
-                xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
-                z = depth.reshape(-1)
-                valid = z > self.min_depth
-
-                if has_camera:
-                    pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0)
-                    rays = K_inv @ pixels
-                    cam_points = rays * z
-                    cam_points = cam_points[:, valid]
-                    cam_points = (R.T @ (cam_points - T)).T
-                    pc = cam_points.astype(np.float32)
-                else:
-                    if self.center is None:
-                        cx, cy = W / 2.0, H / 2.0
-                    else:
-                        cx, cy = self.center
-                    x = (xmap.reshape(-1) - cx) * z / self.focal_length
-                    y = (ymap.reshape(-1) - cy) * z / self.focal_length
-                    pc = np.vstack((x, y, z)).T
-                    pc = pc[valid].astype(np.float32)
-                pc_seq.append(pc)
-
-            out_key = key.replace('depth', 'lidar')
-            results[out_key] = pc_seq
-            results['modalities'].append('lidar')
-            del results[key]
-            results['modalities'].remove('depth')
-            if 'gt_camera_depth' in results:
-                results['gt_camera_lidar'] = results['gt_camera_depth']
-                del results['gt_camera_depth']
 
         return results

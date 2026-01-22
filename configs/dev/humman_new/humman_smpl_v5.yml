@@ -23,7 +23,7 @@ train_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
 val_dataset:
   name: 'HummanPreprocessedDatasetV2'
   params:
@@ -38,7 +38,7 @@ val_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
 test_dataset:
   name: 'HummanPreprocessedDatasetV2'
   params:
@@ -53,7 +53,7 @@ test_dataset:
     pad_seq: true
     causal: true
     use_all_pairs: false
-    colocated: false
+    colocated: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -98,13 +98,13 @@ backbone_lidar:
     mode: 'xyz'
   has_temporal: true
 aggregator:
-  name: 'TransformerAggregatorV2GlobalSMPL'
+  name: 'TransformerAggregatorV4'
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
     aa_block_size: 1
     depth: 6
     block_type: 'Block'
@@ -117,11 +117,15 @@ aggregator:
     qk_norm: true
     init_values: 0.01
 keypoint_head:
-  name: 'RegressionKeypointHeadV2'
+  name: 'RegressionKeypointHeadV5'
   params:
     emb_size: 1024
     num_joints: 24
+    num_register_tokens: 4
+    num_smpl_tokens: 1
+    max_modalities: 4
     last_n_layers: 4
+    pose_encoding_type: "absT_quaR_FoV"
     losses:
       - name: 'KeypointLoss'
         params:
@@ -129,13 +133,17 @@ keypoint_head:
         weight: 1.0
         alias: 'KeypointMSELoss'
 smpl_head:
-  name: 'VIBETokenHead'
+  name: 'VIBETokenHeadV5'
   params:
     emb_size: 1024
     smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
     smpl_mean_params: 'weights/smpl_mean_params.npz'
     n_iters: 3
+    num_register_tokens: 4
+    num_smpl_tokens: 1
+    max_modalities: 4
     last_n_layers: 4
+    pose_encoding_type: "absT_quaR_FoV"
     losses:
       - name: 'KeypointLoss'
         params:
@@ -181,6 +189,14 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: PCCenterWithKeypoints
+    params:
+      center_type: 'mean'
+      keys: ['input_lidar']
+      keypoints_key: 'gt_keypoints'
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'

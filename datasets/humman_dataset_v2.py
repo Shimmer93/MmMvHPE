@@ -65,6 +65,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         use_all_pairs: bool = False,
         max_samples: Optional[int] = None,
         colocated: bool = False,
+        convert_depth_to_lidar: bool = True,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -78,6 +79,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.use_all_pairs = use_all_pairs
         self.max_samples = max_samples
         self.colocated = colocated
+        self.convert_depth_to_lidar = convert_depth_to_lidar
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -302,6 +304,23 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return frames
 
     @staticmethod
+    def _depth_to_lidar_frames(depth_frames, K, R, T, min_depth=1e-6):
+        K_inv = np.linalg.inv(K)
+        pc_seq = []
+        for depth in depth_frames:
+            H, W = depth.shape
+            xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
+            z = depth.reshape(-1)
+            valid = z > min_depth
+            pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0)
+            rays = K_inv @ pixels
+            cam_points = rays * z
+            cam_points = cam_points[:, valid]
+            world_points = (R.T @ (cam_points - T)).T
+            pc_seq.append(world_points.astype(np.float32))
+        return pc_seq
+
+    @staticmethod
     def _flatten_pose(global_orient, body_pose):
         global_orient = np.asarray(global_orient, dtype=np.float32).reshape(-1)
         body_pose = np.asarray(body_pose, dtype=np.float32)
@@ -426,11 +445,33 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
-                sample["depth_camera"] = {
-                    "intrinsic": K,
-                    "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
-                }
+                if (
+                    self.convert_depth_to_lidar
+                    and "lidar" not in self.modality_names
+                    and "input_lidar" not in sample
+                ):
+                    lidar_frames = self._depth_to_lidar_frames(depth_frames, K, R, T)
+                    sample["input_lidar"] = lidar_frames
+                    if "lidar" not in sample["modalities"]:
+                        sample["modalities"].append("lidar")
+                    if "depth" in sample["modalities"]:
+                        sample["modalities"].remove("depth")
+                    sample.pop("input_depth", None)
+                if (
+                    self.convert_depth_to_lidar
+                    and "lidar" in sample["modalities"]
+                    and "depth" not in sample["modalities"]
+                ):
+                    sample["lidar_camera"] = {
+                        "intrinsic": K,
+                        "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
+                    }
+                else:
+                    R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                    sample["depth_camera"] = {
+                        "intrinsic": K,
+                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                    }
 
         if "lidar" in self.modality_names:
             lidar_frames = self._load_lidar_frames(
