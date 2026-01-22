@@ -124,10 +124,14 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  - name: DepthToLiDARPC
+  - name: LEIRDepthToLiDARPC
     params:
       keys: ['input_depth']
-      keep_depth: true
+  - name: LEIRPrepareGT
+    params:
+      data_root: *data_root
+      unit: 'm'
+      causal: true
   - name: VideoResize
     params:
       size: [180, 320]
@@ -143,7 +147,7 @@ train_pipeline: &train_pipeline
       num_points: 1024
       pad_mode: 'repeat'
       keys: ['input_lidar']
-  - name: ToTensor
+  - name: LEIRToTensor
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline

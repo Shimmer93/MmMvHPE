@@ -285,14 +285,12 @@ class DepthToLiDARPC():
                  center: Optional[Sequence[float]] = None,
                  keys: List[str] = ['input_depth'],
                  camera_key: str = 'depth_camera',
-                 min_depth: float = 1e-6,
-                 keep_depth: bool = False):
+                 min_depth: float = 1e-6):
         self.focal_length = focal_length
         self.center = center
         self.keys = keys
         self.camera_key = camera_key
         self.min_depth = min_depth
-        self.keep_depth = keep_depth
 
     def __call__(self, results):
         for key in results.keys():
@@ -342,15 +340,11 @@ class DepthToLiDARPC():
 
             out_key = key.replace('depth', 'lidar')
             results[out_key] = pc_seq
-            if 'modalities' in results and 'lidar' not in results['modalities']:
-                results['modalities'].append('lidar')
-            if not self.keep_depth:
-                del results[key]
-                if 'modalities' in results and 'depth' in results['modalities']:
-                    results['modalities'].remove('depth')
-            if 'gt_camera_depth' in results and 'gt_camera_lidar' not in results:
+            results['modalities'].append('lidar')
+            del results[key]
+            results['modalities'].remove('depth')
+            if 'gt_camera_depth' in results:
                 results['gt_camera_lidar'] = results['gt_camera_depth']
-                if not self.keep_depth:
-                    del results['gt_camera_depth']
+                del results['gt_camera_depth']
 
         return results

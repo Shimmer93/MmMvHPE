@@ -15,16 +15,7 @@ class ToTensor():
 
     def __call__(self, sample):
         for key in sample:
-            if key.endswith('_affine') or key in [
-                'gt_keypoints',
-                'gt_smpl_params',
-                'pose',
-                'shape',
-                'trans',
-                'joint_3d_pc',
-                'joint_3d_cam',
-                'joint_2d',
-            ]:
+            if key.endswith('_affine') or key in ['gt_keypoints', 'gt_smpl_params']:
                 sample[key] = self._array_to_tensor(sample[key])
             elif key.startswith('input_'):
                 sample[key] = self._list_to_tensor(sample[key])
