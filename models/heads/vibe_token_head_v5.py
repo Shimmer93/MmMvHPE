@@ -131,12 +131,12 @@ class VIBETokenHeadV5(BaseHead):
 
     def forward(self, x, return_per_modality=False):
         x = self._select_layers(x)
-        x = x[..., : x.shape[-1] // 2]
+        
         if x.dim() == 4:
             x = x.unsqueeze(2)
 
-        gate = torch.sigmoid(self.token_gate).view(1, 1, 1, 1, -1)
-        x = x * gate
+        # gate = torch.sigmoid(self.token_gate).view(1, 1, 1, 1, -1)
+        # x = x * gate
 
         tokens = self._extract_tokens(x)
         output_global = self._forward_global(tokens)
@@ -179,55 +179,6 @@ class VIBETokenHeadV5(BaseHead):
             elif 'rotmat' in loss_name.lower():
                 losses[loss_name] = (loss_fn(global_output['pred_rotmat'], data_batch['gt_rotmat']), loss_weight)
 
-        gt_keypoints = data_batch.get("gt_keypoints", None)
-        if gt_keypoints is not None and per_modality_output is not None:
-            if isinstance(gt_keypoints, torch.Tensor):
-                gt_keypoints = gt_keypoints.float()
-            else:
-                gt_keypoints = torch.as_tensor(gt_keypoints, dtype=torch.float32)
-            if gt_keypoints.dim() == 2:
-                gt_keypoints = gt_keypoints.unsqueeze(0)
-            gt_keypoints = gt_keypoints.to(global_output['pred_keypoints'].device)
-
-            num_modalities = min(len(modalities), per_modality_output['pred_keypoints'].shape[1])
-            for i in range(num_modalities):
-                modality = modalities[i]
-                pred_kp = per_modality_output['pred_keypoints'][:, i]
-                proj_pred, proj_gt = self._project_keypoints(
-                    pred_kp, gt_keypoints, modality, data_batch
-                )
-                if proj_pred is None:
-                    continue
-                for loss_name, (loss_fn, loss_weight) in self.losses.items():
-                    if 'keypoint' not in loss_name.lower():
-                        continue
-                    losses[f"{loss_name}_{modality}"] = (loss_fn(proj_pred, proj_gt), loss_weight)
-                for loss_name, (loss_fn, loss_weight) in self.losses.items():
-                    if 'smplpose' in loss_name.lower():
-                        losses[f"{loss_name}_{modality}"] = (
-                            loss_fn(
-                                per_modality_output['pred_smpl_params'][:, i, :72],
-                                data_batch['gt_smpl_params'][:, :72],
-                            ),
-                            loss_weight,
-                        )
-                    elif 'smplshape' in loss_name.lower():
-                        losses[f"{loss_name}_{modality}"] = (
-                            loss_fn(
-                                per_modality_output['pred_smpl_params'][:, i, 72:],
-                                data_batch['gt_smpl_params'][:, 72:],
-                            ),
-                            loss_weight,
-                        )
-                    elif 'rotmat' in loss_name.lower():
-                        losses[f"{loss_name}_{modality}"] = (
-                            loss_fn(
-                                per_modality_output['pred_rotmat'][:, i],
-                                data_batch['gt_rotmat'],
-                            ),
-                            loss_weight,
-                        )
-
         return losses
 
     def predict(self, x):
@@ -238,6 +189,7 @@ class VIBETokenHeadV5(BaseHead):
             return x
         if self.last_n_layers > 0:
             x = x[-self.last_n_layers :]
+        x = [xi[..., xi.shape[-1]//2:] for xi in x]
         return torch.cat(x, dim=-1)
 
     def _extract_tokens(self, x):

@@ -119,12 +119,12 @@ aggregator:
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
   params:
-    emb_size: 512
+    emb_size: 1024
     num_joints: 24
     num_register_tokens: 4
     num_smpl_tokens: 1
     max_modalities: 4
-    last_n_layers: 1
+    last_n_layers: 4
     pose_encoding_type: "absT_quaR_FoV"
     losses:
       - name: 'KeypointLoss'
@@ -135,14 +135,14 @@ keypoint_head:
 smpl_head:
   name: 'VIBETokenHeadV5'
   params:
-    emb_size: 512
+    emb_size: 1024
     smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
     smpl_mean_params: 'weights/smpl_mean_params.npz'
     n_iters: 3
     num_register_tokens: 4
     num_smpl_tokens: 1
     max_modalities: 4
-    last_n_layers: 1
+    last_n_layers: 4
     pose_encoding_type: "absT_quaR_FoV"
     losses:
       - name: 'KeypointLoss'

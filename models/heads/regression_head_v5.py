@@ -70,8 +70,8 @@ class RegressionKeypointHeadV5(BaseHead):
         if x.dim() == 4:
             x = x.unsqueeze(2)
 
-        gate = torch.sigmoid(self.keypoint_gate).view(1, 1, 1, 1, -1)
-        x = x * gate
+        # gate = torch.sigmoid(self.keypoint_gate).view(1, 1, 1, 1, -1)
+        # x = x * gate
 
         joint_tokens = self._extract_joint_tokens(x)
         camera_tokens = self._extract_camera_tokens(x)
@@ -129,6 +129,7 @@ class RegressionKeypointHeadV5(BaseHead):
             return x
         if self.last_n_layers > 0:
             x = x[-self.last_n_layers :]
+        x = [xi[..., :xi.shape[-1]//2] for xi in x]
         return torch.cat(x, dim=-1)
 
     def _extract_joint_tokens(self, x):
