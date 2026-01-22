@@ -206,6 +206,10 @@ class LitModel(L.LightningModule):
             preds_smpl = self.smpl_head.predict(feats_agg)
             pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
             pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_smpl' in preds_smpl:
+                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -231,6 +235,10 @@ class LitModel(L.LightningModule):
             preds_smpl = self.smpl_head.predict(feats_agg)
             pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
             pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_smpl' in preds_smpl:
+                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -271,6 +279,10 @@ class LitModel(L.LightningModule):
             preds_smpl = self.smpl_head.predict(feats_agg)
             pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
             pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+            if 'pred_smpl' in preds_smpl:
+                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
 
         return pred_dict
 

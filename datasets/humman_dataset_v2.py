@@ -47,6 +47,54 @@ def axis_angle_to_matrix_np(axis_angle: np.ndarray) -> np.ndarray:
     eye = np.eye(3, dtype=np.float32)
     return eye + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
 
+def normalize_2d_kp(kp_2d: np.ndarray, crop_size: int = 224) -> np.ndarray:
+    ratio = 1.0 / float(crop_size)
+    return 2.0 * kp_2d * ratio - 1.0
+
+def trans_point2d(pt_2d: np.ndarray, trans: np.ndarray) -> np.ndarray:
+    src_pt = np.array([pt_2d[0], pt_2d[1], 1.0], dtype=np.float32)
+    dst_pt = trans @ src_pt
+    return dst_pt[:2]
+
+def gen_trans_from_patch_cv(c_x, c_y, src_width, src_height, dst_width, dst_height, scale, rot, inv=False):
+    src_w = src_width * scale
+    src_h = src_height * scale
+    src_center = np.array([c_x, c_y], dtype=np.float32)
+    rot_rad = np.pi * rot / 180.0
+    sn, cs = np.sin(rot_rad), np.cos(rot_rad)
+    src_downdir = np.array([0, src_h * 0.5], dtype=np.float32)
+    src_rightdir = np.array([src_w * 0.5, 0], dtype=np.float32)
+    src_downdir = np.array([src_downdir[0] * cs - src_downdir[1] * sn,
+                            src_downdir[0] * sn + src_downdir[1] * cs], dtype=np.float32)
+    src_rightdir = np.array([src_rightdir[0] * cs - src_rightdir[1] * sn,
+                             src_rightdir[0] * sn + src_rightdir[1] * cs], dtype=np.float32)
+
+    dst_center = np.array([dst_width * 0.5, dst_height * 0.5], dtype=np.float32)
+    dst_downdir = np.array([0, dst_height * 0.5], dtype=np.float32)
+    dst_rightdir = np.array([dst_width * 0.5, 0], dtype=np.float32)
+
+    src = np.zeros((3, 2), dtype=np.float32)
+    src[0] = src_center
+    src[1] = src_center + src_downdir
+    src[2] = src_center + src_rightdir
+
+    dst = np.zeros((3, 2), dtype=np.float32)
+    dst[0] = dst_center
+    dst[1] = dst_center + dst_downdir
+    dst[2] = dst_center + dst_rightdir
+
+    if inv:
+        return cv2.getAffineTransform(dst, src)
+    return cv2.getAffineTransform(src, dst)
+
+def transfrom_keypoints(kp_2d: np.ndarray, center_x: float, center_y: float,
+                        width: float, height: float, patch_width: int,
+                        patch_height: int, scale: float = 1.2) -> np.ndarray:
+    trans = gen_trans_from_patch_cv(center_x, center_y, width, height,
+                                    patch_width, patch_height, scale, rot=0.0, inv=False)
+    for i in range(kp_2d.shape[0]):
+        kp_2d[i] = trans_point2d(kp_2d[i], trans)
+    return kp_2d
 
 class HummanPreprocessedDatasetV2(BaseDataset):
     def __init__(
@@ -320,6 +368,26 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         R_root = axis_angle_to_matrix_np(global_orient)
         return (R_root.T @ (points - pelvis).T).T
 
+    @staticmethod
+    def _project_points(K: np.ndarray, R: np.ndarray, T: np.ndarray, points: np.ndarray) -> np.ndarray:
+        cam = (R @ points.T + T).T
+        z = np.clip(cam[:, 2:3], a_min=1e-6, a_max=None)
+        pix = (K @ cam.T).T
+        return pix[:, :2] / z
+
+    @staticmethod
+    def _bbox_from_keypoints(kp_2d: np.ndarray) -> np.ndarray:
+        x_min = np.min(kp_2d[:, 0])
+        y_min = np.min(kp_2d[:, 1])
+        x_max = np.max(kp_2d[:, 0])
+        y_max = np.max(kp_2d[:, 1])
+        w = max(x_max - x_min, 1.0)
+        h = max(y_max - y_min, 1.0)
+        size = max(w, h)
+        c_x = (x_min + x_max) * 0.5
+        c_y = (y_min + y_max) * 0.5
+        return np.array([c_x, c_y, size, size], dtype=np.float32)
+
     def _update_extrinsic(self, R_wc, T_wc, R_root, pelvis):
         R_new = R_wc @ R_root
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
@@ -351,6 +419,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         smpl_params = self._load_smpl_params(data_info["seq_name"])
         keypoints_3d = self._load_keypoints_3d(data_info["seq_name"])
 
+        frame_indices = []
+        num_frames = data_info.get("num_frames", smpl_params["global_orient"].shape[0])
+        for i in range(self.seq_len):
+            idx = data_info["start_frame"] + i
+            idx = min(idx, num_frames - 1)
+            frame_indices.append(idx)
+
         if self.causal:
             gt_frame_idx = data_info["start_frame"] + self.seq_len - 1
         else:
@@ -362,13 +437,15 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         gt_body_pose = smpl_params["body_pose"][gt_frame_idx]
         gt_betas = smpl_params["betas"][gt_frame_idx]
         gt_transl = smpl_params["transl"][gt_frame_idx]
-        gt_keypoints = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
+        gt_keypoints_raw = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
 
-        pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
+        pelvis = self._extract_pelvis(gt_keypoints_raw, gt_transl)
         R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
 
-        if gt_keypoints is not None:
-            gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
+        if gt_keypoints_raw is not None:
+            gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints_raw)
+        else:
+            gt_keypoints = None
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
         if pose.shape[0] >= 3:
@@ -386,6 +463,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             "gt_keypoints": gt_keypoints,
             "gt_smpl_params": gt_smpl_params,
         }
+
+        pose_seq = []
+        shape_seq = []
+        trans_seq = []
+        joint_3d_pc_seq = []
+        joint_3d_cam_seq = []
+        joint_2d_seq = []
 
         if "rgb" in self.modality_names:
             rgb_frames = self._load_rgb_frames(
@@ -438,6 +522,56 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 data_info["start_frame"],
             )
             sample["input_lidar"] = lidar_frames
+
+        if keypoints_3d is not None and "rgb_camera" in sample:
+            K = np.asarray(sample["rgb_camera"]["intrinsic"], dtype=np.float32)
+            extrinsic = np.asarray(sample["rgb_camera"]["extrinsic"], dtype=np.float32)
+            R_wc = extrinsic[:, :3]
+            T_wc = extrinsic[:, 3:].reshape(3, 1)
+
+            for idx in frame_indices:
+                global_orient_i = smpl_params["global_orient"][idx]
+                body_pose_i = smpl_params["body_pose"][idx]
+                pose_i = self._flatten_pose(global_orient_i, body_pose_i)
+                pose_i = pose_i[:72]
+                betas_i = np.asarray(smpl_params["betas"][idx], dtype=np.float32)[:10]
+                transl_i = np.asarray(smpl_params["transl"][idx], dtype=np.float32).reshape(3)
+
+                keypoints_i = keypoints_3d[idx]
+                pelvis_i = self._extract_pelvis(keypoints_i, transl_i)
+
+                keypoints_new = self._to_new_world(global_orient_i, pelvis_i, keypoints_i)
+                joint_3d_pc = keypoints_new
+                joint_3d_cam = (R_wc @ keypoints_new.T + T_wc).T
+                joint_2d = self._project_points(K, R_wc, T_wc, keypoints_new)
+
+                bbox = self._bbox_from_keypoints(joint_2d)
+                joint_2d = transfrom_keypoints(
+                    joint_2d.copy(),
+                    center_x=bbox[0],
+                    center_y=bbox[1],
+                    width=bbox[2],
+                    height=bbox[3],
+                    patch_width=224,
+                    patch_height=224,
+                    scale=1.2,
+                )
+                joint_2d = normalize_2d_kp(joint_2d, crop_size=224)
+
+                pose_seq.append(pose_i.astype(np.float32))
+                shape_seq.append(betas_i.astype(np.float32))
+                trans_seq.append(transl_i.astype(np.float32))
+                joint_3d_pc_seq.append(joint_3d_pc.astype(np.float32))
+                joint_3d_cam_seq.append(joint_3d_cam.astype(np.float32))
+                joint_2d_seq.append(joint_2d.astype(np.float32))
+
+        if pose_seq:
+            sample["pose"] = np.stack(pose_seq, axis=0)
+            sample["shape"] = np.stack(shape_seq, axis=0)
+            sample["trans"] = np.stack(trans_seq, axis=0)
+            sample["joint_3d_pc"] = np.stack(joint_3d_pc_seq, axis=0)
+            sample["joint_3d_cam"] = np.stack(joint_3d_cam_seq, axis=0)
+            sample["joint_2d"] = np.stack(joint_2d_seq, axis=0)
 
         sample = self.pipeline(sample)
         return sample
