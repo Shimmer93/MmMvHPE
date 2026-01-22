@@ -339,6 +339,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         R_root = axis_angle_to_matrix_np(global_orient)
         return (R_root.T @ (points - pelvis).T).T
 
+
     def _update_extrinsic(self, R_wc, T_wc, R_root, pelvis):
         R_new = R_wc @ R_root
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc

@@ -11,6 +11,7 @@ from .smpl_token_head_v2 import SMPLTokenHeadV2  # noqa: F401, F403
 from .smpl_token_head_v3 import SMPLTokenHeadV3  # noqa: F401, F403
 from .smpl_token_head_v4 import SMPLTokenHeadV4  # noqa: F401, F403
 from .vibe_token_head import VIBETokenHead  # noqa: F401, F403
+from .leir_head import LEIRHead  # noqa: F401, F403
 from .vibe_token_head_v4 import VIBETokenHeadV4  # noqa: F401, F403
 from .vibe_token_head_v5 import VIBETokenHeadV5  # noqa: F401, F403
 
@@ -31,6 +32,7 @@ __all__ = [
     'SMPLTokenHeadV3',
     'SMPLTokenHeadV4',
     'VIBETokenHead',
+    'LEIRHead',
     'VIBETokenHeadV4',
     'VIBETokenHeadV5',
 ]
