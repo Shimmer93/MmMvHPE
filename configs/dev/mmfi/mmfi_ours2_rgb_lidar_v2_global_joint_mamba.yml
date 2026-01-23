@@ -146,8 +146,10 @@ aggregator:
     use_grad_ckpt: false
 keypoint_head:
   name: 'RegressionKeypointHeadV2'
+  num_joints: 17 
   params:
-    emb_size: 1024
+    emb_size: 512
+    num_joints: 17
     losses:
       - name: 'MSELoss'
         params: null

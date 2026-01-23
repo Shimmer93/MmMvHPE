@@ -304,4 +304,5 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
             return joint_tokens.new_zeros(B, 0, T, 1 + self.num_joints, C)
 
         output = torch.stack(token_slices, dim=1)
+        print("[DEBUG]: Extracted output tokens shape:", output.shape)
         return output
