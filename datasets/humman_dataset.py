@@ -1063,6 +1063,10 @@ class HummanPreprocessedDataset(BaseDataset):
                 transl_world = gt_smpl["transl"].reshape(3, 1)
                 transl_rgb = rgb_R @ transl_world + rgb_T
                 sample["gt_smpl"]["transl"] = transl_rgb.flatten()
+                global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
+                R_smpl = axis_angle_to_matrix_np(global_orient_world)
+                R_smpl_rgb = rgb_R @ R_smpl
+                sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_rgb)
 
                 if gt_keypoints is not None:
                     keypoints_world = gt_keypoints.T
@@ -1078,6 +1082,10 @@ class HummanPreprocessedDataset(BaseDataset):
                 transl_world = gt_smpl["transl"].reshape(3, 1)
                 transl_depth = depth_R @ transl_world + depth_T
                 sample["gt_smpl"]["transl"] = transl_depth.flatten()
+                global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
+                R_smpl = axis_angle_to_matrix_np(global_orient_world)
+                R_smpl_depth = depth_R @ R_smpl
+                sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_depth)
 
                 if gt_keypoints is not None:
                     keypoints_world = gt_keypoints.T
@@ -1091,6 +1099,10 @@ class HummanPreprocessedDataset(BaseDataset):
             transl_world = gt_smpl["transl"].reshape(3, 1)
             transl_rgb = rgb_R @ transl_world + rgb_T
             sample["gt_smpl"]["transl"] = transl_rgb.flatten()
+            global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
+            R_smpl = axis_angle_to_matrix_np(global_orient_world)
+            R_smpl_rgb = rgb_R @ R_smpl
+            sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_rgb)
             if gt_keypoints is not None:
                 keypoints_world = gt_keypoints.T
                 keypoints_rgb = rgb_R @ keypoints_world + rgb_T
@@ -1103,6 +1115,10 @@ class HummanPreprocessedDataset(BaseDataset):
             transl_world = gt_smpl["transl"].reshape(3, 1)
             transl_depth = depth_R @ transl_world + depth_T
             sample["gt_smpl"]["transl"] = transl_depth.flatten()
+            global_orient_world = np.asarray(gt_smpl["global_orient"], dtype=np.float32)
+            R_smpl = axis_angle_to_matrix_np(global_orient_world)
+            R_smpl_depth = depth_R @ R_smpl
+            sample["gt_smpl"]["global_orient"] = matrix_to_axis_angle_np(R_smpl_depth)
             if gt_keypoints is not None:
                 keypoints_world = gt_keypoints.T
                 keypoints_depth = depth_R @ keypoints_world + depth_T

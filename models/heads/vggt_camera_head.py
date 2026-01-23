@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from models.video_encoders.layers import Mlp
 from models.video_encoders.layers.block import Block
 from .head_act import activate_pose
+from misc.pose_enc import pose_encoding_to_extri_intri
 
 
 class CameraHead(nn.Module):
@@ -143,6 +144,8 @@ class CameraHead(nn.Module):
             )
             pred_pose_enc_list.append(activated_pose)
 
+        # print("Camera head output shape:", pred_pose_enc_list[-1].shape)
+
         return pred_pose_enc_list
 
 
@@ -166,6 +169,10 @@ class VGGTCameraHead(BaseHead):
             trans_act: str = "linear",
             quat_act: str = "linear",
             fl_act: str = "relu",
+            last_n_layers=-1,
+            proj_loss_weight_rgb: float = 1.0,
+            proj_loss_weight_lidar: float = 1.0,
+            proj_loss_type: str = "l1",
     ):
         super().__init__(losses)
         self.camera_head = CameraHead(
@@ -179,23 +186,179 @@ class VGGTCameraHead(BaseHead):
             quat_act=quat_act,
             fl_act=fl_act,
         )
+        self.pose_encoding_type = pose_encoding_type
+        self.last_n_layers = last_n_layers
+        self.proj_loss_weight_rgb = proj_loss_weight_rgb
+        self.proj_loss_weight_lidar = proj_loss_weight_lidar
+        self.proj_loss_type = proj_loss_type
 
     def forward(self, aggregated_tokens_list: list, num_iterations: int = 4) -> list:
-        last_output = aggregated_tokens_list[-1]
+        x = aggregated_tokens_list
+        if self.last_n_layers > 0:
+            x = x[-self.last_n_layers:]
+        x = torch.concatenate(x, dim=-1)
+
+        # x shape: B, T, N, C (V2/V3) or B, T, M, S, C (V4)
+        if x.dim() == 5:
+            B, T, M, S, C = x.shape
+            x = x[:, -1, :, :1, :]  # B, M, 1, C
+        else:
+            B, T, N, C = x.shape
+            num_camera_tokens = N - 1 - 24
+            x = x[:, -1, :num_camera_tokens, :]
+            x = x.unsqueeze(-2)
+
+        last_output = x
+        # print("Camera head input shape:", last_output.shape)
+        # last_output = aggregated_tokens_list[-1]
         # B, M, T, N, C = last_output.shape
-        last_output = last_output.mean(dim=2) # Average over temporal dimension
+        # last_output = last_output.mean(dim=2) # Average over temporal dimension
         return self.camera_head([last_output], num_iterations)
     
     def loss(self, x, data_batch):
         pred_camera_enc_list = self.forward(x, num_iterations=data_batch.get('num_camera_iterations',4))
+        pred_camera_encs = pred_camera_enc_list[-1]
+        pred_camera_enc_list = [pred_camera_encs[:,i,...] for i in range(pred_camera_encs.shape[1])]
         modalities = data_batch['modalities']
-        assert len(pred_camera_enc_list) == len(modalities), "Number of predicted camera encodings must match number of modalities."
+        # print("Modalities for camera loss:", modalities)
+        assert pred_camera_encs.shape[1] == len(modalities[0]), "Number of predicted camera encodings must match number of modalities."
 
         losses = {}
         for loss_name, (loss_fn, loss_weight) in self.losses.items():
-            for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
-                losses[f"{loss_name}_{modality}"] = (loss_fn(pred_camera_enc, data_batch[f'gt_camera_{modality}']), loss_weight)
+            for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities[0]):
+                loss_output = loss_fn(pred_camera_enc, data_batch[f'gt_camera_{modality}'])
+                if isinstance(loss_output, dict):
+                    for k, v in loss_output.items():
+                        losses[f"{loss_name}_{modality}_{k}"] = (v, loss_weight)
+                else:
+                    losses[f"{loss_name}_{modality}"] = (loss_output, loss_weight)
+
+        proj_losses = self._projection_losses(pred_camera_enc_list, modalities[0], data_batch)
+        losses.update(proj_losses)
         return losses
     
     def predict(self, x, num_iterations: int = 4):
         return self.forward(x, num_iterations)
+
+    def _projection_losses(self, pred_camera_enc_list, modalities, data_batch):
+        losses = {}
+        if "gt_keypoints" not in data_batch:
+            return losses
+
+        gt_keypoints = data_batch["gt_keypoints"]
+        if gt_keypoints is None:
+            return losses
+
+        if isinstance(gt_keypoints, np.ndarray):
+            gt_keypoints = torch.from_numpy(gt_keypoints)
+        device = pred_camera_enc_list[0].device
+        gt_keypoints = gt_keypoints.to(device).float()
+        if gt_keypoints.dim() == 2:
+            gt_keypoints = gt_keypoints.unsqueeze(0)
+
+        for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
+            pred_extrinsics = self._pose_enc_to_extrinsics(pred_camera_enc)
+            if modality == "rgb" and self.proj_loss_weight_rgb > 0:
+                gt_camera = data_batch.get("gt_camera_rgb", None)
+                if gt_camera is None:
+                    continue
+                gt_camera = gt_camera.to(device)
+                gt_camera = gt_camera[:, -1] if gt_camera.dim() == 3 else gt_camera
+                gt_extrinsics = self._pose_enc_to_extrinsics(gt_camera)
+                gt_intrinsics = self._get_gt_intrinsics(data_batch.get("rgb_camera", None), device, gt_camera)
+                pred_proj = self._project_to_image(gt_keypoints, pred_extrinsics, gt_intrinsics)
+                gt_proj = self._project_to_image(gt_keypoints, gt_extrinsics, gt_intrinsics)
+                pred_proj = self._normalize_2d(pred_proj, 224, 224)
+                gt_proj = self._normalize_2d(gt_proj, 224, 224)
+                pred_proj = torch.clamp(pred_proj, -1.0, 1.0)
+                gt_proj = torch.clamp(gt_proj, -1.0, 1.0)
+                # print("Predicted rgb projection: ", pred_proj[0])
+                # print("Ground truth rgb projection: ", gt_proj[0])
+                loss_val = self._projection_loss(pred_proj, gt_proj, self.proj_loss_type)
+                losses["proj_rgb"] = (loss_val, self.proj_loss_weight_rgb)
+            elif modality == "lidar" and self.proj_loss_weight_lidar > 0:
+                gt_camera = data_batch.get("gt_camera_lidar", None)
+                if gt_camera is None:
+                    continue
+                gt_camera = gt_camera.to(device)
+                gt_camera = gt_camera[:, -1] if gt_camera.dim() == 3 else gt_camera
+                gt_extrinsics = self._pose_enc_to_extrinsics(gt_camera)
+                pred_points = self._transform_to_camera(gt_keypoints, pred_extrinsics)
+                gt_points = self._transform_to_camera(gt_keypoints, gt_extrinsics)
+                # print("Predicted lidar projection: ", pred_points[0])
+                # print("Ground truth lidar projection: ", gt_points[0])
+                loss_val = self._projection_loss(pred_points, gt_points, self.proj_loss_type)
+                losses["proj_lidar"] = (loss_val, self.proj_loss_weight_lidar)
+
+        return losses
+
+    def _pose_enc_to_extrinsics(self, pose_enc):
+        extrinsics, _ = pose_encoding_to_extri_intri(
+            pose_enc.unsqueeze(1),
+            image_size_hw=None,
+            pose_encoding_type=self.pose_encoding_type,
+            build_intrinsics=False,
+        )
+        return extrinsics.squeeze(1)
+
+    @staticmethod
+    def _transform_to_camera(points, extrinsics):
+        R = extrinsics[:, :3, :3]
+        T = extrinsics[:, :3, 3]
+        return torch.einsum("bij,bkj->bki", R, points) + T.unsqueeze(1)
+
+    @staticmethod
+    def _project_to_image(points, extrinsics, intrinsics):
+        cam_points = VGGTCameraHead._transform_to_camera(points, extrinsics)
+        cam_z = cam_points[..., 2].clamp(min=1e-6)
+        proj = torch.einsum("bij,bkj->bki", intrinsics, cam_points)
+        u = proj[..., 0] / cam_z
+        v = proj[..., 1] / cam_z
+        return torch.stack([u, v], dim=-1)
+
+    @staticmethod
+    def _normalize_2d(points_2d, height, width):
+        x = points_2d[..., 0] / (width - 1) * 2.0 - 1.0
+        y = points_2d[..., 1] / (height - 1) * 2.0 - 1.0
+        return torch.stack([x, y], dim=-1)
+
+    @staticmethod
+    def _projection_loss(pred, target, loss_type="l1"):
+        if loss_type.lower() in {"l1", "mae"}:
+            loss = F.l1_loss(pred, target)
+            return VGGTCameraHead._sanitize_loss(loss)
+        if loss_type.lower() in {"l2", "mse"}:
+            loss = F.mse_loss(pred, target)
+            return VGGTCameraHead._sanitize_loss(loss)
+        raise ValueError(f"Unsupported projection loss type: {loss_type}")
+
+    @staticmethod
+    def _sanitize_loss(loss):
+        if loss is None:
+            return loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            return torch.zeros_like(loss)
+        return loss
+
+    def _get_gt_intrinsics(self, camera_list, device, gt_camera_enc):
+        _, fallback = pose_encoding_to_extri_intri(
+            gt_camera_enc.unsqueeze(1),
+            image_size_hw=(224, 224),
+            pose_encoding_type=self.pose_encoding_type,
+            build_intrinsics=True,
+        )
+        fallback = fallback.squeeze(1).to(device)
+
+        if camera_list is None:
+            return fallback
+
+        intrinsics = []
+        for idx, camera in enumerate(camera_list):
+            if camera is None or "intrinsic" not in camera:
+                intrinsics.append(fallback[idx])
+                continue
+            K = camera["intrinsic"]
+            if isinstance(K, np.ndarray):
+                K = torch.from_numpy(K)
+            intrinsics.append(K.to(device))
+        return torch.stack(intrinsics, dim=0).float()

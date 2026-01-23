@@ -5,7 +5,7 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 16
-epochs: &epochs 10
+epochs: &epochs 20
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -15,7 +15,7 @@ train_dataset:
     data_root: &data_root 'data/mmfi'
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
-    split_to_use: &split_to_use 'random_split'
+    split_to_use: &split_to_use 'manual_split'
     protocol: &protocol 'protocol3'
     seq_len: 1
     seq_step: 1
@@ -120,9 +120,9 @@ aggregator:
     input_dims: [384, 384, 512, 512]
     embed_dim: 256
     num_register_tokens: 4
-    aa_order: ['single', 'spatial', 'cross_2d_3d', 'cross_token', 'gcn']
+    aa_order: ['single', 'spatial', 'cross_2d_3d', 'gcn']
     aa_block_size: 1
-    depth: 5
+    depth: 4
     block_type: 'Block'
     skeleton_type: 'mmfi'
     num_heads: 8

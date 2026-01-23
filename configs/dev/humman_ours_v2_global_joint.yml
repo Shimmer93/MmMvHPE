@@ -1,0 +1,174 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 10
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'HummanDataset'
+  params:
+    data_root: &data_root '/data/shared/humman_release_v1.0_point'
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "train_mini"
+    seq_len: 1       
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
+val_dataset:
+  name: 'HummanDataset'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "test_mini"
+    seq_len: 1
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
+test_dataset:
+  name: 'HummanDataset'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    anchor_key: 'input_rgb'
+    split: "test_mini"
+    seq_len: 1
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    random_seed: 42
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0005
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 2
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: TestModel_1208
+backbone_rgb:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+backbone_lidar:
+  name: 'P4TEncoder'
+  params:
+    radius: 0.7
+    nsamples: 32
+    spatial_stride: 8
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    depth: 5
+    heads: 8
+    dim_head: 64
+    mlp_dim: 1024
+    features: 3
+    mode: 'xyz'
+  has_temporal: true
+aggregator:
+  name: 'TransformerAggregatorV2GlobalJoint'
+  params:
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 512
+    num_register_tokens: 4
+    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_block_size: 1
+    depth: 2
+    block_type: 'Block'
+    skeleton_type: 'smpl'
+    num_heads: 8
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
+keypoint_head:
+  name: 'RegressionKeypointHeadV2'
+  params:
+    emb_size: 1024
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: DepthToLiDARPC
+    params:
+      keys: ['input_depth']
+  - name: VideoResize
+    params:
+      size: [256, 256]
+      keep_ratio: false
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+  # - name: CameraParamToPoseEncoding
+  #   params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'smpl'  # Skeleton format for visualization
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization
