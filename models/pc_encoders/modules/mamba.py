@@ -14,6 +14,7 @@ from mamba_ssm.modules.mamba_simple import Mamba
 try:
     from mamba_ssm.ops.triton.layernorm import RMSNorm, layer_norm_fn, rms_norm_fn
 except ImportError:
+    print("Warning: Triton LayerNorm / RMSNorm kernels are not available.")
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
 
 def _init_weights(
@@ -64,10 +65,9 @@ def create_block(
         ssm_cfg = {}
     factory_kwargs = {"device": device, "dtype": dtype}
 
-    #mixer_cls = partial(Mamba, layer_idx=layer_idx, bimamba=bimamba, **ssm_cfg, **factory_kwargs)
     mixer_cls = partial(Mamba, layer_idx=layer_idx, **ssm_cfg, **factory_kwargs)
     norm_cls = partial(
-        nn.LayerNorm if not rms_norm else RMSNorm, eps=norm_epsilon, **factory_kwargs
+        nn.LayerNorm if (not rms_norm or RMSNorm is None) else RMSNorm, eps=norm_epsilon, **factory_kwargs
     )
     block = Block(
         d_model,
@@ -135,7 +135,7 @@ class MixerModel(nn.Module):
             ]
         )
 
-        self.norm_f = (nn.LayerNorm if not rms_norm else RMSNorm)(
+        self.norm_f = (nn.LayerNorm if (not rms_norm or RMSNorm is None) else RMSNorm)(
             d_model, eps=norm_epsilon, **factory_kwargs
         )
 

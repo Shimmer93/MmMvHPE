@@ -133,6 +133,12 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
 
     def forward(self, features, **kwargs):
         features_rgb, features_depth, features_lidar, features_mmwave = features
+        print("[DEBUG]: Entered TransformerAggregatorV2GlobalJoint forward pass.")
+        print(f"[DEBUG]: features_rgb shape: {features_rgb.shape if features_rgb is not None else 'None'}")
+        print(f"[DEBUG]: features_depth shape: {features_depth.shape if features_depth is not None else 'None'}")
+        print(f"[DEBUG]: features_lidar shape: {features_lidar.shape if features_lidar is not None else 'None'}")
+        print(f"[DEBUG]: features_mmwave shape: {features_mmwave.shape if features_mmwave is not None else 'None'}")
+        
 
         B, T = 0, 0
         if features_rgb is not None:
@@ -155,7 +161,12 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
         register_tokens_normal, register_tokens_anchor = self._expand_special_tokens(self.register_token, B, T)
         joint_tokens = self.joint_token.expand(B, T, -1, -1)
 
-        anchor_idx = self.anchor_map.get(kwargs.get("anchor_key", None), -1)
+        # Concatenate special tokens with patch tokens
+        anchor_key = kwargs.get('anchor_key', None)
+        # Handle batched anchor_key (list) - take first element since it should be same for all in batch
+        if isinstance(anchor_key, (list, tuple)):
+            anchor_key = anchor_key[0] if len(anchor_key) > 0 else None
+        anchor_idx = self.anchor_map.get(anchor_key, -1)
 
         modality_tokens = []
         Ns = []
@@ -195,6 +206,8 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
                     case _:
                         raise ValueError(f"Unknown attention type: {aa_type}")
             output_list.append(intermediates[-1])
+        
+        print("[DEBUG]: TransformerAggregatorV2GlobalJoint forward pass completed.")
 
         return output_list
 

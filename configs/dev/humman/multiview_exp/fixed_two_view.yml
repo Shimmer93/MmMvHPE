@@ -1,0 +1,161 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+max_steps: &max_steps 20000
+val_check_interval: 250
+limit_val_batches: 100
+
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'HummanPreprocessedDataset'
+  params:
+    data_root: &data_root '/opt/data/humman'
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_003']
+    anchor_key: 'input_rgb'
+    split: "train"
+    seq_len: 1       
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    random_seed: 42
+val_dataset:
+  name: 'HummanPreprocessedDataset'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_003']
+    anchor_key: 'input_rgb'
+    split: "test"
+    seq_len: 1
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    random_seed: 42
+test_dataset:
+  name: 'HummanPreprocessedDataset'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_003']
+    anchor_key: 'input_rgb'
+    split: "test"
+    seq_len: 1
+    seq_step: 5
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    random_seed: 42
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0005
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: OneCycleLR
+sched_params:
+  max_lr: *lr
+  total_steps: *max_steps
+  pct_start: 0.01  # 1% warmup
+  anneal_strategy: 'cos'
+  div_factor: 10.0
+  final_div_factor: 10000.0
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: TestModel_1208
+backbone_rgb:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+backbone_depth:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+aggregator:
+  name: 'TransformerAggregator'
+  params:
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 256
+    num_register_tokens: 4
+    aa_order: ['single', 'global', 'cross']
+    aa_block_size: 1
+    depth: 6
+    block_type: 'Block'
+    num_heads: 8
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
+keypoint_head:
+  name: 'RegressionKeypointHead'
+  params:
+    emb_size: 768
+    num_classes: 72
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: VideoResize
+    params:
+      size: [320, 176]
+      keep_ratio: false
+      keys: ['input_rgb', 'input_depth']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'zero_one'
+      keys: ['input_depth']
+  - name: ToTensor
+    params: null
+  - name: CameraParamToPoseEncoding
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'smpl'  # Skeleton format for visualization
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization

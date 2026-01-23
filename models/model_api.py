@@ -55,6 +55,8 @@ class LitModel(L.LightningModule):
             self.camera_head = create_model(self.hparams.camera_head['name'], self.hparams.camera_head['params'])
         if self.with_keypoint_head:
             self.keypoint_head = create_model(self.hparams.keypoint_head['name'], self.hparams.keypoint_head['params'])
+        if self.with_smpl_head:
+            self.smpl_head = create_model(self.hparams.smpl_head['name'], self.hparams.smpl_head['params'])
         
         if hparams.checkpoint_path is not None:
             self.load_state_dict(torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict'], strict=False)
@@ -87,6 +89,10 @@ class LitModel(L.LightningModule):
     @property
     def with_keypoint_head(self):
         return hasattr(self.hparams, 'keypoint_head')
+    
+    @property
+    def with_smpl_head(self):
+        return hasattr(self.hparams, 'smpl_head')
     
     def forward_rgb(self, frames_rgb):
         """Forward function for RGB frames."""
@@ -171,6 +177,10 @@ class LitModel(L.LightningModule):
             losses_keypoint = self.keypoint_head.loss(feats_agg, batch)
             loss_dict.update(losses_keypoint)
 
+        if self.with_smpl_head:
+            losses_smpl = self.smpl_head.loss(feats_agg, batch)
+            loss_dict.update(losses_smpl)
+
         loss = 0
         for loss_name, (loss_value, loss_weight) in loss_dict.items():
             loss += loss_value * loss_weight
@@ -192,6 +202,9 @@ class LitModel(L.LightningModule):
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint
+        if self.with_smpl_head:
+            preds_smpl = self.smpl_head.predict(feats_agg)
+            pred_dict['pred_smpl'] = preds_smpl
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -213,6 +226,9 @@ class LitModel(L.LightningModule):
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint
+        if self.with_smpl_head:
+            preds_smpl = self.smpl_head.predict(feats_agg)
+            pred_dict['pred_smpl'] = preds_smpl
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -302,6 +318,7 @@ class LitModel(L.LightningModule):
     def visualize(self, batch, pred_dict, stage="val", batch_idx=None):
         skl_format = self.hparams.vis_skl_format if hasattr(self.hparams, 'vis_skl_format') else None
         vis_denorm_params = self.hparams.vis_denorm_params if hasattr(self.hparams, 'vis_denorm_params') else None
+        
         fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params)
 
         if batch_idx is None:

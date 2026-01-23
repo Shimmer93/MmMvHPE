@@ -17,6 +17,7 @@ class RegressionKeypointHeadV2(BaseHead):
         )
 
     def forward(self, x):
+        print("[DEBUG]: Entered RegressionKeypointHeadV2 forward pass.")
         if isinstance(x, list):
             # print(len(x))
             x = torch.concatenate(x, dim=-1)
@@ -33,6 +34,7 @@ class RegressionKeypointHeadV2(BaseHead):
 
         x = self.norm(x)
         x = self.mlp(x)
+        print("[DEBUG]: RegressionKeypointHeadV2 forward pass completed.")
         return x
     
     def loss(self, x, data_batch):
