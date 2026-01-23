@@ -4,6 +4,9 @@ from .camera import (
     CameraRotationError,
     CameraFoVError,
     CameraFocalError,
+    CameraPoseAUC,
+    CameraTranslationL2Error,
+    CameraRotationAngleError,
 )
 from .smpl_metrics import (
     SMPL_MPJPE,
@@ -20,6 +23,9 @@ __all__ = [
     'CameraRotationError',
     'CameraFoVError',
     'CameraFocalError',
+    'CameraPoseAUC',
+    'CameraTranslationL2Error',
+    'CameraRotationAngleError',
     'SMPL_MPJPE',
     'SMPL_PAMPJPE',
     'SMPL_VertexError',

@@ -91,7 +91,8 @@ class VGGTCameraHeadV5(BaseHead):
         return losses
 
     def predict(self, x, num_iterations: int = 4):
-        return self.forward(x, num_iterations)
+        pred_list = self.forward(x, num_iterations)
+        return pred_list[-1]
 
     def _select_layers(self, x):
         if not isinstance(x, list):

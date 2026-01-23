@@ -357,3 +357,234 @@ class CameraFocalError:
         gt_fov = gt_cameras[..., 7:9]
         
         return focal_error_func(pred_fov, gt_fov, self.image_size_hw, reduce=True)
+
+
+class CameraTranslationL2Error:
+    """Metric for mean L2 translation error."""
+
+    def __init__(self, modality=None):
+        self.modality = modality
+        if modality is not None:
+            self.name = f'cam_trans_l2_{modality}'
+        else:
+            self.name = 'cam_trans_l2'
+
+    def __call__(self, preds, targets):
+        if self.modality is not None:
+            gt_key = f'gt_camera_{self.modality}'
+        else:
+            gt_key = 'gt_camera'
+
+        pred_cameras = preds.get('pred_cameras')
+        gt_cameras = targets.get(gt_key)
+
+        if pred_cameras is None or gt_cameras is None:
+            return 0.0
+
+        pred_cameras = self._select_modality(pred_cameras, targets)
+        gt_cameras = self._select_gt_camera(gt_cameras)
+        if pred_cameras is None or gt_cameras is None:
+            return 0.0
+
+        pred_cameras = to_numpy(pred_cameras)
+        gt_cameras = to_numpy(gt_cameras)
+
+        if pred_cameras.ndim > 2:
+            pred_cameras = pred_cameras.reshape(-1, pred_cameras.shape[-1])
+        if gt_cameras.ndim > 2:
+            gt_cameras = gt_cameras.reshape(-1, gt_cameras.shape[-1])
+
+        pred_trans = pred_cameras[..., :3]
+        gt_trans = gt_cameras[..., :3]
+
+        return translation_error_func(pred_trans, gt_trans, reduce=True)
+
+    def _select_modality(self, pred_cameras, targets):
+        if pred_cameras is None:
+            return None
+        if isinstance(pred_cameras, list):
+            pred_cameras = pred_cameras[-1]
+        if pred_cameras.ndim != 3 or self.modality is None:
+            return pred_cameras
+        modalities = targets.get('modalities', [])
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        if not modalities:
+            modalities = [
+                mod for mod in ["rgb", "depth", "lidar", "mmwave"]
+                if f"gt_camera_{mod}" in targets
+            ]
+        if not modalities or self.modality not in modalities:
+            return None
+        return pred_cameras[:, modalities.index(self.modality)]
+
+    @staticmethod
+    def _select_gt_camera(gt_cameras):
+        if gt_cameras is None:
+            return None
+        if isinstance(gt_cameras, np.ndarray):
+            return gt_cameras[:, -1] if gt_cameras.ndim == 3 else gt_cameras
+        if isinstance(gt_cameras, torch.Tensor):
+            return gt_cameras[:, -1] if gt_cameras.dim() == 3 else gt_cameras
+        return gt_cameras
+
+
+class CameraRotationAngleError:
+    """Metric for mean rotation angle error in degrees."""
+
+    def __init__(self, modality=None):
+        self.modality = modality
+        if modality is not None:
+            self.name = f'cam_rot_angle_{modality}'
+        else:
+            self.name = 'cam_rot_angle'
+
+    def __call__(self, preds, targets):
+        if self.modality is not None:
+            gt_key = f'gt_camera_{self.modality}'
+        else:
+            gt_key = 'gt_camera'
+
+        pred_cameras = preds.get('pred_cameras')
+        gt_cameras = targets.get(gt_key)
+
+        if pred_cameras is None or gt_cameras is None:
+            return 0.0
+
+        pred_cameras = self._select_modality(pred_cameras, targets)
+        gt_cameras = self._select_gt_camera(gt_cameras)
+        if pred_cameras is None or gt_cameras is None:
+            return 0.0
+
+        pred_cameras = to_numpy(pred_cameras)
+        gt_cameras = to_numpy(gt_cameras)
+
+        if pred_cameras.ndim > 2:
+            pred_cameras = pred_cameras.reshape(-1, pred_cameras.shape[-1])
+        if gt_cameras.ndim > 2:
+            gt_cameras = gt_cameras.reshape(-1, gt_cameras.shape[-1])
+
+        pred_quats = pred_cameras[..., 3:7]
+        gt_quats = gt_cameras[..., 3:7]
+
+        return rotation_error_func(pred_quats, gt_quats, reduce=True)
+
+    def _select_modality(self, pred_cameras, targets):
+        if pred_cameras is None:
+            return None
+        if isinstance(pred_cameras, list):
+            pred_cameras = pred_cameras[-1]
+        if pred_cameras.ndim != 3 or self.modality is None:
+            return pred_cameras
+        modalities = targets.get('modalities', [])
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        if not modalities:
+            modalities = [
+                mod for mod in ["rgb", "depth", "lidar", "mmwave"]
+                if f"gt_camera_{mod}" in targets
+            ]
+        if not modalities or self.modality not in modalities:
+            return None
+        return pred_cameras[:, modalities.index(self.modality)]
+
+    @staticmethod
+    def _select_gt_camera(gt_cameras):
+        if gt_cameras is None:
+            return None
+        if isinstance(gt_cameras, np.ndarray):
+            return gt_cameras[:, -1] if gt_cameras.ndim == 3 else gt_cameras
+        if isinstance(gt_cameras, torch.Tensor):
+            return gt_cameras[:, -1] if gt_cameras.dim() == 3 else gt_cameras
+        return gt_cameras
+
+
+def _rotation_angle_from_quats(pred_quats, gt_quats, eps=1e-15):
+    pred_quats = pred_quats / (np.linalg.norm(pred_quats, axis=-1, keepdims=True) + eps)
+    gt_quats = gt_quats / (np.linalg.norm(gt_quats, axis=-1, keepdims=True) + eps)
+    dot = np.sum(pred_quats * gt_quats, axis=-1)
+    loss_q = np.clip(1.0 - dot**2, eps, None)
+    err_q = np.arccos(1.0 - 2.0 * loss_q)
+    return np.degrees(err_q)
+
+
+def _translation_angle(pred_t, gt_t, eps=1e-15, ambiguity=True, default_err=1e6):
+    pred_norm = np.linalg.norm(pred_t, axis=-1, keepdims=True)
+    gt_norm = np.linalg.norm(gt_t, axis=-1, keepdims=True)
+    pred_unit = pred_t / (pred_norm + eps)
+    gt_unit = gt_t / (gt_norm + eps)
+    loss_t = np.clip(1.0 - np.sum(pred_unit * gt_unit, axis=-1) ** 2, eps, None)
+    err_t = np.arccos(np.sqrt(1.0 - loss_t))
+    err_t = np.where(np.isfinite(err_t), err_t, default_err)
+    err_deg = np.degrees(err_t)
+    if ambiguity:
+        err_deg = np.minimum(err_deg, np.abs(180.0 - err_deg))
+    return err_deg
+
+
+def _calculate_auc_np(r_error, t_error, max_threshold=30):
+    error_matrix = np.concatenate((r_error[:, None], t_error[:, None]), axis=1)
+    max_errors = np.max(error_matrix, axis=1)
+    bins = np.arange(max_threshold + 1)
+    histogram, _ = np.histogram(max_errors, bins=bins)
+    num_pairs = float(len(max_errors))
+    normalized_histogram = histogram.astype(float) / max(num_pairs, 1.0)
+    return np.mean(np.cumsum(normalized_histogram))
+
+
+class CameraPoseAUC:
+    """AUC metric for absolute camera pose errors in the pelvis-based human frame."""
+
+    def __init__(self, modality, max_threshold=30):
+        self.modality = modality
+        self.max_threshold = max_threshold
+        self.name = f'cam_pose_auc_{max_threshold}_{modality}'
+
+    def __call__(self, preds, targets):
+        pred_cameras = preds.get('pred_cameras')
+        if pred_cameras is None:
+            return 0.0
+
+        if isinstance(pred_cameras, list):
+            pred_cameras = pred_cameras[-1]
+
+        pred_cameras = to_numpy(pred_cameras)
+        gt_cameras = targets.get(f'gt_camera_{self.modality}')
+        if gt_cameras is None:
+            return 0.0
+
+        gt_cameras = to_numpy(gt_cameras)
+
+        if gt_cameras.ndim == 3:
+            gt_cameras = gt_cameras[:, -1]
+
+        if pred_cameras.ndim == 3:
+            modalities = targets.get('modalities', [])
+            if modalities and isinstance(modalities[0], (list, tuple)):
+                modalities = modalities[0]
+            if not modalities:
+                modalities = [
+                    mod for mod in ["rgb", "depth", "lidar", "mmwave"]
+                    if f"gt_camera_{mod}" in targets
+                ]
+            if not modalities:
+                return 0.0
+            if self.modality not in modalities:
+                return 0.0
+            modality_idx = modalities.index(self.modality)
+            pred_cameras = pred_cameras[:, modality_idx]
+
+        if pred_cameras.ndim > 2:
+            pred_cameras = pred_cameras.reshape(-1, pred_cameras.shape[-1])
+        if gt_cameras.ndim > 2:
+            gt_cameras = gt_cameras.reshape(-1, gt_cameras.shape[-1])
+
+        pred_quats = pred_cameras[..., 3:7]
+        gt_quats = gt_cameras[..., 3:7]
+        pred_trans = pred_cameras[..., :3]
+        gt_trans = gt_cameras[..., :3]
+
+        r_error = _rotation_angle_from_quats(pred_quats, gt_quats)
+        t_error = _translation_angle(pred_trans, gt_trans)
+
+        return _calculate_auc_np(r_error, t_error, max_threshold=self.max_threshold)
