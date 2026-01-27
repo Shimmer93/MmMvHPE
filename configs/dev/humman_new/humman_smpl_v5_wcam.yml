@@ -104,7 +104,7 @@ aggregator:
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
+    aa_order: ['single', 'cross_modality', 'cross_joint', 'gcn']
     aa_block_size: 1
     depth: 6
     block_type: 'Block'
@@ -208,6 +208,32 @@ metrics:
       use_smpl: false
       affix: no_smpl
     alias: 'PAMPJPE_no_smpl'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'rgb'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_rgb'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'lidar'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_lidar'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'rgb'
+    alias: 'CameraTransL2_rgb'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'lidar'
+    alias: 'CameraTransL2_lidar'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'rgb'
+    alias: 'CameraRotAngle_rgb'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'lidar'
+    alias: 'CameraRotAngle_lidar'
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
