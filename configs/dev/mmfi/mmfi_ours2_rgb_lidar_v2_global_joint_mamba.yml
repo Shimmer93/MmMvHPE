@@ -5,12 +5,13 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 16
-epochs: &epochs 20
+epochs: &epochs 10
+# batch_size: 1
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'MMFiDataset'
   params:
     data_root: &data_root '/data/shared/pc/MMFi_Dataset'
     rgb_root: &rgb_root '/data/shared/pc/MMFi_Defaced_RGB'
@@ -24,9 +25,10 @@ train_dataset:
     causal: true
     test_mode: false
 val_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'MMFiDataset'
   params:
     data_root: *data_root
+    rgb_root: *rgb_root
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: *split_config
     split_to_use: *split_to_use
@@ -37,9 +39,10 @@ val_dataset:
     causal: true
     test_mode: true
 test_dataset:
-  name: 'MMFiPreprocessedDataset'
+  name: 'MMFiDataset'
   params:
     data_root: *data_root
+    rgb_root: *rgb_root
     modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
     split_config: *split_config
     split_to_use: *split_to_use
@@ -55,7 +58,7 @@ test_dataset:
 optim_name: AdamW
 optim_params:
   lr: &lr 0.0001
-  weight_decay: 0.0001  # Increased for better regularization
+  weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
 # --------------------------------------
@@ -68,13 +71,14 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: TestModel_V3
+model_name: TestModel_V2_GlobalJoint_RGB_LiDAR
 backbone_rgb:
   name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
+# pretrained_rgb_path: null
 backbone_depth:
   name: 'TimmWrapper'
   params:
@@ -82,86 +86,70 @@ backbone_depth:
     pretrained: true
   has_temporal: false
 backbone_lidar:
-  name: 'P4TEncoder'
+  name: 'MAMBA4DEncoder'
   params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
+    radius: 0.1
+    nsamples: 16
+    spatial_stride: 32
     temporal_kernel_size: 3
     temporal_stride: 1
     emb_relu: false
     dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
     mlp_dim: 1024
-    features: 3
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
     mode: 'xyz'
   has_temporal: true
 backbone_mmwave:
-  name: 'P4TEncoder'
+  name: 'MAMBA4DEncoder'
   params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
+    radius: 0.4
+    nsamples: 16
+    spatial_stride: 1
     temporal_kernel_size: 3
     temporal_stride: 1
     emb_relu: false
     dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 2
+    mlp_dim: 256
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
     mode: 'all'
   has_temporal: true
-# --------------------------------------
-# Aggregator V3 - Improved architecture
-# --------------------------------------
 aggregator:
-  name: 'TransformerAggregatorV3'
+  name: 'TransformerAggregatorV2GlobalJoint'
   params:
-    input_dims: [384, 384, 512, 512]  # RGB, Depth, LiDAR, mmWave
-    embed_dim: 256  # Increased from 256 for more capacity
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 512
     num_register_tokens: 4
-    depth: 6  # Deeper network for better feature learning
-    num_heads: 8
+    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_block_size: 1
+    depth: 2
+    block_type: 'Block'
     skeleton_type: 'mmfi'
-    # Architecture control flags
-    use_parallel_paths: true        # Enable parallel multi-path processing
-    use_dynamic_fusion: true        # Enable uncertainty-aware modality fusion
-    use_skeleton_guidance: true     # Enable skeleton-guided attention
-    use_fpn_output: false           # Enable FPN-style multi-scale output
-    use_grad_ckpt: false           # Set to true to save memory if needed
-    max_spatial_seq_len: 1000
-    max_temporal_seq_len: 243
-# --------------------------------------
-# Prediction Head V3 - Advanced head
-# --------------------------------------
-# keypoint_head:
-#   name: 'RegressionKeypointHeadV3'
-#   params:
-#     emb_size: 256  # Match aggregator embed_dim
-#     use_multi_scale: true              # Use multi-scale features from FPN
-#     use_modality_attention: true       # Learn modality importance weights
-#     temporal_strategy: 'attention'     # Options: 'mean', 'max', 'last', 'attention', 'conv'
-#     estimate_uncertainty: true         # Estimate per-joint uncertainty
-#     dropout: 0.1                       # Dropout for regularization
-#     losses:
-#       - name: 'MSELoss'
-#         params: null
-#         weight: 1.0
-#       - name: 'L1Loss'  # Additional L1 loss for robustness
-#         params: null
-#         weight: 0.5
-# --------------------------------------
-# Alternative: Simplified Head (for quick experiments)
-# --------------------------------------
+    num_heads: 8
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
+    use_grad_ckpt: false
 keypoint_head:
-  name: 'RegressionKeypointHeadV3Simple'
+  name: 'RegressionKeypointHeadV2'
+  num_joints: 17 
   params:
-    emb_size: 256
-    dropout: 0.1
+    emb_size: 512
+    num_joints: 17
     losses:
       - name: 'MSELoss'
         params: null
@@ -180,18 +168,18 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: VideoResize
-  #   params:
-  #     size: [192, 256]
-  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoResize
+    params:
+      size: [192, 256]
+      keys: ['input_rgb']
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
-  - name: VideoNormalize
-    params:
-      norm_mode: 'zero_one'
-      keys: ['input_depth']
+  # - name: VideoNormalize
+  #   params:
+  #     norm_mode: 'zero_one'
+  #     keys: ['input_depth']
   - name: PCPad
     params:
       num_points: 1024
@@ -201,7 +189,7 @@ train_pipeline: &train_pipeline
     params:
       num_points: 256
       pad_mode: 'repeat'
-      keys: ['input_mmwave']
+      keys: ['input_mmwave'] # Changes: Uncomment this part
   - name: ToTensor
     params: null
 val_pipeline: *train_pipeline
@@ -212,30 +200,3 @@ vis_denorm_params:
   rgb_std: [58.395, 57.12, 57.375]
   depth_mean: [0.0, 0.0, 0.0]
   depth_std: [255.0, 255.0, 255.0]
-
-# --------------------------------------
-# Additional training configurations
-# --------------------------------------
-# Uncomment to enable gradient checkpointing for memory savings
-# aggregator:
-#   params:
-#     use_grad_ckpt: true
-
-# Uncomment to try different configurations
-# Alternative 1: Disable some V3 features for ablation study
-# aggregator:
-#   params:
-#     use_parallel_paths: false
-#     use_dynamic_fusion: false
-#     use_skeleton_guidance: true
-#     use_fpn_output: false
-
-# Alternative 2: Lighter model for faster training
-# aggregator:
-#   params:
-#     embed_dim: 256
-#     depth: 8
-#     num_heads: 4
-# keypoint_head:
-#   params:
-#     emb_size: 256

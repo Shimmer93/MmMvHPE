@@ -3,6 +3,29 @@ warnings.filterwarnings("ignore")
 
 from argparse import ArgumentParser
 import os
+import builtins
+
+# -----------------------------------------------------------------------------
+# [New Feature] Custom Print to filter [DEBUG] messages
+# -----------------------------------------------------------------------------
+_original_print = builtins.print
+
+def _debug_aware_print(*args, **kwargs):
+    # Convert args to a single string to check for the tag
+    msg = " ".join([str(arg) for arg in args])
+    
+    # If the message is a debug message
+    if "[DEBUG]" in msg:
+        # Only print if the environment variable is set to '1'
+        if os.environ.get('MmMvHPE_DEBUG', '0') == '1':
+            _original_print(*args, **kwargs)
+    else:
+        # Always print non-debug messages
+        _original_print(*args, **kwargs)
+
+# Override the built-in print function
+builtins.print = _debug_aware_print
+# -----------------------------------------------------------------------------
 
 import torch
 import lightning as L
@@ -17,11 +40,12 @@ from misc.utils import load_cfg, merge_args_cfg
 
 torch.set_float32_matmul_precision('high')
 torch.backends.cudnn.benchmark = True
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 def main(args):
     if hasattr(args, 'seed'):
         L.seed_everything(args.seed, workers=True)
+    print("[DEBUG]: The arguments has the attributes input_dim or not:", hasattr(args, 'input_dim'))
 
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
@@ -44,6 +68,8 @@ def main(args):
         RichProgressBar(refresh_rate=20),
         LearningRateMonitor(logging_interval='step')
     ]
+    
+    # print("[DEBUG]: this is the line 47 of main.py")
 
     if args.use_wandb:
         logger = WandbLogger(
@@ -81,6 +107,7 @@ def main(args):
         'benchmark': args.benchmark,  # cudnn benchmark
         'deterministic': args.deterministic,  # Set True for reproducibility (slower)
     }
+    # print("[DEBUG]: this is the line 83 of main.py")
 
     if hasattr(args, 'epochs'):
         print(f'Training for {args.epochs} epochs.')
@@ -149,8 +176,16 @@ if __name__ == '__main__':
     parser.add_argument('--compile', action='store_true', help='Use torch.compile (PyTorch 2.0+)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases logger')
     parser.add_argument('--wandb_offline', action='store_true', help='Run wandb in offline mode')
+    parser.add_argument('--deterministic', action='store_true', help='Set cudnn.deterministic=True for reproducibility')
+    
+    # [New Argument]
+    parser.add_argument('--debug', action='store_true', help='Enable printing of [DEBUG] messages')
 
     args = parser.parse_args()
+    
+    # [New Feature] Set environment variable based on argument
+    os.environ['MmMvHPE_DEBUG'] = '1' if args.debug else '0'
+    
     cfg = load_cfg(args.cfg)
     args = merge_args_cfg(args, cfg)
 

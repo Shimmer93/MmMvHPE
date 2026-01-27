@@ -28,6 +28,7 @@ class RegressionKeypointHeadV2(BaseHead):
         self.last_n_layers = last_n_layers
 
     def forward(self, x):
+        print("[DEBUG]: Entered RegressionKeypointHeadV2 forward pass.")
         if isinstance(x, list):
             if self.last_n_layers > 0:
                 x = x[-self.last_n_layers:]
@@ -38,8 +39,12 @@ class RegressionKeypointHeadV2(BaseHead):
         if x.dim() == 4:
             x = x.unsqueeze(1)
         B, M, T, N, C = x.shape
+        print("[DEBUG]: Input feature shape:", x.shape)
 
         x = x[..., N-self.num_joints:, :]
+        print("[DEBUG]: Selected last num_joints keypoint tokens.")
+        print("[DEBUG]: num_joints:", self.num_joints)
+        print("[DEBUG]: After selecting keypoint tokens shape:", x.shape)
         
         # Average over temporal dimension first: B, M, J, C
         x = x.mean(dim=[1,2])
@@ -49,6 +54,8 @@ class RegressionKeypointHeadV2(BaseHead):
         x = self.projector(x)
         x = self.norm(x)
         x = self.mlp(x)
+        print("[DEBUG]: RegressionKeypointHeadV2 forward pass completed.")
+        print("[DEBUG]: Output keypoints shape:", x.shape)
         return x
     
     def loss(self, x, data_batch):
