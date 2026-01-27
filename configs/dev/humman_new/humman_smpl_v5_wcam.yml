@@ -166,7 +166,7 @@ smpl_head:
 camera_head:
   name: 'VGGTCameraHeadV5'
   params:
-    dim_in: 1024
+    dim_in: 512
     trunk_depth: 4
     pose_encoding_type: "absT_quaR_FoV"
     num_heads: 8
@@ -175,7 +175,7 @@ camera_head:
     trans_act: "linear"
     quat_act: "linear"
     fl_act: "relu"
-    last_n_layers: 2
+    last_n_layers: 1
     feature_slice: "full"
     proj_loss_weight_rgb: 0.1
     proj_loss_weight_lidar: 0.1
