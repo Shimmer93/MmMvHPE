@@ -26,6 +26,7 @@ import warnings
 from typing import List, Optional, Sequence
 
 import numpy as np
+import yaml
 
 from datasets.base_dataset import BaseDataset
 
@@ -55,6 +56,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         unit: str = "m",
         pipeline: List[dict] = [],
         split: str = "train",
+        split_config: Optional[str] = None,
+        split_to_use: str = "random_split",
+        test_mode: bool = False,
         modality_names: Sequence[str] = ("rgb", "depth"),
         rgb_cameras: Optional[Sequence[str]] = None,
         depth_cameras: Optional[Sequence[str]] = None,
@@ -71,6 +75,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.data_root = data_root
         self.unit = unit
         self.split = split
+        self.split_config = split_config
+        self.split_to_use = split_to_use
+        self.test_mode = test_mode
         self.modality_names = list(modality_names)
         self.seq_len = seq_len
         self.seq_step = seq_step
@@ -149,22 +156,33 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             seq_names.update(self.file_index.get(modality, {}).keys())
         seq_names = sorted(seq_names)
 
-        person_ids = sorted(list(set([s.split("_")[0] for s in seq_names])))
-        split_idx = int(len(person_ids) * 0.8)
-        if self.split == "train":
-            valid_persons = set(person_ids[:split_idx])
-        elif self.split == "test":
-            valid_persons = set(person_ids[split_idx:])
-        elif self.split == "train_mini":
-            valid_persons = set(person_ids[:16])
-        elif self.split == "test_mini":
-            valid_persons = set(person_ids[split_idx:split_idx + 4])
+        split_info = self._resolve_split_info(seq_names)
+        if split_info is None:
+            person_ids = sorted(list(set([s.split("_")[0] for s in seq_names])))
+            split_idx = int(len(person_ids) * 0.8)
+            if self.split == "train":
+                valid_persons = set(person_ids[:split_idx])
+            elif self.split == "test":
+                valid_persons = set(person_ids[split_idx:])
+            elif self.split == "train_mini":
+                valid_persons = set(person_ids[:16])
+            elif self.split == "test_mini":
+                valid_persons = set(person_ids[split_idx:split_idx + 4])
+            else:
+                valid_persons = set(person_ids)
+            valid_actions = None
+            valid_cameras = None
         else:
-            valid_persons = set(person_ids)
+            valid_persons = set(split_info["subjects"]) if split_info["subjects"] else None
+            valid_actions = set(split_info["actions"]) if split_info["actions"] else None
+            valid_cameras = set(split_info["cameras"]) if split_info["cameras"] else None
 
         for seq_name in seq_names:
             person_id = seq_name.split("_")[0]
-            if person_id not in valid_persons:
+            if valid_persons is not None and person_id not in valid_persons:
+                continue
+            action_id = seq_name.split("_")[1]
+            if valid_actions is not None and action_id not in valid_actions:
                 continue
 
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
@@ -176,6 +194,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 depth_cams = [c for c in depth_cams if c in self.depth_cameras]
             if self.lidar_cameras:
                 lidar_cams = [c for c in lidar_cams if c in self.lidar_cameras]
+            if valid_cameras is not None:
+                rgb_cams = [c for c in rgb_cams if c in valid_cameras]
+                depth_cams = [c for c in depth_cams if c in valid_cameras]
+                lidar_cams = [c for c in lidar_cams if c in valid_cameras]
 
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
@@ -224,6 +246,41 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     })
 
         return data_list
+
+    def _resolve_split_info(self, seq_names):
+        if self.split_config is None:
+            return None
+
+        with open(self.split_config, "r") as f:
+            split_config = yaml.safe_load(f)
+
+        if self.split_to_use not in split_config:
+            raise ValueError(f"split_to_use {self.split_to_use} not found in {self.split_config}.")
+
+        split_entry = split_config[self.split_to_use]
+        split_key = "val_dataset" if self.test_mode else "train_dataset"
+
+        if self.split_to_use == "random_split":
+            ratio = split_entry["ratio"]
+            seed = split_entry["random_seed"]
+            subjects = sorted(list(set([s.split("_")[0] for s in seq_names])))
+            rng = np.random.RandomState(seed)
+            idx = rng.permutation(len(subjects))
+            split_idx = int(np.floor(ratio * len(subjects)))
+            train_subjects = [subjects[i] for i in idx[:split_idx]]
+            val_subjects = [subjects[i] for i in idx[split_idx:]]
+            subjects = train_subjects if split_key == "train_dataset" else val_subjects
+
+            entry = split_entry.get(split_key, {})
+            actions = entry.get("actions", None)
+            cameras = entry.get("cameras", None)
+        else:
+            entry = split_entry[split_key]
+            subjects = entry.get("subjects", None)
+            actions = entry.get("actions", None)
+            cameras = entry.get("cameras", None)
+
+        return {"subjects": subjects, "actions": actions, "cameras": cameras}
 
     def _load_camera_params(self, seq_name):
         camera_file = osp.join(self.data_root, "cameras", f"{seq_name}_cameras.json")
