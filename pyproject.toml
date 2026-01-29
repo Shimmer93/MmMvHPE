@@ -12,7 +12,9 @@ dependencies = [
     "cuda-toolkit==12.4",
     "einops>=0.8.1",
     "flash-attn>=2.8.3",
+    "knn-cuda",
     "lightning>=2.6.0",
+    "mamba-ssm",
     "opencv-python>=4.12.0.88",
     "pcdet",
     "pointnet2",
@@ -48,6 +50,7 @@ segment-anything = { git = "https://github.com/facebookresearch/segment-anything
 pointnet2 = { workspace = true, editable = true }
 spconv = { git = "https://github.com/traveller59/spconv.git" }
 pcdet = { git = "https://github.com/open-mmlab/OpenPCDet.git" }
+knn-cuda = { url = "https://github.com/unlimblue/KNN_CUDA/releases/download/0.2/KNN_CUDA-0.2-py3-none-any.whl" }
 
 [tool.uv.pip]
 find-links = ["https://data.pyg.org/whl/torch-2.5.1+cu124.html"]
@@ -63,6 +66,7 @@ environments = ["sys_platform == 'linux'"]
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 torch-scatter = ["torch"]
+mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 pcdet = ["torch"]
 chumpy = ["pip"]
 
