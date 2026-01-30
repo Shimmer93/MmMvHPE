@@ -208,6 +208,7 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
         if self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
@@ -237,6 +238,7 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
         if self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
@@ -281,6 +283,7 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
         if self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
@@ -298,6 +301,28 @@ class LitModel(L.LightningModule):
                     return self.camera_head.predict(feats_agg, batch)
                 except TypeError:
                     return self.camera_head.predict(feats_agg)
+
+    def _attach_keypoint_modalities(self, pred_dict, feats_agg, batch):
+        if not self.with_keypoint_head:
+            return
+        modalities = batch.get("modalities", [])
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        try:
+            outputs = self.keypoint_head.forward(feats_agg, modalities=modalities)
+        except TypeError:
+            return
+        if not isinstance(outputs, dict):
+            return
+        per_modality = outputs.get("per_modality")
+        if per_modality is None:
+            return
+        for i, modality in enumerate(modalities[: len(per_modality)]):
+            mod = modality.lower()
+            if mod in {"rgb", "depth"}:
+                pred_dict[f"pred_keypoints_2d_{mod}"] = per_modality[i]
+            else:
+                pred_dict[f"pred_keypoints_3d_{mod}"] = per_modality[i]
 
     def on_test_epoch_end(self):
         if not self.hparams.save_test_preds:

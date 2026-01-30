@@ -20,6 +20,12 @@ class HeuristicCameraHead(BaseHead):
         modalities_key: str = "modalities",
         global_keypoints_key: str = "pred_keypoints",
         global_fallback_key: str = "gt_keypoints",
+        pred_keypoints_2d_key_templates: Tuple[str, ...] = (
+            "pred_keypoints_2d_{modality}",
+        ),
+        pred_keypoints_3d_key_templates: Tuple[str, ...] = (
+            "pred_keypoints_3d_{modality}",
+        ),
         keypoints_2d_key_templates: Tuple[str, ...] = (
             "keypoints_2d_{modality}",
             "gt_keypoints_2d_{modality}",
@@ -47,6 +53,8 @@ class HeuristicCameraHead(BaseHead):
         self.modalities_key = modalities_key
         self.global_keypoints_key = global_keypoints_key
         self.global_fallback_key = global_fallback_key
+        self.pred_keypoints_2d_key_templates = pred_keypoints_2d_key_templates
+        self.pred_keypoints_3d_key_templates = pred_keypoints_3d_key_templates
         self.keypoints_2d_key_templates = keypoints_2d_key_templates
         self.keypoints_3d_key_templates = keypoints_3d_key_templates
         self.intrinsics_key_templates = intrinsics_key_templates
@@ -102,7 +110,9 @@ class HeuristicCameraHead(BaseHead):
         for m_idx, modality in enumerate(modalities):
             modality = modality.lower()
             if modality in {"rgb", "depth"}:
-                keypoints_2d = self._get_keypoints_2d(data_batch, modality, device, dtype)
+                keypoints_2d = self._get_keypoints_2d(
+                    data_batch, pred_dict, modality, device, dtype
+                )
                 intrinsics = self._get_intrinsics(data_batch, modality, device, dtype)
                 if keypoints_2d is None or intrinsics is None:
                     continue
@@ -117,7 +127,9 @@ class HeuristicCameraHead(BaseHead):
                     pred_extrinsics[:, m_idx], intrinsics, image_size=self._get_image_size(data_batch, modality)
                 )
             elif modality == "lidar":
-                keypoints_3d = self._get_keypoints_3d(data_batch, modality, device, dtype)
+                keypoints_3d = self._get_keypoints_3d(
+                    data_batch, pred_dict, modality, device, dtype
+                )
                 if keypoints_3d is None:
                     continue
                 pred_extrinsics[:, m_idx] = self._solve_rigid_batch(
@@ -161,16 +173,20 @@ class HeuristicCameraHead(BaseHead):
         keypoints = self._select_frame(keypoints)
         return keypoints
 
-    def _get_keypoints_2d(self, data_batch, modality, device, dtype):
-        keypoints = self._get_by_templates(data_batch, modality, self.keypoints_2d_key_templates)
+    def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype):
+        keypoints = self._get_by_templates(pred_dict, modality, self.pred_keypoints_2d_key_templates)
+        if keypoints is None:
+            keypoints = self._get_by_templates(data_batch, modality, self.keypoints_2d_key_templates)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
         keypoints = self._select_frame(keypoints)
         return keypoints
 
-    def _get_keypoints_3d(self, data_batch, modality, device, dtype):
-        keypoints = self._get_by_templates(data_batch, modality, self.keypoints_3d_key_templates)
+    def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype):
+        keypoints = self._get_by_templates(pred_dict, modality, self.pred_keypoints_3d_key_templates)
+        if keypoints is None:
+            keypoints = self._get_by_templates(data_batch, modality, self.keypoints_3d_key_templates)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
