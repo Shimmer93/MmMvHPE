@@ -281,6 +281,7 @@ class HeuristicCameraHead(BaseHead):
         intrinsics[:, 1, 2] = height / 2.0
         intrinsics[:, 2, 2] = 1.0
         return intrinsics
+
     def _solve_pnp_batch(self, points_3d, points_2d, intrinsics):
         batch_size = points_3d.shape[0]
         extrinsics = []
@@ -320,12 +321,14 @@ class HeuristicCameraHead(BaseHead):
             row2 = torch.cat([Xh, zeros, -u[:, None] * Xh], dim=1)
             A = torch.cat([row1, row2], dim=0)
 
-            _, _, Vh = torch.linalg.svd(A)
-            P = Vh[-1].reshape(3, 4)
+            with torch.cuda.amp.autocast(enabled=False):
+                _, _, Vh = torch.linalg.svd(A)
+                P = Vh[-1].reshape(3, 4)
 
             R_tilde = P[:, :3]
             t_tilde = P[:, 3]
-            U, S, Vh_r = torch.linalg.svd(R_tilde)
+            with torch.cuda.amp.autocast(enabled=False):
+                U, S, Vh_r = torch.linalg.svd(R_tilde)
             R = U @ Vh_r
             if torch.linalg.det(R) < 0:
                 U[:, -1] *= -1
@@ -363,7 +366,8 @@ class HeuristicCameraHead(BaseHead):
             Yc = Y - mu_y
 
             cov = Xc.t().mm(Yc) / X.shape[0]
-            U, S, Vh = torch.linalg.svd(cov)
+            with torch.cuda.amp.autocast(enabled=False):
+                U, S, Vh = torch.linalg.svd(cov)
             R = Vh.t().mm(U.t())
             if torch.linalg.det(R) < 0:
                 Vh[-1, :] *= -1
