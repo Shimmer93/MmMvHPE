@@ -343,8 +343,11 @@ class LitModel(L.LightningModule):
     def visualize(self, batch, pred_dict, stage="val", batch_idx=None):
         skl_format = self.hparams.vis_skl_format if hasattr(self.hparams, 'vis_skl_format') else None
         vis_denorm_params = self.hparams.vis_denorm_params if hasattr(self.hparams, 'vis_denorm_params') else None
-        
-        fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params)
+        smpl_path = getattr(self.hparams, 'smpl_path', None)
+        if smpl_path is None and hasattr(self.hparams, 'smpl_head'):
+            smpl_path = self.hparams.smpl_head.get('params', {}).get('smpl_path', None)
+
+        fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params, smpl_model_path=smpl_path)
 
         if batch_idx is None:
             tag = f"{stage}_visualization"
