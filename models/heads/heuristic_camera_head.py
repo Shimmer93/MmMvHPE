@@ -292,6 +292,11 @@ class HeuristicCameraHead(BaseHead):
             else:
                 K = intrinsics
 
+            orig_dtype = X.dtype
+            X = X.float()
+            x = x.float()
+            K = K.float()
+
             valid = torch.isfinite(X).all(dim=-1) & torch.isfinite(x).all(dim=-1)
             X = X[valid]
             x = x[valid]
@@ -329,7 +334,7 @@ class HeuristicCameraHead(BaseHead):
             scale = S.mean()
             t = t_tilde / scale
 
-            extrinsics.append(self._rt_to_matrix(R, t))
+            extrinsics.append(self._rt_to_matrix(R, t).to(orig_dtype))
 
         return torch.stack(extrinsics, dim=0)
 
@@ -339,6 +344,10 @@ class HeuristicCameraHead(BaseHead):
         for b in range(batch_size):
             X = src_points[b]
             Y = dst_points[b]
+
+            orig_dtype = X.dtype
+            X = X.float()
+            Y = Y.float()
 
             valid = torch.isfinite(X).all(dim=-1) & torch.isfinite(Y).all(dim=-1)
             X = X[valid]
@@ -368,7 +377,7 @@ class HeuristicCameraHead(BaseHead):
 
             t = mu_y - scale * R.mm(mu_x.unsqueeze(1)).squeeze(1)
 
-            extrinsics.append(self._rt_to_matrix(R * scale, t))
+            extrinsics.append(self._rt_to_matrix(R * scale, t).to(orig_dtype))
 
         return torch.stack(extrinsics, dim=0)
 
