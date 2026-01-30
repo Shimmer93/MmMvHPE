@@ -364,6 +364,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     """
     # Lazy load SMPL model if needed
     smpl_model = None
+    print("[DEBUG]: The smpl_model_path of visualize_multimodal_sample is:", smpl_model_path)
     # needs_smpl = ('pred_smpl' in pred_dict or 
     #               ('gt_smpl' in batch and 'gt_vertices' not in batch))
     needs_smpl = ('pred_smpl_params' in pred_dict) or ('gt_smpl_params' in batch)

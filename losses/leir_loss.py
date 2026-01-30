@@ -14,6 +14,7 @@ class LEIRLoss(nn.Module):
         self.criterion_regr = nn.MSELoss()
         self.smpl = LEIRSMPL(smpl_model_path)
         self._nan_reported = False
+        print(f"[DEBUG]: LEIRLoss initialized with SMPL model path: {smpl_model_path}")
 
     def _log_tensor_stats(self, name, tensor):
         if tensor is None:

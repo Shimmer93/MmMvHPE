@@ -88,6 +88,7 @@ class Regressor(nn.Module):
             'pred_keypoints': pred_joints,
             'pred_rotmat': pred_rotmat,
         }
+        print("[DEBUG]: Regressor finished. Returning output.")
         return output
 
 
@@ -126,6 +127,7 @@ class VIBETokenHeadV5(BaseHead):
             nn.Linear(emb_size, emb_size),
             nn.ReLU(),
         )
+        print("[DEBUG]: smpl_path:", smpl_path)
 
         self.regressor = Regressor(smpl_path, smpl_mean_params, emb_size=emb_size)
 

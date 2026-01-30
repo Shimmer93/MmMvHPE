@@ -11,6 +11,7 @@ class LEIRHead(BaseHead):
         super().__init__(losses)
         self.smpl = LEIRSMPL(smpl_model_path)
         self._smpl_device = None
+        print(f"[DEBUG]: LEIRHead initialized with SMPL model path: {smpl_model_path}")
 
     def forward(self, x):
         return x
