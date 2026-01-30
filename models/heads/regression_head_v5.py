@@ -12,6 +12,7 @@ class RegressionKeypointHeadV5(BaseHead):
         losses,
         emb_size=512,
         num_joints=24,
+        num_camera_tokens=1,
         num_register_tokens=4,
         num_smpl_tokens=1,
         max_modalities=4,
@@ -21,6 +22,7 @@ class RegressionKeypointHeadV5(BaseHead):
         super().__init__(losses)
         self.emb_size = emb_size
         self.num_joints = num_joints
+        self.num_camera_tokens = num_camera_tokens
         self.num_register_tokens = num_register_tokens
         self.num_smpl_tokens = num_smpl_tokens
         self.max_modalities = max_modalities
@@ -133,15 +135,21 @@ class RegressionKeypointHeadV5(BaseHead):
         return torch.cat(x, dim=-1)
 
     def _extract_joint_tokens(self, x):
-        num_special = 1 + self.num_register_tokens + self.num_smpl_tokens
+        num_special = self.num_camera_tokens + self.num_register_tokens + self.num_smpl_tokens
         start = num_special
         end = start + self.num_joints
         joint_tokens = x[..., start:end, :]
         return joint_tokens.mean(dim=1)
 
     def _extract_camera_tokens(self, x):
-        camera_tokens = x[..., :1, :]
-        return camera_tokens.mean(dim=1)
+        if self.num_camera_tokens <= 0:
+            B, T, M, _, C = x.shape
+            return torch.zeros(B, M, 1, C, device=x.device, dtype=x.dtype)
+        camera_tokens = x[..., : self.num_camera_tokens, :]
+        camera_tokens = camera_tokens.mean(dim=1)
+        if camera_tokens.shape[2] > 1:
+            camera_tokens = camera_tokens.mean(dim=2, keepdim=True)
+        return camera_tokens
 
     def _regress_per_modality(self, joint_tokens, modalities=None):
         B, M, J, C = joint_tokens.shape

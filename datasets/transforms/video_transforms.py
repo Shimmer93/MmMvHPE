@@ -270,4 +270,74 @@ class VideoRandomRotate():
             sample[key] = rotated_frames
 
         return sample
+
+
+class VideoNormalizeFoV():
+    def __init__(
+        self,
+        target_fov: Optional[Sequence[float]] = None,
+        target_focal: Optional[Sequence[float]] = None,
+        keys: List[str] = ['input_rgb'],
+        interpolation: str = 'bilinear',
+    ):
+        if target_fov is None and target_focal is None:
+            raise ValueError("Provide either target_fov or target_focal.")
+        if target_fov is not None and target_focal is not None:
+            raise ValueError("Provide only one of target_fov or target_focal.")
+        self.target_fov = target_fov
+        self.target_focal = target_focal
+        self.keys = keys
+        self.interpolation = interpolation
+
+    def __call__(self, sample):
+        if self.interpolation == 'bilinear':
+            interp_method = cv2.INTER_LINEAR
+        elif self.interpolation == 'nearest':
+            interp_method = cv2.INTER_NEAREST
+        else:
+            raise ValueError(f"Unsupported interpolation method: {self.interpolation}")
+
+        for key in self.keys:
+            frames = sample[key]
+            if not frames:
+                continue
+
+            camera_key = f'{key}_camera'
+            if camera_key not in sample and key.startswith('input_'):
+                camera_key = f'{key[6:]}_camera'
+            if camera_key not in sample:
+                continue
+
+            camera = deepcopy(sample[camera_key])
+            K_src = np.array(camera['intrinsic'], dtype=np.float32)
+            h, w = frames[0].shape[:2]
+
+            K_can = K_src.copy()
+            if self.target_focal is not None:
+                fx, fy = self.target_focal
+                K_can[0, 0] = float(fx)
+                K_can[1, 1] = float(fy)
+                K_can[0, 2] = w / 2.0
+                K_can[1, 2] = h / 2.0
+            else:
+                fov_h, fov_w = self.target_fov
+                fy = (h / 2.0) / np.tan(float(fov_h) / 2.0)
+                fx = (w / 2.0) / np.tan(float(fov_w) / 2.0)
+                K_can[0, 0] = fx
+                K_can[1, 1] = fy
+                K_can[0, 2] = w / 2.0
+                K_can[1, 2] = h / 2.0
+
+            H = K_can @ np.linalg.inv(K_src)
+
+            warped_frames = [
+                cv2.warpPerspective(frame, H, (w, h), flags=interp_method, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                for frame in frames
+            ]
+
+            camera['intrinsic'] = K_can
+            sample[camera_key] = camera
+            sample[key] = warped_frames
+
+        return sample
     

@@ -98,6 +98,7 @@ class VIBETokenHeadV5(BaseHead):
         smpl_path,
         smpl_mean_params,
         emb_size,
+        num_camera_tokens=1,
         num_register_tokens=4,
         num_smpl_tokens=1,
         max_modalities=4,
@@ -107,6 +108,7 @@ class VIBETokenHeadV5(BaseHead):
     ):
         super().__init__(losses)
         self.emb_size = emb_size
+        self.num_camera_tokens = num_camera_tokens
         self.num_register_tokens = num_register_tokens
         self.num_smpl_tokens = num_smpl_tokens
         self.max_modalities = max_modalities
@@ -193,7 +195,7 @@ class VIBETokenHeadV5(BaseHead):
         return torch.cat(x, dim=-1)
 
     def _extract_tokens(self, x):
-        num_special = 1 + self.num_register_tokens
+        num_special = self.num_camera_tokens + self.num_register_tokens
         start = num_special
         end = num_special + self.num_smpl_tokens + 24
         return x[:, -1, :, start:end, :]

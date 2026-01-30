@@ -51,12 +51,12 @@ class LitModel(L.LightningModule):
 
         self.aggregator = create_model(self.hparams.aggregator['name'], self.hparams.aggregator['params'])
 
-        if self.with_camera_head:
-            self.camera_head = create_model(self.hparams.camera_head['name'], self.hparams.camera_head['params'])
         if self.with_keypoint_head:
             self.keypoint_head = create_model(self.hparams.keypoint_head['name'], self.hparams.keypoint_head['params'])
         if self.with_smpl_head:
             self.smpl_head = create_model(self.hparams.smpl_head['name'], self.hparams.smpl_head['params'])
+        if self.with_camera_head:
+            self.camera_head = create_model(self.hparams.camera_head['name'], self.hparams.camera_head['params'])
         
         if hparams.checkpoint_path is not None:
             self.load_state_dict(torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict'], strict=False)
@@ -169,9 +169,6 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
         loss_dict = {}
         log_dict = {}
-        if self.with_camera_head:
-            losses_camera = self.camera_head.loss(feats_agg, batch)
-            loss_dict.update(losses_camera)
 
         if self.with_keypoint_head:
             losses_keypoint = self.keypoint_head.loss(feats_agg, batch)
@@ -180,6 +177,10 @@ class LitModel(L.LightningModule):
         if self.with_smpl_head:
             losses_smpl = self.smpl_head.loss(feats_agg, batch)
             loss_dict.update(losses_smpl)
+
+        if self.with_camera_head:
+            losses_camera = self.camera_head.loss(feats_agg, batch)
+            loss_dict.update(losses_camera)
 
         loss = 0
         for loss_name, (loss_value, loss_weight) in loss_dict.items():
@@ -196,9 +197,6 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_camera_head:
-            preds_camera = self.camera_head.predict(feats_agg)
-            pred_dict['pred_cameras'] = preds_camera
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint
@@ -210,6 +208,9 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        if self.with_camera_head:
+            preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+            pred_dict['pred_cameras'] = preds_camera
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -225,9 +226,6 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_camera_head:
-            preds_camera = self.camera_head.predict(feats_agg)
-            pred_dict['pred_cameras'] = preds_camera
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint
@@ -239,6 +237,9 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        if self.with_camera_head:
+            preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+            pred_dict['pred_cameras'] = preds_camera
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -269,9 +270,6 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_camera_head:
-            preds_camera = self.camera_head.predict(feats_agg)
-            pred_dict['pred_cameras'] = preds_camera
         if self.with_keypoint_head:
             preds_keypoint = self.keypoint_head.predict(feats_agg)
             pred_dict['pred_keypoints'] = preds_keypoint
@@ -283,8 +281,23 @@ class LitModel(L.LightningModule):
                 pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
             if 'pred_smpl' in preds_smpl:
                 pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+        if self.with_camera_head:
+            preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+            pred_dict['pred_cameras'] = preds_camera
 
         return pred_dict
+
+    def _predict_camera(self, feats_agg, batch, pred_dict):
+        try:
+            return self.camera_head.predict(feats_agg, data_batch=batch, pred_dict=pred_dict)
+        except TypeError:
+            try:
+                return self.camera_head.predict(feats_agg, batch, pred_dict)
+            except TypeError:
+                try:
+                    return self.camera_head.predict(feats_agg, batch)
+                except TypeError:
+                    return self.camera_head.predict(feats_agg)
 
     def on_test_epoch_end(self):
         if not self.hparams.save_test_preds:
