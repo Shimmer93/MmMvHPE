@@ -70,6 +70,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         max_samples: Optional[int] = None,
         colocated: bool = False,
         convert_depth_to_lidar: bool = True,
+        apply_to_new_world: bool = True,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -87,6 +88,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.max_samples = max_samples
         self.colocated = colocated
         self.convert_depth_to_lidar = convert_depth_to_lidar
+        self.apply_to_new_world = apply_to_new_world
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -444,7 +446,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
         R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
 
-        if gt_keypoints is not None:
+        if gt_keypoints is not None and self.apply_to_new_world:
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
@@ -462,6 +464,8 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             "modalities": list(self.modality_names),
             "gt_keypoints": gt_keypoints,
             "gt_smpl_params": gt_smpl_params,
+            "gt_global_orient": np.asarray(gt_global_orient, dtype=np.float32),
+            "gt_pelvis": np.asarray(pelvis, dtype=np.float32),
         }
 
         if "rgb" in self.modality_names:

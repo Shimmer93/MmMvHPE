@@ -323,6 +323,8 @@ class LitModel(L.LightningModule):
                 pred_dict[f"pred_keypoints_2d_{mod}"] = per_modality[i]
             else:
                 pred_dict[f"pred_keypoints_3d_{mod}"] = per_modality[i]
+                if mod == "lidar":
+                    pred_dict["pred_keypoints_pc_centered_input_lidar"] = per_modality[i]
 
     def on_test_epoch_end(self):
         if not self.hparams.save_test_preds:
