@@ -65,6 +65,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         use_all_pairs: bool = False,
         max_samples: Optional[int] = None,
         colocated: bool = False,
+        return_keypoints_sequence: bool = False,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -78,6 +79,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.use_all_pairs = use_all_pairs
         self.max_samples = max_samples
         self.colocated = colocated
+        self.return_keypoints_sequence = return_keypoints_sequence
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -387,6 +389,16 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             "gt_keypoints": gt_keypoints,
             "gt_smpl_params": gt_smpl_params,
         }
+
+        if self.return_keypoints_sequence and keypoints_3d is not None:
+            seq_keypoints = []
+            for i in range(self.seq_len):
+                idx = data_info["start_frame"] + i
+                idx = min(idx, keypoints_3d.shape[0] - 1)
+                kp = keypoints_3d[idx]
+                kp = self._to_new_world(gt_global_orient, pelvis, kp)
+                seq_keypoints.append(kp.astype(np.float32))
+            sample["gt_keypoints_seq"] = np.stack(seq_keypoints, axis=0)
 
         if "rgb" in self.modality_names:
             rgb_frames = self._load_rgb_frames(
