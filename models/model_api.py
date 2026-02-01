@@ -179,7 +179,16 @@ class LitModel(L.LightningModule):
             loss_dict.update(losses_smpl)
 
         if self.with_camera_head:
-            losses_camera = self.camera_head.loss(feats_agg, batch)
+            pred_dict = {}
+            if self.with_keypoint_head:
+                with torch.no_grad():
+                    preds_keypoint = self.keypoint_head.predict(feats_agg)
+                    pred_dict["pred_keypoints"] = preds_keypoint
+                    self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+            try:
+                losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
+            except TypeError:
+                losses_camera = self.camera_head.loss(feats_agg, batch)
             loss_dict.update(losses_camera)
 
         loss = 0
