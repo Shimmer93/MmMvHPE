@@ -75,8 +75,12 @@ def _get_pelvis_from_smpl_joints(joints, skl_format):
 
 def _extract_last_frame(seq):
     if isinstance(seq, torch.Tensor):
-        if seq.dim() >= 4:
+        if seq.dim() == 5:  # V, T, C, H, W
+            seq = seq[0]
+        if seq.dim() == 4:  # T, C, H, W
             frame = seq[-1]
+        elif seq.dim() >= 3:
+            frame = seq
         else:
             frame = seq
         if frame.dim() == 3 and frame.shape[0] in (1, 3):
@@ -85,6 +89,8 @@ def _extract_last_frame(seq):
     if isinstance(seq, (list, tuple)):
         frame = seq[-1]
         if isinstance(frame, torch.Tensor):
+            if frame.dim() == 4:  # T, C, H, W
+                frame = frame[-1]
             if frame.dim() == 3 and frame.shape[0] in (1, 3):
                 frame = frame.permute(1, 2, 0)
             return frame.cpu().numpy()

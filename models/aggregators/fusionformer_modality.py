@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class FusionFormerModalityAggregator(nn.Module):
@@ -67,9 +68,11 @@ class FusionFormerModalityAggregator(nn.Module):
     def _embed_pose(self, pose, is_rgb: bool):
         if pose is None:
             return None
-        if pose.dim() != 4:
-            raise ValueError(f"Expected pose tensor with shape (B, T, J, D), got {pose.shape}")
-        B, T, J, D = pose.shape
+        if pose.dim() == 4:
+            pose = pose.unsqueeze(1)  # B, 1, T, J, D
+        if pose.dim() != 5:
+            raise ValueError(f"Expected pose tensor with shape (B, T, J, D) or (B, V, T, J, D), got {pose.shape}")
+        B, V, T, J, D = pose.shape
         if J != self.num_joints:
             raise ValueError(f"Expected {self.num_joints} joints, got {J}")
         embed = self.rgb_embed if is_rgb else self.depth_embed
@@ -92,28 +95,42 @@ class FusionFormerModalityAggregator(nn.Module):
         if not poses:
             raise ValueError("FusionFormerModalityAggregator requires at least one pose modality.")
 
-        pose_stack = torch.stack(poses, dim=1)
+        pose_stack = torch.cat(poses, dim=1)
         B, M, T, C = pose_stack.shape
         tokens = pose_stack.reshape(B, M * T, C)
 
-        if M * T > self.pos_enc.shape[1]:
-            raise ValueError(f"pos_enc length {self.pos_enc.shape[1]} < tokens {M*T}")
+        if self.pos_enc.shape[1] != M * T:
+            pos_enc = self.pos_enc.transpose(1, 2)
+            pos_enc = F.interpolate(pos_enc, size=M * T, mode="linear", align_corners=False)
+            pos_enc = pos_enc.transpose(1, 2)
+        else:
+            pos_enc = self.pos_enc
 
-        tokens = self.pre_ln(tokens + self.pos_enc[:, : M * T])
+        tokens = self.pre_ln(tokens + pos_enc[:, : M * T])
 
         for _ in range(self.num_blocks):
             global_feat = self.encoder(tokens)
             fused = []
             for m in range(M):
                 tgt = pose_stack[:, m]
-                tgt = self.dec_ln(tgt + self.pos_dec[:, :T])
+                if self.pos_dec.shape[1] != T:
+                    pos_dec = self.pos_dec.transpose(1, 2)
+                    pos_dec = F.interpolate(pos_dec, size=T, mode="linear", align_corners=False)
+                    pos_dec = pos_dec.transpose(1, 2)
+                else:
+                    pos_dec = self.pos_dec
+                tgt = self.dec_ln(tgt + pos_dec[:, :T])
                 dec_out = self.decoder(tgt, global_feat)
                 fused.append(dec_out)
             pose_stack = torch.stack(fused, dim=1)
             tokens = pose_stack.reshape(B, M * T, C)
 
         pose_stack = pose_stack.reshape(B * M, T, C).transpose(1, 2)
-        agg = self.temporal_conv(pose_stack).squeeze(-1)
+        kernel = self.temporal_conv.kernel_size[0]
+        if T < kernel:
+            agg = pose_stack.mean(dim=2)
+        else:
+            agg = self.temporal_conv(pose_stack).squeeze(-1)
         agg = agg.reshape(B, M, C)
 
         pred = self.head(agg).reshape(B, M, self.num_joints, 3)

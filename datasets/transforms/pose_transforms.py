@@ -70,3 +70,52 @@ class AttachGTPoseInputs:
                 sample.pop("input_depth")
 
         return sample
+
+
+class AttachGTPose2DH36M:
+    def __init__(
+        self,
+        input_key: str = "gt_keypoints_by_view",
+        camera_key: str = "rgb_cameras",
+        output_key: str = "input_pose2d_rgb",
+        clamp_min_z: float = 1e-4,
+    ):
+        self.input_key = input_key
+        self.camera_key = camera_key
+        self.output_key = output_key
+        self.clamp_min_z = clamp_min_z
+
+    def __call__(self, sample):
+        keypoints = sample.get(self.input_key)
+        cameras = sample.get(self.camera_key)
+        if keypoints is None or cameras is None:
+            return sample
+
+        keypoints = np.asarray(keypoints, dtype=np.float32)
+        if keypoints.ndim != 4:
+            raise ValueError(f"Expected keypoints shape [V, T, J, 3], got {keypoints.shape}")
+
+        V, T, J, _ = keypoints.shape
+        if len(cameras) != V:
+            raise ValueError(f"Camera count {len(cameras)} does not match views {V}")
+
+        pose2d = []
+        for v in range(V):
+            cam = cameras[v]
+            K = cam["intrinsic"]
+            fx = K[0, 0]
+            fy = K[1, 1]
+            cx = K[0, 2]
+            cy = K[1, 2]
+
+            view_pose2d = []
+            for t in range(T):
+                pts = keypoints[v, t]
+                Z = np.clip(pts[:, 2], self.clamp_min_z, None)
+                x = fx * (pts[:, 0] / Z) + cx
+                y = fy * (pts[:, 1] / Z) + cy
+                view_pose2d.append(np.stack([x, y], axis=-1))
+            pose2d.append(np.stack(view_pose2d, axis=0))
+
+        sample[self.output_key] = np.stack(pose2d, axis=0)
+        return sample
