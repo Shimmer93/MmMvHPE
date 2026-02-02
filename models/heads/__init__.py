@@ -17,6 +17,7 @@ from .vibe_token_head_v4 import VIBETokenHeadV4  # noqa: F401, F403
 from .vibe_token_head_v5 import VIBETokenHeadV5  # noqa: F401, F403
 from .heuristic_camera_head import HeuristicCameraHead  # noqa: F401, F403
 from .keypoint_camera_head_v5 import KeypointCameraHeadV5  # noqa: F401, F403
+from .keypoint_camera_gcn_head_v5 import KeypointCameraGCNHeadV5  # noqa: F401, F403
 
 __all__ = [
     'XFiRegressionHead',
@@ -41,4 +42,5 @@ __all__ = [
     'VIBETokenHeadV5',
     'HeuristicCameraHead',
     'KeypointCameraHeadV5',
+    'KeypointCameraGCNHeadV5',
 ]

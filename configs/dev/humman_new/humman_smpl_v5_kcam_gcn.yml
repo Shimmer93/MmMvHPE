@@ -167,21 +167,22 @@ smpl_head:
         weight: 0.01
         alias: 'SMPLRotMatMSELoss'
 camera_head:
-  name: 'KeypointCameraHeadV5'
+  name: 'KeypointCameraGCNHeadV5'
   params:
     num_joints: 24
-    hidden_dim: 512
+    hidden_dim: 256
     num_layers: 4
     dropout: 0.1
     use_layernorm: true
     use_modality_embedding: true
     detach_inputs: true
-    use_gt_ratio: 0.2
+    use_gt_ratio: 0.1
     num_iterations: 4
     pose_encoding_type: "absT_quaR_FoV"
     proj_loss_weight_rgb: 0.1
     proj_loss_weight_lidar: 0.1
     proj_loss_type: "l1"
+    gcn_depth: 3
     losses:
       - name: 'CameraLoss'
         params:

@@ -5,17 +5,19 @@ import torch.nn.functional as F
 
 from .base_head import BaseHead
 from misc.pose_enc import pose_encoding_to_extri_intri
+from models.aggregators.layers.gcn import TCN_GCN_unit
+from misc.skeleton import get_adjacency_matrix, SMPLSkeleton
 
 
-class KeypointCameraHeadV5(BaseHead):
-    """Predict camera pose encodings from keypoint predictions (global + per-modality)."""
+class KeypointCameraGCNHeadV5(BaseHead):
+    """Predict camera pose encodings from keypoints using separate 2D/3D ST-GCNs."""
 
     def __init__(
         self,
         losses,
         num_joints: int = 24,
         hidden_dim: int = 256,
-        num_layers: int = 3,
+        num_layers: int = 2,
         dropout: float = 0.0,
         use_layernorm: bool = True,
         use_modality_embedding: bool = True,
@@ -28,6 +30,9 @@ class KeypointCameraHeadV5(BaseHead):
         proj_loss_type: str = "l1",
         detach_inputs: bool = True,
         num_iterations: int = 1,
+        gcn_kernel_size: int = 5,
+        gcn_dilations: tuple = (1, 2),
+        gcn_depth: int = 4,
     ):
         super().__init__(losses)
         self.num_joints = num_joints
@@ -45,17 +50,69 @@ class KeypointCameraHeadV5(BaseHead):
         self.proj_loss_type = proj_loss_type
         self.detach_inputs = detach_inputs
         self.num_iterations = int(max(1, num_iterations))
+        self.gcn_depth = int(max(1, gcn_depth))
 
-        input_dim = num_joints * 6
+        skeleton = SMPLSkeleton()
+        if num_joints != skeleton.num_joints:
+            raise ValueError(
+                f"GCN head expects {skeleton.num_joints} joints, got {num_joints}."
+            )
+        A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
+
+        self.gcn_global = self._build_gcn_stack(
+            in_channels=3,
+            out_channels=hidden_dim,
+            A=A,
+            gcn_depth=self.gcn_depth,
+            gcn_kernel_size=gcn_kernel_size,
+            gcn_dilations=gcn_dilations,
+        )
+        self.gcn_2d = self._build_gcn_stack(
+            in_channels=3,
+            out_channels=hidden_dim,
+            A=A,
+            gcn_depth=self.gcn_depth,
+            gcn_kernel_size=gcn_kernel_size,
+            gcn_dilations=gcn_dilations,
+        )
+        self.gcn_3d = self._build_gcn_stack(
+            in_channels=3,
+            out_channels=hidden_dim,
+            A=A,
+            gcn_depth=self.gcn_depth,
+            gcn_kernel_size=gcn_kernel_size,
+            gcn_dilations=gcn_dilations,
+        )
+        self.gcn_2d_merge = self._build_gcn_stack(
+            in_channels=hidden_dim * 2,
+            out_channels=hidden_dim,
+            A=A,
+            gcn_depth=self.gcn_depth,
+            gcn_kernel_size=gcn_kernel_size,
+            gcn_dilations=gcn_dilations,
+        )
+        self.gcn_3d_merge = self._build_gcn_stack(
+            in_channels=hidden_dim * 2,
+            out_channels=hidden_dim,
+            A=A,
+            gcn_depth=self.gcn_depth,
+            gcn_kernel_size=gcn_kernel_size,
+            gcn_dilations=gcn_dilations,
+        )
+
         if use_modality_embedding:
             self.modality_embed = nn.Embedding(8, hidden_dim)
-            input_dim = input_dim + hidden_dim
+            mlp_in_dim = hidden_dim * 2
         else:
             self.modality_embed = None
-        self.prev_proj_2d = nn.Linear(pose_encoding_dim, input_dim)
-        self.prev_proj_3d = nn.Linear(pose_encoding_dim, input_dim)
-        self.mlp_2d = self._build_mlp(input_dim)
-        self.mlp_3d = self._build_mlp(input_dim)
+            mlp_in_dim = hidden_dim
+
+        self.prev_proj_2d = nn.Linear(pose_encoding_dim, mlp_in_dim)
+        self.prev_proj_3d = nn.Linear(pose_encoding_dim, mlp_in_dim)
+        self.mlp_2d = self._build_mlp(mlp_in_dim)
+        self.mlp_3d = self._build_mlp(mlp_in_dim)
+        self.post_gcn_norm_2d = nn.LayerNorm(hidden_dim) if use_layernorm else nn.Identity()
+        self.post_gcn_norm_3d = nn.LayerNorm(hidden_dim) if use_layernorm else nn.Identity()
 
     def forward(self, x, data_batch=None, pred_dict=None):
         return self.predict(x, data_batch=data_batch, pred_dict=pred_dict)
@@ -120,7 +177,6 @@ class KeypointCameraHeadV5(BaseHead):
         dtype = global_kps.dtype
         batch_size = global_kps.shape[0] if global_kps.dim() >= 3 else 1
         global_kps = self._ensure_batch(global_kps, batch_size)
-        global_flat = global_kps.reshape(global_kps.shape[0], -1)
         num_modalities = len(modalities)
 
         pred_encodings = torch.full(
@@ -145,33 +201,82 @@ class KeypointCameraHeadV5(BaseHead):
 
             kps = self._maybe_detach(kps)
             kps = self._ensure_batch(kps, batch_size)
-            kps_3d = self._pad_2d_to_3d(kps)
-            kps_flat = kps_3d.reshape(batch_size, -1)
+            global_3d = self._pad_2d_to_3d(global_kps)
+            if global_3d.shape[-1] != 3:
+                continue
+            global_in = global_3d.permute(0, 2, 1).unsqueeze(2)
+            global_feat = self.gcn_global(global_in)
 
-            feat = torch.cat([global_flat, kps_flat], dim=-1)
-            if self.use_modality_embedding and self.modality_embed is not None:
-                mod_id = torch.full((batch_size,), m_idx, device=device, dtype=torch.long)
-                feat = torch.cat([feat, self.modality_embed(mod_id)], dim=-1)
-
-            pred = None
             if modality_l in {"rgb", "depth"}:
+                kps_2d = kps[..., :2] if kps.shape[-1] >= 2 else kps
+                if kps_2d.shape[-1] != 2:
+                    continue
+                kps_2d = self._pad_2d_to_3d(kps_2d)
+                local_in = kps_2d.permute(0, 2, 1).unsqueeze(2)
+                local_feat = self.gcn_2d(local_in)
+                merged = torch.cat([global_feat, local_feat], dim=1)
+                gcn_out = self.gcn_2d_merge(merged)
                 prev_proj = self.prev_proj_2d
                 mlp = self.mlp_2d
+                pooled = self.post_gcn_norm_2d(gcn_out.mean(dim=-1).mean(dim=-1))
             else:
+                kps_3d = self._pad_2d_to_3d(kps)
+                if kps_3d.shape[-1] != 3:
+                    continue
+                local_in = kps_3d.permute(0, 2, 1).unsqueeze(2)
+                local_feat = self.gcn_3d(local_in)
+                merged = torch.cat([global_feat, local_feat], dim=1)
+                gcn_out = self.gcn_3d_merge(merged)
                 prev_proj = self.prev_proj_3d
                 mlp = self.mlp_3d
+                pooled = self.post_gcn_norm_3d(gcn_out.mean(dim=-1).mean(dim=-1))
+            if self.use_modality_embedding and self.modality_embed is not None:
+                mod_id = torch.full((batch_size,), m_idx, device=device, dtype=torch.long)
+                pooled = torch.cat([pooled, self.modality_embed(mod_id)], dim=-1)
+
+            pred = None
             for _ in range(num_iterations):
                 if pred is not None:
                     pred = pred.detach()
-                    feat_iter = feat + prev_proj(pred)
+                    feat_iter = pooled + prev_proj(pred)
                 else:
-                    feat_iter = feat
+                    feat_iter = pooled
                 delta = mlp(feat_iter)
                 pred = delta if pred is None else pred + delta
 
             pred_encodings[:, m_idx] = pred
 
         return pred_encodings
+
+    def _build_mlp(self, input_dim):
+        layers = []
+        in_dim = input_dim
+        for idx in range(max(1, self.num_layers)):
+            out_dim = self.hidden_dim if idx < self.num_layers - 1 else self.pose_encoding_dim
+            layers.append(nn.Linear(in_dim, out_dim))
+            if idx < self.num_layers - 1:
+                if self.use_layernorm:
+                    layers.append(nn.LayerNorm(out_dim))
+                layers.append(nn.ReLU())
+                if self.dropout > 0:
+                    layers.append(nn.Dropout(self.dropout))
+            in_dim = out_dim
+        return nn.Sequential(*layers)
+
+    def _build_gcn_stack(self, in_channels, out_channels, A, gcn_depth, gcn_kernel_size, gcn_dilations):
+        layers = []
+        for idx in range(gcn_depth):
+            layers.append(
+                TCN_GCN_unit(
+                    in_channels=in_channels if idx == 0 else out_channels,
+                    out_channels=out_channels,
+                    A=A,
+                    residual=idx != 0,
+                    kernel_size=gcn_kernel_size,
+                    dilations=list(gcn_dilations),
+                )
+            )
+        return nn.Sequential(*layers)
 
     def _get_modalities(self, data_batch):
         modalities = data_batch.get(self.modalities_key, [])
@@ -234,21 +339,6 @@ class KeypointCameraHeadV5(BaseHead):
             return x[:, -1]
         return x
 
-    def _build_mlp(self, input_dim):
-        layers = []
-        in_dim = input_dim
-        for idx in range(max(1, self.num_layers)):
-            out_dim = self.hidden_dim if idx < self.num_layers - 1 else self.pose_encoding_dim
-            layers.append(nn.Linear(in_dim, out_dim))
-            if idx < self.num_layers - 1:
-                if self.use_layernorm:
-                    layers.append(nn.LayerNorm(out_dim))
-                layers.append(nn.ReLU())
-                if self.dropout > 0:
-                    layers.append(nn.Dropout(self.dropout))
-            in_dim = out_dim
-        return nn.Sequential(*layers)
-
     @staticmethod
     def _pad_2d_to_3d(points):
         if points.shape[-1] == 3:
@@ -257,6 +347,7 @@ class KeypointCameraHeadV5(BaseHead):
             return points
         zeros = torch.zeros(points.shape[:-1] + (1,), device=points.device, dtype=points.dtype)
         return torch.cat([points, zeros], dim=-1)
+
 
     def _maybe_detach(self, tensor):
         if not isinstance(tensor, torch.Tensor):
@@ -372,7 +463,6 @@ class KeypointCameraHeadV5(BaseHead):
             gt_camera = gt_camera[:, -1]
         return gt_camera
 
-
     def _get_image_size(self, data_batch, modality):
         input_key = f"input_{modality}"
         if input_key in data_batch:
@@ -389,7 +479,7 @@ class KeypointCameraHeadV5(BaseHead):
 
     @staticmethod
     def _project_to_image(points, extrinsics, intrinsics):
-        cam_points = KeypointCameraHeadV5._transform_to_camera(points, extrinsics)
+        cam_points = KeypointCameraGCNHeadV5._transform_to_camera(points, extrinsics)
         cam_z = cam_points[..., 2].clamp(min=1e-6)
         proj = torch.einsum("bij,bkj->bki", intrinsics, cam_points)
         u = proj[..., 0] / cam_z
@@ -407,10 +497,10 @@ class KeypointCameraHeadV5(BaseHead):
     def _projection_loss(pred, target, loss_type="l1"):
         if loss_type.lower() in {"l1", "mae"}:
             loss = F.l1_loss(pred, target)
-            return KeypointCameraHeadV5._sanitize_loss(loss)
+            return KeypointCameraGCNHeadV5._sanitize_loss(loss)
         if loss_type.lower() in {"l2", "mse"}:
             loss = F.mse_loss(pred, target)
-            return KeypointCameraHeadV5._sanitize_loss(loss)
+            return KeypointCameraGCNHeadV5._sanitize_loss(loss)
         raise ValueError(f"Unsupported projection loss type: {loss_type}")
 
     @staticmethod
