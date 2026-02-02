@@ -72,17 +72,18 @@ class FusionFormerModalityAggregator(nn.Module):
             pose = pose.unsqueeze(1)  # B, 1, T, J, D
         if pose.dim() != 5:
             raise ValueError(f"Expected pose tensor with shape (B, T, J, D) or (B, V, T, J, D), got {pose.shape}")
-        B, V, T, J, D = pose.shape
+        B, V, T, J, D = pose.shape  # B=batch, V=views/modalities, T=frames, J=joints, D=coord dim
         if J != self.num_joints:
             raise ValueError(f"Expected {self.num_joints} joints, got {J}")
         embed = self.rgb_embed if is_rgb else self.depth_embed
-        pose = embed(pose)
-        pose = self.pose_proj(pose)
-        pose = pose.mean(dim=2)
-        return pose
+        pose = embed(pose)  # B, V, T, J, joint_embed_dim
+        pose = self.pose_proj(pose)  # B, V, T, J, pose_embed_dim
+        pose = pose.mean(dim=2)  # B, V, J, pose_embed_dim (temporal average)
+        return pose  # B, V, J, C
 
     def forward(self, features, **kwargs):
         features_rgb, features_depth, features_lidar, features_mmwave = features
+        # features_* expected as (B, T, J, D) or (B, V, T, J, D)
         pose_rgb = self._embed_pose(features_rgb, is_rgb=True) if features_rgb is not None else None
         pose_depth = self._embed_pose(features_depth, is_rgb=False) if features_depth is not None else None
 
@@ -95,9 +96,9 @@ class FusionFormerModalityAggregator(nn.Module):
         if not poses:
             raise ValueError("FusionFormerModalityAggregator requires at least one pose modality.")
 
-        pose_stack = torch.cat(poses, dim=1)
+        pose_stack = torch.cat(poses, dim=1)  # B, M, J, C (M = total modalities/views)
         B, M, T, C = pose_stack.shape
-        tokens = pose_stack.reshape(B, M * T, C)
+        tokens = pose_stack.reshape(B, M * T, C)  # B, (M*T), C
 
         if self.pos_enc.shape[1] != M * T:
             pos_enc = self.pos_enc.transpose(1, 2)
@@ -106,33 +107,33 @@ class FusionFormerModalityAggregator(nn.Module):
         else:
             pos_enc = self.pos_enc
 
-        tokens = self.pre_ln(tokens + pos_enc[:, : M * T])
+        tokens = self.pre_ln(tokens + pos_enc[:, : M * T])  # B, (M*T), C
 
         for _ in range(self.num_blocks):
-            global_feat = self.encoder(tokens)
+            global_feat = self.encoder(tokens)  # B, (M*T), C
             fused = []
             for m in range(M):
-                tgt = pose_stack[:, m]
+                tgt = pose_stack[:, m]  # B, T, C
                 if self.pos_dec.shape[1] != T:
                     pos_dec = self.pos_dec.transpose(1, 2)
                     pos_dec = F.interpolate(pos_dec, size=T, mode="linear", align_corners=False)
                     pos_dec = pos_dec.transpose(1, 2)
                 else:
                     pos_dec = self.pos_dec
-                tgt = self.dec_ln(tgt + pos_dec[:, :T])
-                dec_out = self.decoder(tgt, global_feat)
+                tgt = self.dec_ln(tgt + pos_dec[:, :T])  # B, T, C
+                dec_out = self.decoder(tgt, global_feat)  # B, T, C
                 fused.append(dec_out)
-            pose_stack = torch.stack(fused, dim=1)
-            tokens = pose_stack.reshape(B, M * T, C)
+            pose_stack = torch.stack(fused, dim=1)  # B, M, T, C
+            tokens = pose_stack.reshape(B, M * T, C)  # B, (M*T), C
 
-        pose_stack = pose_stack.reshape(B * M, T, C).transpose(1, 2)
+        pose_stack = pose_stack.reshape(B * M, T, C).transpose(1, 2)  # (B*M), C, T
         kernel = self.temporal_conv.kernel_size[0]
         if T < kernel:
-            agg = pose_stack.mean(dim=2)
+            agg = pose_stack.mean(dim=2)  # (B*M), C
         else:
-            agg = self.temporal_conv(pose_stack).squeeze(-1)
-        agg = agg.reshape(B, M, C)
+            agg = self.temporal_conv(pose_stack).squeeze(-1)  # (B*M), C
+        agg = agg.reshape(B, M, C)  # B, M, C
 
-        pred = self.head(agg).reshape(B, M, self.num_joints, 3)
-        pred = pred.mean(dim=1)
+        pred = self.head(agg).reshape(B, M, self.num_joints, 3)  # B, M, J, 3
+        pred = pred.mean(dim=1)  # B, J, 3
         return pred
