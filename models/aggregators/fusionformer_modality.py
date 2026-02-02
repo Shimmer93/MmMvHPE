@@ -9,6 +9,7 @@ class FusionFormerModalityAggregator(nn.Module):
         num_joints: int = 24,
         joint_embed_dim: int = 128,
         pose_embed_dim: int = 256,
+        efc_hidden_dim: int = 256,
         depth: int = 2,
         num_heads: int = 4,
         mlp_ratio: float = 4.0,
@@ -25,7 +26,14 @@ class FusionFormerModalityAggregator(nn.Module):
 
         self.rgb_embed = nn.Linear(2, joint_embed_dim)
         self.depth_embed = nn.Linear(3, joint_embed_dim)
-        self.pose_proj = nn.Linear(joint_embed_dim, pose_embed_dim)
+        # EFC baseline: 3-layer FCN over flattened joint embeddings (J * Cj -> Cp).
+        self.efc = nn.Sequential(
+            nn.Linear(num_joints * joint_embed_dim, efc_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(efc_hidden_dim, efc_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(efc_hidden_dim, pose_embed_dim),
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=pose_embed_dim,
@@ -77,9 +85,10 @@ class FusionFormerModalityAggregator(nn.Module):
             raise ValueError(f"Expected {self.num_joints} joints, got {J}")
         embed = self.rgb_embed if is_rgb else self.depth_embed
         pose = embed(pose)  # B, V, T, J, joint_embed_dim
-        pose = self.pose_proj(pose)  # B, V, T, J, pose_embed_dim
-        pose = pose.mean(dim=2)  # B, V, J, pose_embed_dim (temporal average)
-        return pose  # B, V, J, C
+        # Flatten joints and apply EFC to aggregate joint relationships per (V, T).
+        pose = pose.reshape(B, V, T, J * pose.shape[-1])  # B, V, T, (J*Cj)
+        pose = self.efc(pose)  # B, V, T, pose_embed_dim
+        return pose  # B, V, T, C
 
     def forward(self, features, **kwargs):
         features_rgb, features_depth, features_lidar, features_mmwave = features
@@ -96,7 +105,7 @@ class FusionFormerModalityAggregator(nn.Module):
         if not poses:
             raise ValueError("FusionFormerModalityAggregator requires at least one pose modality.")
 
-        pose_stack = torch.cat(poses, dim=1)  # B, M, J, C (M = total modalities/views)
+        pose_stack = torch.cat(poses, dim=1)  # B, M, T, C (M = total modalities/views)
         B, M, T, C = pose_stack.shape
         tokens = pose_stack.reshape(B, M * T, C)  # B, (M*T), C
 
