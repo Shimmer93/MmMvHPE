@@ -50,7 +50,8 @@ def main(args):
     dm = LitDataModule(hparams=args)
     model = LitModel(hparams=args)
     
-    monitor = 'val_mpjpe'
+    monitor = getattr(args, 'monitor', 'val_mpjpe')
+    monitor_mode = getattr(args, 'monitor_mode', 'min')
 
     if hasattr(args, 'epochs'):
         filename = args.model_name+'-{epoch}-{'+monitor+':.4f}'
@@ -64,7 +65,7 @@ def main(args):
             filename=filename,
             save_top_k=1,
             save_last=True,
-            mode='min'),
+            mode=monitor_mode),
         RichProgressBar(refresh_rate=20),
         LearningRateMonitor(logging_interval='step')
     ]
@@ -127,7 +128,7 @@ def main(args):
     trainer = L.Trainer(**trainer_kwargs)
 
     if bool(args.test):
-        trainer.test(model, datamodule=dm, ckpt_path=args.checkpoint_path)
+        trainer.test(model, datamodule=dm)
     elif bool(args.predict):
         predictions = trainer.predict(
             model, 

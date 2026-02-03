@@ -476,6 +476,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     
     # Load predicted keypoints - handle both SMPL head and keypoint head
     pred_keypoints_3d = None
+    pred_keypoints_available = True
     if 'pred_smpl_keypoints' in pred_dict:
         # Direct keypoint prediction (keypoint_head)
         pred_keypoints_3d = pred_dict['pred_smpl_keypoints'][sample_idx]
@@ -492,7 +493,13 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     
     
     if pred_keypoints_3d is None:
-        raise ValueError(f"No predicted keypoints found. pred_dict must contain either 'pred_keypoints' or 'pred_smpl'. Available keys: {list(pred_dict.keys())}")
+        if 'pred_cameras' in pred_dict:
+            pred_keypoints_available = False
+            pred_keypoints_3d = gt_keypoints_3d.copy()
+        else:
+            raise ValueError(
+                f"No predicted keypoints found. pred_dict must contain either 'pred_keypoints' or 'pred_smpl'. Available keys: {list(pred_dict.keys())}"
+            )
     
     # Load GT vertices if available
     gt_vertices = None
@@ -629,7 +636,10 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         if pelvis_anchor is not None:
             pred_vertices_centered = pred_vertices_centered - pelvis_anchor
 
-    bounds = get_bounds(np.concatenate([gt_keypoints_centered, pred_keypoints_centered], axis=0))
+    if pred_keypoints_available:
+        bounds = get_bounds(np.concatenate([gt_keypoints_centered, pred_keypoints_centered], axis=0))
+    else:
+        bounds = get_bounds(gt_keypoints_centered)
     
     # GT 3D skeleton + mesh overlay
     plot_3d_skeleton(axes[plot_idx], gt_keypoints_centered, edges=bones)
@@ -652,30 +662,39 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         axes[plot_idx].set_title(f'GT {plane} + Mesh' if gt_vertices_centered is not None else f'GT {plane} Projection')
         plot_idx += 1
     # Pred 3D skeleton + mesh overlay + mesh overlay
-    plot_3d_skeleton(axes[plot_idx], pred_keypoints_centered, edges=bones)
-    if pred_vertices_centered is not None and pred_faces is not None:
-        plot_smpl_mesh_3d(axes[plot_idx], pred_vertices_centered, pred_faces, alpha=0.3,
-                         color=[0.85, 0.65, 0.65])
-        mesh_bounds = get_bounds(pred_vertices_centered)
-        set_3d_ax_limits(axes[plot_idx], mesh_bounds)
-    else:
-        set_3d_ax_limits(axes[plot_idx], bounds)
-    axes[plot_idx].set_title('Pred 3D Skeleton + Mesh' if pred_vertices_centered is not None else 'Predicted 3D Skeleton')
-    plot_idx += 1
-    # Pred projections + mesh overlay + mesh overlay
-    for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
-        plot_2d_skeleton(axes[plot_idx], pred_keypoints_centered, dims=dims, edges=bones)
-        if pred_vertices_centered is not None:
-            vertices_2d_proj = pred_vertices_centered[:, dims]
-            axes[plot_idx].scatter(vertices_2d_proj[:, 0], vertices_2d_proj[:, 1], 
-                                  color=[0.85, 0.65, 0.65], s=0.5, alpha=0.3)
-        set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
-        axes[plot_idx].set_title(f'Pred {plane} + Mesh' if pred_vertices_centered is not None else f'Predicted {plane} Projection')
+    if pred_keypoints_available:
+        plot_3d_skeleton(axes[plot_idx], pred_keypoints_centered, edges=bones)
+        if pred_vertices_centered is not None and pred_faces is not None:
+            plot_smpl_mesh_3d(axes[plot_idx], pred_vertices_centered, pred_faces, alpha=0.3,
+                             color=[0.85, 0.65, 0.65])
+            mesh_bounds = get_bounds(pred_vertices_centered)
+            set_3d_ax_limits(axes[plot_idx], mesh_bounds)
+        else:
+            set_3d_ax_limits(axes[plot_idx], bounds)
+        axes[plot_idx].set_title('Pred 3D Skeleton + Mesh' if pred_vertices_centered is not None else 'Predicted 3D Skeleton')
         plot_idx += 1
+        # Pred projections + mesh overlay + mesh overlay
+        for dims, plane in zip([[0, 1], [0, 2], [1, 2]], ['XY', 'XZ', 'YZ']):
+            plot_2d_skeleton(axes[plot_idx], pred_keypoints_centered, dims=dims, edges=bones)
+            if pred_vertices_centered is not None:
+                vertices_2d_proj = pred_vertices_centered[:, dims]
+                axes[plot_idx].scatter(vertices_2d_proj[:, 0], vertices_2d_proj[:, 1], 
+                                      color=[0.85, 0.65, 0.65], s=0.5, alpha=0.3)
+            set_2d_ax_limits(axes[plot_idx], bounds, dims=dims)
+            axes[plot_idx].set_title(f'Pred {plane} + Mesh' if pred_vertices_centered is not None else f'Predicted {plane} Projection')
+            plot_idx += 1
+    else:
+        for _ in range(4):
+            axes[plot_idx].axis('off')
+            if hasattr(axes[plot_idx], "text2D"):
+                axes[plot_idx].text2D(0.5, 0.5, 'Camera-only: no pred keypoints', ha='center', va='center')
+            else:
+                axes[plot_idx].text(0.5, 0.5, 'Camera-only: no pred keypoints', ha='center', va='center')
+            plot_idx += 1
 
     # Row 4: Overlay 2D projections on RGB and Depth images
     # RGB image with GT projected 2D keypoints
-    if rgb_image is not None and 'rgb_camera' in batch:
+    if pred_keypoints_available and rgb_image is not None and 'rgb_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['rgb_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
             gt_keypoints_cam = _to_camera_coords(gt_keypoints_centered.copy(), extrinsic)
@@ -700,7 +719,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     plot_idx += 1
     
     # Depth image with GT projected 2D keypoints
-    if depth_image is not None and 'depth_camera' in batch:
+    if pred_keypoints_available and depth_image is not None and 'depth_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['depth_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
             gt_keypoints_cam = _to_camera_coords(gt_keypoints_centered.copy(), extrinsic)

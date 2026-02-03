@@ -443,6 +443,19 @@ class KeypointCameraGCNHeadV5(BaseHead):
         return gt_camera
 
     def _get_image_size(self, data_batch, modality):
+        size_key = f"image_size_hw_{modality}"
+        if size_key in data_batch:
+            size = data_batch[size_key]
+            if isinstance(size, (list, tuple)) and len(size) == 2 and not isinstance(size[0], (list, tuple)):
+                return int(size[0]), int(size[1])
+            if isinstance(size, (list, tuple)) and len(size) > 0 and isinstance(size[0], (list, tuple)) and len(size[0]) == 2:
+                return int(size[0][0]), int(size[0][1])
+        if "image_size_hw" in data_batch:
+            size = data_batch["image_size_hw"]
+            if isinstance(size, (list, tuple)) and len(size) == 2 and not isinstance(size[0], (list, tuple)):
+                return int(size[0]), int(size[1])
+            if isinstance(size, (list, tuple)) and len(size) > 0 and isinstance(size[0], (list, tuple)) and len(size[0]) == 2:
+                return int(size[0][0]), int(size[0][1])
         input_key = f"input_{modality}"
         if input_key in data_batch:
             inp = data_batch[input_key]

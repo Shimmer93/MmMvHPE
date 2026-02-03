@@ -17,31 +17,33 @@ class LitModel(L.LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
+        self.camera_only = getattr(hparams, "camera_only", False)
         
-        assert self.with_rgb or self.with_depth or self.with_lidar or self.with_mmwave, "At least one modality should be used."
+        if not self.camera_only:
+            assert self.with_rgb or self.with_depth or self.with_lidar or self.with_mmwave, "At least one modality should be used."
 
-        if self.with_rgb:
+        if self.with_rgb and not self.camera_only:
             self.backbone_rgb = create_model(self.hparams.backbone_rgb['name'], self.hparams.backbone_rgb['params'])
             self.has_temporal_rgb = self.hparams.backbone_rgb['has_temporal']
             if hasattr(self.hparams, 'pretrained_rgb_path'):
                 print("Loading pretrained RGB backbone from:", self.hparams.pretrained_rgb_path)
                 state_dict_rgb = torch.load(self.hparams.pretrained_rgb_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_rgb, state_dict_rgb, prefix='backbone_rgb.')
-        if self.with_depth:
+        if self.with_depth and not self.camera_only:
             self.backbone_depth = create_model(self.hparams.backbone_depth['name'], self.hparams.backbone_depth['params'])
             self.has_temporal_depth = self.hparams.backbone_depth['has_temporal']
             if hasattr(self.hparams, 'pretrained_depth_path'):
                 print("Loading pretrained Depth backbone from:", self.hparams.pretrained_depth_path)
                 state_dict_depth = torch.load(self.hparams.pretrained_depth_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_depth, state_dict_depth, prefix='backbone_depth.')
-        if self.with_lidar:
+        if self.with_lidar and not self.camera_only:
             self.backbone_lidar = create_model(self.hparams.backbone_lidar['name'], self.hparams.backbone_lidar['params'])
             self.has_temporal_lidar = self.hparams.backbone_lidar['has_temporal']
             if hasattr(self.hparams, 'pretrained_lidar_path'):
                 print("Loading pretrained LIDAR backbone from:", self.hparams.pretrained_lidar_path)
                 state_dict_lidar = torch.load(self.hparams.pretrained_lidar_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_lidar, state_dict_lidar, prefix='backbone_lidar.')
-        if self.with_mmwave:
+        if self.with_mmwave and not self.camera_only:
             self.backbone_mmwave = create_model(self.hparams.backbone_mmwave['name'], self.hparams.backbone_mmwave['params'])
             self.has_temporal_mmwave = self.hparams.backbone_mmwave['has_temporal']
             if hasattr(self.hparams, 'pretrained_mmwave_path'):
@@ -49,7 +51,10 @@ class LitModel(L.LightningModule):
                 state_dict_mmwave = torch.load(self.hparams.pretrained_mmwave_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_mmwave, state_dict_mmwave, prefix='backbone_mmwave.')
 
-        self.aggregator = create_model(self.hparams.aggregator['name'], self.hparams.aggregator['params'])
+        if not self.camera_only:
+            self.aggregator = create_model(self.hparams.aggregator['name'], self.hparams.aggregator['params'])
+        else:
+            self.aggregator = None
 
         if self.with_keypoint_head:
             self.keypoint_head = create_model(self.hparams.keypoint_head['name'], self.hparams.keypoint_head['params'])
@@ -59,7 +64,13 @@ class LitModel(L.LightningModule):
             self.camera_head = create_model(self.hparams.camera_head['name'], self.hparams.camera_head['params'])
         
         if hparams.checkpoint_path is not None:
+            print("Loading model checkpoint from:", hparams.checkpoint_path)
             self.load_state_dict(torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict'], strict=False)
+
+        if hasattr(hparams, 'pretrained_camera_head_path') and self.with_camera_head:
+            print("Loading pretrained Camera Head from:", hparams.pretrained_camera_head_path)
+            state_dict_camera_head = torch.load(hparams.pretrained_camera_head_path, map_location=self.device)['state_dict']
+            load_state_dict_part(self.camera_head, state_dict_camera_head, prefix='camera_head.')
 
         self.metrics = {metric['alias' if 'alias' in metric else 'name']: create_metric(metric['name'], metric['params']) for metric in hparams.metrics}
 
@@ -88,11 +99,11 @@ class LitModel(L.LightningModule):
     
     @property
     def with_keypoint_head(self):
-        return hasattr(self.hparams, 'keypoint_head')
+        return hasattr(self.hparams, 'keypoint_head') and not self.camera_only
     
     @property
     def with_smpl_head(self):
-        return hasattr(self.hparams, 'smpl_head')
+        return hasattr(self.hparams, 'smpl_head') and not self.camera_only
     
     def forward_rgb(self, frames_rgb):
         """Forward function for RGB frames."""
@@ -155,6 +166,8 @@ class LitModel(L.LightningModule):
         return features_mmwave
 
     def extract_features(self, batch):
+        if self.camera_only:
+            return None
         feat_rgb = self.forward_rgb(batch.get('input_rgb', None))
         feat_depth = self.forward_depth(batch.get('input_depth', None))
         feat_lidar = self.forward_lidar(batch.get('input_lidar', None))
@@ -162,6 +175,8 @@ class LitModel(L.LightningModule):
         return feat_rgb, feat_depth, feat_lidar, feat_mmwave
     
     def aggregate_features(self, feats, batch):
+        if self.camera_only:
+            return None
         return self.aggregator(feats, **batch)
 
     def training_step(self, batch, batch_idx):
@@ -170,26 +185,33 @@ class LitModel(L.LightningModule):
         loss_dict = {}
         log_dict = {}
 
-        if self.with_keypoint_head:
-            losses_keypoint = self.keypoint_head.loss(feats_agg, batch)
-            loss_dict.update(losses_keypoint)
-
-        if self.with_smpl_head:
-            losses_smpl = self.smpl_head.loss(feats_agg, batch)
-            loss_dict.update(losses_smpl)
-
-        if self.with_camera_head:
-            pred_dict = {}
-            if self.with_keypoint_head:
-                with torch.no_grad():
-                    preds_keypoint = self.keypoint_head.predict(feats_agg)
-                    pred_dict["pred_keypoints"] = preds_keypoint
-                    self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+        if self.camera_only and self.with_camera_head:
             try:
-                losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
+                losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict={})
             except TypeError:
                 losses_camera = self.camera_head.loss(feats_agg, batch)
             loss_dict.update(losses_camera)
+        else:
+            if self.with_keypoint_head:
+                losses_keypoint = self.keypoint_head.loss(feats_agg, batch)
+                loss_dict.update(losses_keypoint)
+
+            if self.with_smpl_head:
+                losses_smpl = self.smpl_head.loss(feats_agg, batch)
+                loss_dict.update(losses_smpl)
+
+            if self.with_camera_head:
+                pred_dict = {}
+                if self.with_keypoint_head:
+                    with torch.no_grad():
+                        preds_keypoint = self.keypoint_head.predict(feats_agg)
+                        pred_dict["pred_keypoints"] = preds_keypoint
+                        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+                try:
+                    losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
+                except TypeError:
+                    losses_camera = self.camera_head.loss(feats_agg, batch)
+                loss_dict.update(losses_camera)
 
         loss = 0
         for loss_name, (loss_value, loss_weight) in loss_dict.items():
@@ -206,21 +228,25 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_keypoint_head:
-            preds_keypoint = self.keypoint_head.predict(feats_agg)
-            pred_dict['pred_keypoints'] = preds_keypoint
-        if self.with_smpl_head:
-            preds_smpl = self.smpl_head.predict(feats_agg)
-            pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
-            pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
-                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_smpl' in preds_smpl:
-                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
-        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
-        if self.with_camera_head:
+        if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
+        else:
+            if self.with_keypoint_head:
+                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                pred_dict['pred_keypoints'] = preds_keypoint
+            if self.with_smpl_head:
+                preds_smpl = self.smpl_head.predict(feats_agg)
+                pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
+                pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                    pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_smpl' in preds_smpl:
+                    pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+            self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+            if self.with_camera_head:
+                preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+                pred_dict['pred_cameras'] = preds_camera
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -236,21 +262,25 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_keypoint_head:
-            preds_keypoint = self.keypoint_head.predict(feats_agg)
-            pred_dict['pred_keypoints'] = preds_keypoint
-        if self.with_smpl_head:
-            preds_smpl = self.smpl_head.predict(feats_agg)
-            pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
-            pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
-                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_smpl' in preds_smpl:
-                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
-        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
-        if self.with_camera_head:
+        if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
+        else:
+            if self.with_keypoint_head:
+                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                pred_dict['pred_keypoints'] = preds_keypoint
+            if self.with_smpl_head:
+                preds_smpl = self.smpl_head.predict(feats_agg)
+                pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
+                pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                    pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_smpl' in preds_smpl:
+                    pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+            self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+            if self.with_camera_head:
+                preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+                pred_dict['pred_cameras'] = preds_camera
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -281,21 +311,25 @@ class LitModel(L.LightningModule):
         feats_agg = self.aggregate_features(feats, batch)
 
         pred_dict = {}
-        if self.with_keypoint_head:
-            preds_keypoint = self.keypoint_head.predict(feats_agg)
-            pred_dict['pred_keypoints'] = preds_keypoint
-        if self.with_smpl_head:
-            preds_smpl = self.smpl_head.predict(feats_agg)
-            pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
-            pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
-                pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
-            if 'pred_smpl' in preds_smpl:
-                pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
-        self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
-        if self.with_camera_head:
+        if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
             pred_dict['pred_cameras'] = preds_camera
+        else:
+            if self.with_keypoint_head:
+                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                pred_dict['pred_keypoints'] = preds_keypoint
+            if self.with_smpl_head:
+                preds_smpl = self.smpl_head.predict(feats_agg)
+                pred_dict['pred_smpl_params'] = preds_smpl['pred_smpl_params']
+                pred_dict['pred_smpl_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_keypoints' in preds_smpl and 'pred_keypoints' not in pred_dict:
+                    pred_dict['pred_keypoints'] = preds_smpl['pred_keypoints']
+                if 'pred_smpl' in preds_smpl:
+                    pred_dict['pred_smpl'] = preds_smpl['pred_smpl']
+            self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
+            if self.with_camera_head:
+                preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
+                pred_dict['pred_cameras'] = preds_camera
 
         return pred_dict
 
