@@ -32,7 +32,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
         num_iterations: int = 1,
         gcn_kernel_size: int = 5,
         gcn_dilations: tuple = (1, 2),
-        gcn_depth: int = 4,
+        gcn_depth: int = 2,
     ):
         super().__init__(losses)
         self.num_joints = num_joints
@@ -59,16 +59,11 @@ class KeypointCameraGCNHeadV5(BaseHead):
             )
         A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
 
-        self.gcn_global = self._build_gcn_stack(
-            in_channels=3,
-            out_channels=hidden_dim,
-            A=A,
-            gcn_depth=self.gcn_depth,
-            gcn_kernel_size=gcn_kernel_size,
-            gcn_dilations=gcn_dilations,
-        )
+        self.gcn_in_channels = 9
+        self.gcn_proj_2d = nn.Conv2d(5, self.gcn_in_channels, kernel_size=1)
+        self.gcn_proj_3d = nn.Conv2d(6, self.gcn_in_channels, kernel_size=1)
         self.gcn_2d = self._build_gcn_stack(
-            in_channels=3,
+            in_channels=self.gcn_in_channels,
             out_channels=hidden_dim,
             A=A,
             gcn_depth=self.gcn_depth,
@@ -76,23 +71,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
             gcn_dilations=gcn_dilations,
         )
         self.gcn_3d = self._build_gcn_stack(
-            in_channels=3,
-            out_channels=hidden_dim,
-            A=A,
-            gcn_depth=self.gcn_depth,
-            gcn_kernel_size=gcn_kernel_size,
-            gcn_dilations=gcn_dilations,
-        )
-        self.gcn_2d_merge = self._build_gcn_stack(
-            in_channels=hidden_dim * 2,
-            out_channels=hidden_dim,
-            A=A,
-            gcn_depth=self.gcn_depth,
-            gcn_kernel_size=gcn_kernel_size,
-            gcn_dilations=gcn_dilations,
-        )
-        self.gcn_3d_merge = self._build_gcn_stack(
-            in_channels=hidden_dim * 2,
+            in_channels=self.gcn_in_channels,
             out_channels=hidden_dim,
             A=A,
             gcn_depth=self.gcn_depth,
@@ -201,32 +180,31 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
             kps = self._maybe_detach(kps)
             kps = self._ensure_batch(kps, batch_size)
-            global_3d = self._pad_2d_to_3d(global_kps)
-            if global_3d.shape[-1] != 3:
-                continue
-            global_in = global_3d.permute(0, 2, 1).unsqueeze(2)
-            global_feat = self.gcn_global(global_in)
-
             if modality_l in {"rgb", "depth"}:
+                global_3d = self._pad_2d_to_3d(global_kps)
+                if global_3d.shape[-1] != 3:
+                    continue
                 kps_2d = kps[..., :2] if kps.shape[-1] >= 2 else kps
                 if kps_2d.shape[-1] != 2:
                     continue
-                kps_2d = self._pad_2d_to_3d(kps_2d)
-                local_in = kps_2d.permute(0, 2, 1).unsqueeze(2)
-                local_feat = self.gcn_2d(local_in)
-                merged = torch.cat([global_feat, local_feat], dim=1)
-                gcn_out = self.gcn_2d_merge(merged)
+                feat = torch.cat([global_3d, kps_2d], dim=-1)
+                gcn_in = feat.permute(0, 2, 1).unsqueeze(2)
+                gcn_in = self.gcn_proj_2d(gcn_in)
+                gcn_out = self.gcn_2d(gcn_in)
                 prev_proj = self.prev_proj_2d
                 mlp = self.mlp_2d
                 pooled = self.post_gcn_norm_2d(gcn_out.mean(dim=-1).mean(dim=-1))
             else:
+                global_3d = self._pad_2d_to_3d(global_kps)
+                if global_3d.shape[-1] != 3:
+                    continue
                 kps_3d = self._pad_2d_to_3d(kps)
                 if kps_3d.shape[-1] != 3:
                     continue
-                local_in = kps_3d.permute(0, 2, 1).unsqueeze(2)
-                local_feat = self.gcn_3d(local_in)
-                merged = torch.cat([global_feat, local_feat], dim=1)
-                gcn_out = self.gcn_3d_merge(merged)
+                feat = torch.cat([global_3d, kps_3d], dim=-1)
+                gcn_in = feat.permute(0, 2, 1).unsqueeze(2)
+                gcn_in = self.gcn_proj_3d(gcn_in)
+                gcn_out = self.gcn_3d(gcn_in)
                 prev_proj = self.prev_proj_3d
                 mlp = self.mlp_3d
                 pooled = self.post_gcn_norm_3d(gcn_out.mean(dim=-1).mean(dim=-1))
@@ -277,6 +255,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 )
             )
         return nn.Sequential(*layers)
+
 
     def _get_modalities(self, data_batch):
         modalities = data_batch.get(self.modalities_key, [])
