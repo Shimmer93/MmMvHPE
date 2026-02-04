@@ -140,7 +140,11 @@ class FusionFormerModalityAggregator(nn.Module):
         if T < kernel:
             agg = pose_stack.mean(dim=2)  # (B*M), C
         else:
-            agg = self.temporal_conv(pose_stack).squeeze(-1)  # (B*M), C
+            agg = self.temporal_conv(pose_stack)  # (B*M), C, L
+            if agg.shape[-1] > 1:
+                agg = agg.mean(dim=2)  # (B*M), C
+            else:
+                agg = agg.squeeze(-1)  # (B*M), C
         agg = agg.reshape(B, M, C)  # B, M, C
 
         pred = self.head(agg).reshape(B, M, self.num_joints, 3)  # B, M, J, 3
