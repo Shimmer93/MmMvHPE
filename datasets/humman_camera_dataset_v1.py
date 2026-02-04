@@ -304,6 +304,12 @@ class HummanCameraDatasetV1(BaseDataset):
         R_root = axis_angle_to_matrix_np(global_orient)
         return (R_root.T @ (points - pelvis).T).T
 
+    @staticmethod
+    def _update_extrinsic(R_wc, T_wc, R_root, pelvis):
+        R_new = R_wc @ R_root
+        T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
+        return R_new, T_new
+
     def _build_camera_candidates(self, cameras: Dict[str, Any]):
         candidates = {"rgb": [], "depth": [], "lidar": [], "mmwave": []}
 
@@ -465,6 +471,7 @@ class HummanCameraDatasetV1(BaseDataset):
         gt_keypoints = keypoints_3d[gt_frame_idx]
 
         pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
+        R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
 
         if self.apply_to_new_world:
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
@@ -486,6 +493,11 @@ class HummanCameraDatasetV1(BaseDataset):
 
             extrinsic = cam["extrinsic"]
             intrinsic = cam["intrinsic"]
+            if self.apply_to_new_world:
+                R_wc = extrinsic[:, :3]
+                T_wc = extrinsic[:, 3:]
+                R_new, T_new = self._update_extrinsic(R_wc, T_wc, R_root, pelvis)
+                extrinsic = np.hstack((R_new, T_new)).astype(np.float32)
 
             if modality in {"rgb", "depth"}:
                 kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
@@ -496,8 +508,10 @@ class HummanCameraDatasetV1(BaseDataset):
                 kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
                 sample[f"gt_keypoints_{modality}"] = torch.from_numpy(kp_3d.astype(np.float32))
                 if modality == "lidar" and self.output_pc_centered_lidar:
-                    centered = kp_3d - kp_3d.mean(axis=0, keepdims=True)
+                    center = kp_3d.mean(axis=0, keepdims=True)
+                    centered = kp_3d - center
                     sample["gt_keypoints_pc_centered_input_lidar"] = torch.from_numpy(centered.astype(np.float32))
+                    sample["gt_keypoints_pc_center_lidar"] = torch.from_numpy(center.astype(np.float32)).squeeze(0)
 
             extrinsics = torch.from_numpy(extrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
             intrinsics = torch.from_numpy(intrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)

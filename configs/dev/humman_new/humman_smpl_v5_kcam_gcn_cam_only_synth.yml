@@ -6,6 +6,9 @@ sync_batchnorm: false
 clip_grad: null
 precision: 16
 epochs: &epochs 20
+camera_only: true
+monitor: 'val_cam_pose_auc_30_rgb'
+monitor_mode: 'max'
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -17,7 +20,7 @@ train_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    split: "train"
+    split: 'train'
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: false
@@ -35,7 +38,7 @@ val_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    split: "test"
+    split: 'test'
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
@@ -53,7 +56,7 @@ test_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    split: "test"
+    split: 'test'
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
@@ -61,7 +64,7 @@ test_dataset:
     seq_step: 1
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     colocated: false
 # --------------------------------------
 # Optimizer parameters
@@ -82,97 +85,7 @@ sched_params:
 # --------------------------------------
 # Model parameters
 # --------------------------------------
-model_name: HummanVIBEToken
-pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_smpl_v5_kcam_gcn_cam_only_synth3/HummanCameraGCNOnly-epoch=17-val_cam_pose_auc_30_rgb=0.5965.ckpt
-backbone_rgb:
-  name: 'TimmWrapper'
-  params:
-    model_name: 'vit_small_patch16_dinov3'
-    pretrained: true
-  has_temporal: false
-backbone_lidar:
-  name: 'P4TEncoder'
-  params:
-    radius: 0.7
-    nsamples: 32
-    spatial_stride: 8
-    temporal_kernel_size: 3
-    temporal_stride: 1
-    emb_relu: false
-    dim: 512
-    depth: 5
-    heads: 8
-    dim_head: 64
-    mlp_dim: 1024
-    features: 3
-    mode: 'xyz'
-  has_temporal: true
-aggregator:
-  name: 'TransformerAggregatorV4'
-  params:
-    input_dims: [384, 384, 512, 512]
-    embed_dim: 512
-    num_register_tokens: 4
-    num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
-    aa_block_size: 1
-    depth: 6
-    block_type: 'Block'
-    skeleton_type: 'smpl'
-    num_heads: 8
-    mlp_ratio: 2.0
-    qkv_bias: true
-    proj_bias: true
-    ffn_bias: true
-    qk_norm: true
-    init_values: 0.01
-keypoint_head:
-  name: 'RegressionKeypointHeadV5'
-  params:
-    emb_size: 1024
-    num_joints: 24
-    num_register_tokens: 4
-    num_smpl_tokens: 1
-    max_modalities: 4
-    last_n_layers: 4
-    pose_encoding_type: "absT_quaR_FoV"
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-        weight: 1.0
-        alias: 'KeypointMSELoss'
-smpl_head:
-  name: 'VIBETokenHeadV5'
-  params:
-    emb_size: 1024
-    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
-    smpl_mean_params: 'weights/smpl_mean_params.npz'
-    n_iters: 3
-    num_register_tokens: 4
-    num_smpl_tokens: 1
-    max_modalities: 4
-    last_n_layers: 4
-    pose_encoding_type: "absT_quaR_FoV"
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-          root_joint_idx: 0
-        weight: 1.0
-        alias: 'SMPLKeypointMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLPoseMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLShapeMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLRotMatMSELoss'
+model_name: HummanCameraGCNOnly
 camera_head:
   name: 'KeypointCameraGCNHeadV5'
   params:
@@ -200,24 +113,6 @@ camera_head:
 # Metrics parameters
 # --------------------------------------
 metrics:
-  - name: 'MPJPE'
-    params:
-      use_smpl: true
-      root_joint_idx: 0
-  - name: 'PAMPJPE'
-    params:
-      use_smpl: true
-      root_joint_idx: 0
-  - name: 'MPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'MPJPE_no_smpl'
-  - name: 'PAMPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'PAMPJPE_no_smpl'
   - name: 'CameraPoseAUC'
     params:
       modality: 'rgb'
@@ -248,7 +143,17 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
+  - name: ReplaceBySyntheticCamera
+    params:
+      synthetic_prob: 0.5
+      rot_jitter_deg: 10.0
+      trans_jitter: 0.1
+      focal_scale: [0.8, 1.2]
+      modalities: ['rgb']
   - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: SyncKeypointsWithCameraEncoding
     params:
       pose_encoding_type: "absT_quaR_FoV"
   - name: PCCenterWithKeypoints
@@ -267,11 +172,34 @@ train_pipeline: &train_pipeline
       keys: ['input_lidar']
   - name: ToTensor
     params: null
-val_pipeline: *train_pipeline
-test_pipeline: *train_pipeline
-vis_skl_format: 'smpl'
-vis_denorm_params:
-  rgb_mean: [123.675, 116.28, 103.53]
-  rgb_std: [58.395, 57.12, 57.375]
-  depth_mean: [0.0]
-  depth_std: [255.0]
+val_pipeline: &val_pipeline
+  - name: ReplaceBySyntheticCamera
+    params:
+      synthetic_prob: 0.0
+      rot_jitter_deg: 5.0
+      trans_jitter: 0.05
+      focal_scale: [0.8, 1.2]
+      modalities: ['rgb']
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: SyncKeypointsWithCameraEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: PCCenterWithKeypoints
+    params:
+      center_type: 'mean'
+      keys: ['input_lidar']
+      keypoints_key: 'gt_keypoints'
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+test_pipeline: *val_pipeline

@@ -71,6 +71,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         colocated: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
+        skeleton_only: bool = True,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -89,6 +90,8 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.colocated = colocated
         self.convert_depth_to_lidar = convert_depth_to_lidar
         self.apply_to_new_world = apply_to_new_world
+        # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
+        self.skeleton_only = bool(skeleton_only)
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -469,12 +472,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         }
 
         if "rgb" in self.modality_names:
-            rgb_frames = self._load_rgb_frames(
-                data_info["seq_name"],
-                data_info["rgb_camera"],
-                data_info["start_frame"],
-            )
-            sample["input_rgb"] = rgb_frames
+            if self.skeleton_only:
+                rgb_frames = self._load_rgb_frames(
+                    data_info["seq_name"],
+                    data_info["rgb_camera"],
+                    data_info["start_frame"],
+                )
+                sample["input_rgb"] = rgb_frames
             if data_info["rgb_camera"].startswith("kinect"):
                 cam_key = f"kinect_color_{data_info['rgb_camera'].split('_')[1]}"
             else:
@@ -491,12 +495,14 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 }
 
         if "depth" in self.modality_names:
-            depth_frames = self._load_depth_frames(
-                data_info["seq_name"],
-                data_info["depth_camera"],
-                data_info["start_frame"],
-            )
-            sample["input_depth"] = depth_frames
+            depth_frames = None
+            if self.skeleton_only:
+                depth_frames = self._load_depth_frames(
+                    data_info["seq_name"],
+                    data_info["depth_camera"],
+                    data_info["start_frame"],
+                )
+                sample["input_depth"] = depth_frames
             if data_info["depth_camera"].startswith("kinect"):
                 cam_key = f"kinect_depth_{data_info['depth_camera'].split('_')[1]}"
             else:
@@ -511,13 +517,14 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     and "lidar" not in self.modality_names
                     and "input_lidar" not in sample
                 ):
-                    lidar_frames = self._depth_to_lidar_frames(depth_frames, K, R, T)
-                    sample["input_lidar"] = lidar_frames
-                    if "lidar" not in sample["modalities"]:
-                        sample["modalities"].append("lidar")
-                    if "depth" in sample["modalities"]:
-                        sample["modalities"].remove("depth")
-                    sample.pop("input_depth", None)
+                    if depth_frames is not None:
+                        lidar_frames = self._depth_to_lidar_frames(depth_frames, K, R, T)
+                        sample["input_lidar"] = lidar_frames
+                        if "lidar" not in sample["modalities"]:
+                            sample["modalities"].append("lidar")
+                        if "depth" in sample["modalities"]:
+                            sample["modalities"].remove("depth")
+                        sample.pop("input_depth", None)
                 if (
                     self.convert_depth_to_lidar
                     and "lidar" in sample["modalities"]

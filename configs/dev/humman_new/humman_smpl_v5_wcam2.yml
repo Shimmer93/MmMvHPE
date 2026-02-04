@@ -61,7 +61,7 @@ test_dataset:
     seq_step: 1
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     colocated: false
 # --------------------------------------
 # Optimizer parameters
@@ -83,7 +83,6 @@ sched_params:
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_smpl_v5_kcam_gcn_cam_only_synth3/HummanCameraGCNOnly-epoch=17-val_cam_pose_auc_30_rgb=0.5965.ckpt
 backbone_rgb:
   name: 'TimmWrapper'
   params:
@@ -114,7 +113,7 @@ aggregator:
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
+    aa_order: ['single', 'cross_joint', 'gcn', 'joint_to_camera', 'cross_modality']
     aa_block_size: 1
     depth: 6
     block_type: 'Block'
@@ -174,28 +173,28 @@ smpl_head:
         weight: 0.01
         alias: 'SMPLRotMatMSELoss'
 camera_head:
-  name: 'KeypointCameraGCNHeadV5'
+  name: 'VGGTCameraHeadV5'
   params:
-    num_joints: 24
-    hidden_dim: 256
-    num_layers: 4
-    dropout: 0.1
-    use_layernorm: true
-    use_modality_embedding: true
-    detach_inputs: true
-    use_gt_ratio: 0.0
-    num_iterations: 4
+    dim_in: 512
+    trunk_depth: 4
     pose_encoding_type: "absT_quaR_FoV"
+    num_heads: 8
+    mlp_ratio: 2.0
+    init_values: 0.01
+    trans_act: "linear"
+    quat_act: "linear"
+    fl_act: "relu"
+    last_n_layers: 1
+    feature_slice: "full"
     proj_loss_weight_rgb: 0.1
     proj_loss_weight_lidar: 0.1
     proj_loss_type: "l1"
-    gcn_depth: 3
     losses:
       - name: 'CameraLoss'
         params:
-          loss_type: 'l1'
-          weights: [1.0, 1.0, 0]
-        weight: 1.0
+          loss_type: "l1"
+          weights: [1.0, 1.0, 1.0]
+        weight: 0.1
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
