@@ -22,7 +22,7 @@ train_dataset:
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     split: "train_mini"
-    seq_len: 3
+    seq_len: 27
     seq_step: 1
     pad_seq: true
     causal: true
@@ -38,7 +38,7 @@ val_dataset:
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     split: "test_mini"
-    seq_len: 3
+    seq_len: 27
     seq_step: 1
     pad_seq: true
     causal: true
@@ -54,7 +54,7 @@ test_dataset:
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     split: "test_mini"
-    seq_len: 3
+    seq_len: 27
     seq_step: 1
     pad_seq: true
     causal: true
