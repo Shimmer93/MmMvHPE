@@ -506,12 +506,14 @@ class HummanCameraDatasetV1(BaseDataset):
                 sample[f"gt_keypoints_2d_{modality}"] = torch.from_numpy(kp_2d.astype(np.float32))
             else:
                 kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
-                sample[f"gt_keypoints_{modality}"] = torch.from_numpy(kp_3d.astype(np.float32))
                 if modality == "lidar" and self.output_pc_centered_lidar:
                     center = kp_3d.mean(axis=0, keepdims=True)
-                    centered = kp_3d - center
-                    sample["gt_keypoints_pc_centered_input_lidar"] = torch.from_numpy(centered.astype(np.float32))
+                    kp_3d = kp_3d - center
+                    extrinsic = extrinsic.copy()
+                    extrinsic[:, 3:] = extrinsic[:, 3:] - center.T
+                    sample["gt_keypoints_pc_centered_input_lidar"] = torch.from_numpy(kp_3d.astype(np.float32))
                     sample["gt_keypoints_pc_center_lidar"] = torch.from_numpy(center.astype(np.float32)).squeeze(0)
+                sample[f"gt_keypoints_{modality}"] = torch.from_numpy(kp_3d.astype(np.float32))
 
             extrinsics = torch.from_numpy(extrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
             intrinsics = torch.from_numpy(intrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
