@@ -83,7 +83,7 @@ sched_params:
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_smpl_v5_kcam_gcn_cam_only_synth6/HummanCameraGCNOnly-epoch=37-val_cam_pose_auc_30_rgb=0.7231.ckpt
+pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_smpl_v5_kcam_gcn_cam_only_synth6/last-v2.ckpt
 backbone_rgb:
   name: 'TimmWrapper'
   params:
