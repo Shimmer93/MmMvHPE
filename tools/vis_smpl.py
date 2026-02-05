@@ -377,7 +377,8 @@ if __name__ == '__main__':
     #                                         use_face_contour=False,
     #                                         num_betas=10)
     faces = smpl_model.th_faces.cpu().numpy()
-
+    print(f'Loaded SMPL model with {faces.shape[0]} faces.')
+    # print(f"SMPL model loaded from {model_path}")
     edges = SMPLSkeleton.bones
 
     batch_size = 50

@@ -19,6 +19,7 @@ class LEIRAggregator(nn.Module):
             smpl_model_path=smpl_model_path,
             use_pc_feature_in_batch=use_pc_feature_in_batch,
         )
+        print(f"[DEBUG]: LEIRAggregator initialized with SMPL model path: {smpl_model_path}")
 
     def forward(self, features, **batch):
         features_rgb, _, _, _ = features

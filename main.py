@@ -110,6 +110,7 @@ def main(args):
     }
     # print("[DEBUG]: this is the line 83 of main.py")
 
+
     if hasattr(args, 'epochs'):
         print(f'Training for {args.epochs} epochs.')
         trainer_kwargs.update({

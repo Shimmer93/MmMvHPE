@@ -10,7 +10,7 @@ class SMPL(SMPL_Layer):
     def __init__(self,
                  center_idx=None,
                  gender='neutral',
-                 model_path='smpl/native/models'):
+                 model_path='/opt/data/SMPL_NEUTRAL.pkl'):
         """
         Args:
             center_idx: index of center joint in our computations,
@@ -23,6 +23,7 @@ class SMPL(SMPL_Layer):
         self.gender = gender
 
         self.model_path = model_path
+        print(f"[DEBUG]: Loading SMPL model from {self.model_path}...")
 
         smpl_data = ready_arguments(self.model_path)
         self.smpl_data = smpl_data
