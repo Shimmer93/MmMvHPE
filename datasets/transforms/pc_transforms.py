@@ -1,5 +1,5 @@
 import numpy as np
-# import torch
+import torch
 from copy import deepcopy
 from typing import Optional, Sequence, Union, List
 from sklearn.cluster import DBSCAN
@@ -248,6 +248,31 @@ class PCCenterWithKeypoints():
         self.keypoints_key = keypoints_key
         self.shifted_keypoints_suffix = shifted_keypoints_suffix
 
+    @staticmethod
+    def _modality_from_key(key: str) -> str:
+        if key.startswith("input_"):
+            return key[len("input_"):]
+        return key
+
+    @staticmethod
+    def _apply_extrinsic(points, extrinsic):
+        if points is None:
+            return None
+        if isinstance(points, torch.Tensor):
+            R = torch.as_tensor(extrinsic[:, :3], dtype=points.dtype, device=points.device)
+            T = torch.as_tensor(extrinsic[:, 3], dtype=points.dtype, device=points.device)
+            shape = points.shape
+            pts = points.reshape(-1, 3)
+            pts = (pts @ R.t()) + T
+            return pts.reshape(shape)
+        pts = np.asarray(points, dtype=np.float32)
+        shape = pts.shape
+        pts = pts.reshape(-1, 3)
+        R = extrinsic[:, :3].astype(np.float32)
+        T = extrinsic[:, 3].astype(np.float32)
+        pts = (R @ pts.T).T + T.reshape(1, 3)
+        return pts.reshape(shape)
+
     def __call__(self, results):
         for key in self.keys:
             if key not in results:
@@ -262,6 +287,15 @@ class PCCenterWithKeypoints():
                 center = np.mean(all_ps[:, :3], axis=0)
             else:
                 center = np.median(all_ps[:, :3], axis=0)
+            center = center.astype(np.float32)
+
+            modality = self._modality_from_key(key)
+            camera_key = f"{modality}_camera"
+            gt_camera_key = f"gt_camera_{modality}"
+            camera = results.get(camera_key)
+            extrinsic_before = None
+            if camera is not None and "extrinsic" in camera:
+                extrinsic_before = np.asarray(camera["extrinsic"], dtype=np.float32)
 
             centered_pc_seq = []
             for pc in pc_seq:
@@ -273,9 +307,57 @@ class PCCenterWithKeypoints():
             results[f'{key}_affine'][:3, 3] = results[f'{key}_affine'][:3, 3] - center
 
             if self.keypoints_key in results and results[self.keypoints_key] is not None:
-                shifted = results[self.keypoints_key].copy()
-                shifted[:, :3] = shifted[:, :3] - center
+                keypoints = results[self.keypoints_key]
+                keypoints_for_pc = keypoints
+                if extrinsic_before is not None:
+                    if isinstance(keypoints, np.ndarray):
+                        if keypoints.shape[-1] == 3 and keypoints.shape[0] >= 1:
+                            pelvis_norm = np.linalg.norm(keypoints.reshape(-1, 3)[0])
+                            if pelvis_norm < 1e-4:
+                                keypoints_for_pc = self._apply_extrinsic(keypoints, extrinsic_before)
+                    elif isinstance(keypoints, torch.Tensor):
+                        if keypoints.shape[-1] == 3 and keypoints.numel() >= 3:
+                            pelvis_norm = torch.linalg.norm(keypoints.reshape(-1, 3)[0]).item()
+                            if pelvis_norm < 1e-4:
+                                keypoints_for_pc = self._apply_extrinsic(keypoints, extrinsic_before)
+
+                if isinstance(keypoints_for_pc, torch.Tensor):
+                    shifted = keypoints_for_pc.clone()
+                    shifted[..., :3] = shifted[..., :3] - torch.as_tensor(center, dtype=shifted.dtype, device=shifted.device)
+                else:
+                    shifted = np.asarray(keypoints_for_pc, dtype=np.float32).copy()
+                    shifted[..., :3] = shifted[..., :3] - center
                 results[f'{self.keypoints_key}{self.shifted_keypoints_suffix}_{key}'] = shifted
+
+            if extrinsic_before is not None:
+                extrinsic_after = extrinsic_before.copy()
+                extrinsic_after[:, 3] = extrinsic_after[:, 3] - center
+                camera = dict(camera)
+                camera["extrinsic"] = extrinsic_after.astype(np.float32)
+                results[camera_key] = camera
+
+                if gt_camera_key in results and results[gt_camera_key] is not None:
+                    gt_camera = results[gt_camera_key]
+                    if isinstance(gt_camera, torch.Tensor):
+                        gt_cam = gt_camera.clone()
+                        if gt_cam.dim() == 1:
+                            gt_cam = gt_cam.unsqueeze(0)
+                            squeeze_back = True
+                        else:
+                            squeeze_back = False
+                        gt_cam[..., :3] = torch.as_tensor(
+                            extrinsic_after[:, 3], dtype=gt_cam.dtype, device=gt_cam.device
+                        )
+                        results[gt_camera_key] = gt_cam.squeeze(0) if squeeze_back else gt_cam
+                    else:
+                        gt_cam = np.asarray(gt_camera, dtype=np.float32).copy()
+                        if gt_cam.ndim == 1:
+                            gt_cam = gt_cam[None, :]
+                            squeeze_back = True
+                        else:
+                            squeeze_back = False
+                        gt_cam[..., :3] = extrinsic_after[:, 3]
+                        results[gt_camera_key] = gt_cam.squeeze(0) if squeeze_back else gt_cam
 
         return results
     

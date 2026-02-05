@@ -5,7 +5,7 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 16
-epochs: &epochs 20
+epochs: &epochs 40
 camera_only: true
 monitor: 'val_cam_pose_auc_30_rgb'
 monitor_mode: 'max'
@@ -78,7 +78,7 @@ optim_params:
 # --------------------------------------
 sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
-  warmup_epochs: 4
+  warmup_epochs: 8
   max_epochs: *epochs
   warmup_start_lr: 0.00001
   eta_min: 0.00001
@@ -149,7 +149,6 @@ train_pipeline: &train_pipeline
       rot_jitter_deg: 10.0
       trans_jitter: 0.1
       focal_scale: [0.8, 1.2]
-      modalities: ['rgb']
   - name: CameraParamToPoseEncoding
     params:
       pose_encoding_type: "absT_quaR_FoV"

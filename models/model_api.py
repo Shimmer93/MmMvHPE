@@ -65,7 +65,9 @@ class LitModel(L.LightningModule):
         
         if hparams.checkpoint_path is not None:
             print("Loading model checkpoint from:", hparams.checkpoint_path)
-            self.load_state_dict(torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict'], strict=False)
+            state_dict = torch.load(hparams.checkpoint_path, map_location=self.device)['state_dict']
+            state_dict = {k: v for k, v in state_dict.items() if not k.startswith('camera_head.')}
+            self.load_state_dict(state_dict, strict=False)
 
         if hasattr(hparams, 'pretrained_camera_head_path') and self.with_camera_head:
             print("Loading pretrained Camera Head from:", hparams.pretrained_camera_head_path)

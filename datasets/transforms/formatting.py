@@ -5,6 +5,8 @@ import torch
 class ToTensor():
 
     def _array_to_tensor(self, data, dtype=torch.float):
+        if isinstance(data, torch.Tensor):
+            return data.to(dtype)
         return torch.from_numpy(data).to(dtype)
     
     def _item_to_tensor(self, data, dtype=torch.float):
@@ -15,7 +17,7 @@ class ToTensor():
 
     def __call__(self, sample):
         for key in sample:
-            if key.endswith('_affine') or key in ['gt_keypoints', 'gt_smpl_params']:
+            if key.endswith('_affine') or key in ['gt_keypoints', 'gt_smpl_params'] or key.startswith('gt_keypoints'):
                 sample[key] = self._array_to_tensor(sample[key])
             elif key.startswith('input_'):
                 sample[key] = self._list_to_tensor(sample[key])
