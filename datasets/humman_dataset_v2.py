@@ -452,7 +452,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
-        if pose.shape[0] >= 3:
+        if self.apply_to_new_world and pose.shape[0] >= 3:
             pose[:3] = 0.0
         pose = pose[:72]
         betas = np.asarray(gt_betas, dtype=np.float32)[:10]
@@ -487,10 +487,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                if self.apply_to_new_world:
+                    R_use, T_use = self._update_extrinsic(R, T, R_root, pelvis)
+                else:
+                    R_use, T_use = R, T
                 sample["rgb_camera"] = {
                     "intrinsic": K,
-                    "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                    "extrinsic": np.hstack((R_use, T_use)).astype(np.float32),
                 }
 
         if "depth" in self.modality_names:
@@ -511,7 +514,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                if self.apply_to_new_world:
+                    R_use, T_use = self._update_extrinsic(R, T, R_root, pelvis)
+                else:
+                    R_use, T_use = R, T
                 if (
                     self.convert_depth_to_lidar
                     and "lidar" not in self.modality_names
@@ -532,12 +538,12 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 ):
                     sample["lidar_camera"] = {
                         "intrinsic": K,
-                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                        "extrinsic": np.hstack((R_use, T_use)).astype(np.float32),
                     }
                 else:
                     sample["depth_camera"] = {
                         "intrinsic": K,
-                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                        "extrinsic": np.hstack((R_use, T_use)).astype(np.float32),
                     }
 
         if "lidar" in self.modality_names:
