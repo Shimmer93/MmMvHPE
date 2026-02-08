@@ -91,7 +91,7 @@ sched_params:
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_kcam_gcn_cam_only9/last.ckpt
+pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl_new/humman_kcam_gcn_cam_only9/HummanCameraGCNOnly-epoch=17-val_cam_pose_auc_30_rgb=0.7487.ckpt
 backbone_rgb:
   name: 'TimmWrapper'
   params:
@@ -180,6 +180,7 @@ camera_head:
     gcn_depth: 3
     input_2d_skeleton_format: "coco"
     input_3d_skeleton_format: "smpl"
+    train_branch: "3d"
     losses:
       - name: 'CameraLoss'
         params:
@@ -243,7 +244,7 @@ train_pipeline: &train_pipeline
       synthetic_prob: 0.5
       rot_jitter_deg: 5.0
       trans_jitter: 0.05
-      focal_scale: [0.8, 1.2]
+      focal_scale: [0.99, 1.01]
       modalities: ['rgb', 'lidar']
   - name: CameraParamToPoseEncoding
     params:

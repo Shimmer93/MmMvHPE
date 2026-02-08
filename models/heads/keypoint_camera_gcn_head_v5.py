@@ -44,6 +44,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
         gcn_depth: int = 2,
         input_2d_skeleton_format: str = "coco",
         input_3d_skeleton_format: str = "smpl",
+        train_branch: str = "both",
     ):
         super().__init__(losses)
         self.hidden_dim = hidden_dim
@@ -63,6 +64,11 @@ class KeypointCameraGCNHeadV5(BaseHead):
         self.gcn_depth = int(max(1, gcn_depth))
         self.input_2d_skeleton_format = str(input_2d_skeleton_format).lower()
         self.input_3d_skeleton_format = str(input_3d_skeleton_format).lower()
+        self.train_branch = str(train_branch).lower()
+        if self.train_branch not in {"both", "2d", "3d"}:
+            raise ValueError(
+                f"Unsupported train_branch: {train_branch}. Expected one of ['both', '2d', '3d']."
+            )
 
         self.target_skeleton = SimpleCOCOSkeleton()
         self.num_joints = self.target_skeleton.num_joints
@@ -124,6 +130,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
         losses = {}
         for m_idx, modality in enumerate(modalities):
+            if not self._is_branch_enabled(modality):
+                continue
             gt_key = f"gt_camera_{modality.lower()}"
             gt_camera = data_batch.get(gt_key)
             if gt_camera is None:
@@ -499,6 +507,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             gt_keypoints = gt_keypoints.unsqueeze(0)
 
         for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
+            if not self._is_branch_enabled(modality):
+                continue
             modality = modality.lower()
             if modality in {"rgb", "depth"} and self.proj_loss_weight_rgb > 0:
                 image_size = self._get_image_size(data_batch, modality)
@@ -529,6 +539,15 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_lidar)
 
         return losses
+
+    def _is_branch_enabled(self, modality: str) -> bool:
+        modality_l = str(modality).lower()
+        is_2d = modality_l in {"rgb", "depth"}
+        if self.train_branch == "both":
+            return True
+        if self.train_branch == "2d":
+            return is_2d
+        return not is_2d
 
     def _pose_enc_to_extrinsics_intrinsics(self, pose_enc, image_size_hw):
         pose_enc = pose_enc.unsqueeze(1)
