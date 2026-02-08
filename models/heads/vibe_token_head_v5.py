@@ -273,8 +273,26 @@ class VIBETokenHeadV5(BaseHead):
         if not isinstance(gt, torch.Tensor):
             gt = torch.as_tensor(gt, dtype=torch.float32)
         gt = gt.to(device).float()
+        batch_size = None
+        gt_global = data_batch.get("gt_keypoints", None)
+        if isinstance(gt_global, torch.Tensor):
+            if gt_global.dim() >= 3:
+                batch_size = int(gt_global.shape[0])
+            else:
+                batch_size = 1
         if gt.dim() == 2:
             gt = gt.unsqueeze(0)
+        elif gt.dim() == 3 and batch_size is not None and gt.shape[0] != batch_size:
+            # [V, J, 3] -> [1, J, 3]
+            gt = gt.mean(dim=0, keepdim=True)
+        elif gt.dim() == 4:
+            if batch_size is not None and gt.shape[0] == batch_size:
+                # [B, V, J, 3] -> [B, J, 3]
+                gt = gt.mean(dim=1)
+            elif batch_size == 1:
+                gt = gt.mean(dim=0)
+            else:
+                return None
         return gt
 
     def _get_camera_params(self, data_batch, modality, device):

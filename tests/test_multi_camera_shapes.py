@@ -13,6 +13,7 @@ from datasets.transforms.pc_transforms import PCPad
 from metrics.camera import CameraPoseAUC, CameraRotationAngleError, CameraTranslationL2Error
 from misc.pose_enc import extri_intri_to_pose_encoding
 from models.heads.keypoint_camera_gcn_head_v5 import KeypointCameraGCNHeadV5
+from models.heads.regression_head_v5 import RegressionKeypointHeadV5
 
 
 def _camera_dict(tx: float = 0.0):
@@ -141,3 +142,16 @@ def test_camera_metrics_support_multiview_gt_camera():
     assert trans == pytest.approx(0.0, abs=1e-7)
     assert rot == pytest.approx(0.0, abs=1e-7)
     assert auc == pytest.approx(1.0, abs=1e-7)
+
+
+def test_regression_head_pc_centered_keypoints_reduce_view_dim():
+    head = RegressionKeypointHeadV5(losses=[])
+    batch_size, views, num_joints = 16, 2, 24
+    gt = torch.randn(batch_size, views, num_joints, 3, dtype=torch.float32)
+    data_batch = {
+        "gt_keypoints": torch.randn(batch_size, num_joints, 3, dtype=torch.float32),
+        "gt_keypoints_pc_centered_input_lidar": gt,
+    }
+    out = head._get_pc_centered_keypoints(data_batch, "lidar", device=gt.device)
+    assert out.shape == (batch_size, num_joints, 3)
+    assert torch.allclose(out, gt.mean(dim=1))

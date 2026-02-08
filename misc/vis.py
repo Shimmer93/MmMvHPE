@@ -38,6 +38,10 @@ def _to_camera_coords(points_3d, extrinsic_matrix):
 def _get_camera_matrices(camera_dict):
     if camera_dict is None:
         return None, None
+    if isinstance(camera_dict, (list, tuple)):
+        if len(camera_dict) == 0:
+            return None, None
+        camera_dict = camera_dict[0]
     intrinsic = camera_dict.get('intrinsic', camera_dict.get('intrinsics'))
     extrinsic = camera_dict.get('extrinsic', camera_dict.get('extrinsics'))
     if hasattr(intrinsic, 'cpu'):
@@ -75,33 +79,63 @@ def _get_pelvis_from_smpl_joints(joints, skl_format):
 
 def _extract_last_frame(seq):
     if isinstance(seq, torch.Tensor):
-        if seq.dim() >= 4:
-            frame = seq[-1]
-        else:
-            frame = seq
+        frame = seq
+        # Multi-view tensors: keep the first view only.
+        while frame.dim() >= 5:
+            frame = frame[0]
+        # Temporal tensors: keep the last frame only.
+        if frame.dim() == 4:
+            frame = frame[-1]
         if frame.dim() == 3 and frame.shape[0] in (1, 3):
             frame = frame.permute(1, 2, 0)
         return frame.cpu().numpy()
     if isinstance(seq, (list, tuple)):
+        if len(seq) == 0:
+            return np.asarray(seq)
+        if isinstance(seq[0], (list, tuple)):
+            seq = seq[0]
         frame = seq[-1]
         if isinstance(frame, torch.Tensor):
             if frame.dim() == 3 and frame.shape[0] in (1, 3):
                 frame = frame.permute(1, 2, 0)
             return frame.cpu().numpy()
+        return _extract_last_frame(np.asarray(frame))
+    if isinstance(seq, np.ndarray):
+        frame = seq
+        while frame.ndim >= 5:
+            frame = frame[0]
+        if frame.ndim == 4:
+            frame = frame[-1]
+        if frame.ndim == 3 and frame.shape[0] in (1, 3) and frame.shape[-1] not in (1, 3):
+            frame = np.transpose(frame, (1, 2, 0))
         return np.asarray(frame)
     return np.asarray(seq)
 
 def _extract_last_points(seq):
     if isinstance(seq, torch.Tensor):
-        if seq.dim() >= 3:
-            frame = seq[-1]
-        else:
-            frame = seq
+        frame = seq
+        # Multi-view point cloud tensors: keep the first view only.
+        while frame.dim() >= 4:
+            frame = frame[0]
+        # Temporal point cloud tensors: keep the last frame only.
+        if frame.dim() == 3:
+            frame = frame[-1]
         return frame.cpu().numpy()
     if isinstance(seq, (list, tuple)):
+        if len(seq) == 0:
+            return np.asarray(seq)
+        if isinstance(seq[0], (list, tuple)):
+            seq = seq[0]
         frame = seq[-1]
         if isinstance(frame, torch.Tensor):
             return frame.cpu().numpy()
+        return _extract_last_points(np.asarray(frame))
+    if isinstance(seq, np.ndarray):
+        frame = seq
+        while frame.ndim >= 4:
+            frame = frame[0]
+        if frame.ndim == 3:
+            frame = frame[-1]
         return np.asarray(frame)
     return np.asarray(seq)
 
