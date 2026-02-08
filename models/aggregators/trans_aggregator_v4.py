@@ -127,22 +127,29 @@ class TransformerAggregatorV4(nn.Module):
     def forward(self, features, **kwargs):
         features_rgb, features_depth, features_lidar, features_mmwave = features
 
+        modality_specs = [
+            ("rgb", features_rgb, self.proj_rgb, 0),
+            ("depth", features_depth, self.proj_depth, 1),
+            ("lidar", features_lidar, self.proj_lidar, 2),
+            ("mmwave", features_mmwave, self.proj_mmwave, 3),
+        ]
+
         B, T, M = 0, 0, 0
-        if features_rgb is not None:
-            features_rgb = self.proj_rgb(features_rgb)
-            B, T, _, _ = features_rgb.shape
-            M += 1
-        if features_depth is not None:
-            features_depth = self.proj_depth(features_depth)
-            B, T, _, _ = features_depth.shape
-            M += 1
-        if features_lidar is not None:
-            features_lidar = self.proj_lidar(features_lidar)
-            B, T, _, _ = features_lidar.shape
-            M += 1
-        if features_mmwave is not None:
-            features_mmwave = self.proj_mmwave(features_mmwave)
-            B, T, _, _ = features_mmwave.shape
+        active_modalities = []
+        for modality_name, feat, projector, embed_idx in modality_specs:
+            if feat is None:
+                continue
+            feat = self._normalize_modality_feature_dims(feat, modality_name)
+            feat = projector(feat)
+            bsz, _, seq_len, _, _ = feat.shape
+            if M == 0:
+                B, T = bsz, seq_len
+            elif bsz != B or seq_len != T:
+                raise ValueError(
+                    f"Inconsistent batch/time dims across modalities: expected (B={B}, T={T}), "
+                    f"got {modality_name}=(B={bsz}, T={seq_len})."
+                )
+            active_modalities.append((modality_name, embed_idx, feat))
             M += 1
 
         if M == 0:
@@ -157,18 +164,14 @@ class TransformerAggregatorV4(nn.Module):
         special_tokens = torch.cat([camera_tokens, register_tokens, smpl_tokens, joint_tokens], dim=3) # B T M S D
         modality_tokens = []
         Ns = []
-        j = 0
-        for i, feat in enumerate([features_rgb, features_depth, features_lidar, features_mmwave]):
-            if feat is not None:
-                feat = torch.cat([feat, special_tokens[:, :, j, :, :]], dim=2)  # B T N+S D
-                feat = self._insert_special_tokens(feat, special_tokens[:, :, j, :, :])
-                feat = feat + self.modality_embed[:, :, i, :].unsqueeze(2)
-                modality_tokens.append(feat)
-                Ns.append(feat.shape[2])
-                j += 1
-            else:
-                modality_tokens.append(None)
-                Ns.append(0)
+        for j, (_, embed_idx, feat) in enumerate(active_modalities):
+            # Merge modality-local views into tokens: B V T N C -> B T (V*N) C.
+            feat = rearrange(feat, "b v t n c -> b t (v n) c")
+            feat = torch.cat([feat, special_tokens[:, :, j, :, :]], dim=2)  # B T V*N+S D
+            feat = self._insert_special_tokens(feat, special_tokens[:, :, j, :, :])
+            feat = feat + self.modality_embed[:, :, embed_idx, :].unsqueeze(2)
+            modality_tokens.append(feat)
+            Ns.append(feat.shape[2])
 
         single_idx = 0
         cross_idx = 0
@@ -205,6 +208,18 @@ class TransformerAggregatorV4(nn.Module):
             output_list.extend(intermediates)
 
         return output_list
+
+    @staticmethod
+    def _normalize_modality_feature_dims(features: Tensor, modality_name: str) -> Tensor:
+        if features.dim() == 4:
+            # One-view: [B, T, N, C] -> [B, 1, T, N, C].
+            return features.unsqueeze(1)
+        if features.dim() == 5:
+            # Multi-view: [B, V, T, N, C].
+            return features
+        raise ValueError(
+            f"{modality_name} features must be 4D or 5D, got shape {tuple(features.shape)}."
+        )
 
     def _process_single_attention(self, modality_tokens, Ns, idx, pos=None):
         intermediates = []

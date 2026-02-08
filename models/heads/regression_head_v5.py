@@ -197,12 +197,14 @@ class RegressionKeypointHeadV5(BaseHead):
             gt_proj = self._get_2d_keypoints(gt, modality, data_batch, pred.device)
             if gt_proj is None:
                 return None, None
-            return pred, gt_proj
+            pred_proj = self._expand_pred_to_match_views(pred, gt_proj)
+            return pred_proj, gt_proj
         if modality in {"lidar", "mmwave"}:
             gt_cam = self._get_pc_centered_keypoints(data_batch, modality, pred.device)
             if gt_cam is None:
                 return None, None
-            return pred, gt_cam
+            pred_cam = self._expand_pred_to_match_views(pred, gt_cam)
+            return pred_cam, gt_cam
 
         return None, None
 
@@ -229,27 +231,16 @@ class RegressionKeypointHeadV5(BaseHead):
         if not isinstance(gt, torch.Tensor):
             gt = torch.as_tensor(gt, dtype=torch.float32)
         gt = gt.to(device).float()
-        batch_size = None
-        gt_global = data_batch.get("gt_keypoints", None)
-        if isinstance(gt_global, torch.Tensor):
-            if gt_global.dim() >= 3:
-                batch_size = int(gt_global.shape[0])
-            else:
-                batch_size = 1
-        if gt.dim() == 2:
-            gt = gt.unsqueeze(0)
-        elif gt.dim() == 3 and batch_size is not None and gt.shape[0] != batch_size:
-            # [V, J, 3] -> [1, J, 3]
-            gt = gt.mean(dim=0, keepdim=True)
-        elif gt.dim() == 4:
+        if gt.dim() == 2:  # J 3
+            return gt.unsqueeze(0)
+        if gt.dim() == 3:
+            batch_size = self._infer_batch_size(data_batch)
             if batch_size is not None and gt.shape[0] == batch_size:
-                # [B, V, J, 3] -> [B, J, 3]
-                gt = gt.mean(dim=1)
-            elif batch_size == 1:
-                gt = gt.mean(dim=0)
-            else:
-                return None
-        return gt
+                return gt  # B J 3
+            return gt.unsqueeze(0)  # 1 V J 3
+        if gt.dim() == 4:
+            return gt  # B V J 3
+        return None
 
     def _get_camera_params(self, data_batch, modality, device):
         gt_camera = data_batch.get(f"gt_camera_{modality}", None)
@@ -262,22 +253,46 @@ class RegressionKeypointHeadV5(BaseHead):
             gt_camera = gt_camera.unsqueeze(0)
         if gt_camera.dim() == 2:
             gt_camera = gt_camera.unsqueeze(0)
-        if gt_camera.dim() == 4:
-            # [B, V, S, 9] -> use last time step and average across views.
-            gt_camera = gt_camera[:, :, -1, :].mean(dim=1)
-        elif gt_camera.dim() == 3:
-            gt_camera = gt_camera[:, -1]
-        else:
-            return None
-
+        batch_size = self._infer_batch_size(data_batch)
         image_size = self._get_image_size(data_batch, modality)
-        extrinsics, intrinsics = pose_encoding_to_extri_intri(
-            gt_camera.unsqueeze(1),
-            image_size_hw=image_size,
-            pose_encoding_type=self.pose_encoding_type,
-            build_intrinsics=True,
-        )
-        return extrinsics.squeeze(1), intrinsics.squeeze(1), image_size
+        if gt_camera.dim() == 4:  # B V S 9
+            gt_camera = gt_camera[:, :, -1, :]  # B V 9
+            bsz, n_views, _ = gt_camera.shape
+            flat = gt_camera.reshape(bsz * n_views, 1, gt_camera.shape[-1])
+            extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                flat,
+                image_size_hw=image_size,
+                pose_encoding_type=self.pose_encoding_type,
+                build_intrinsics=True,
+            )
+            extrinsics = extrinsics.squeeze(1).reshape(bsz, n_views, 3, 4)
+            intrinsics = intrinsics.squeeze(1).reshape(bsz, n_views, 3, 3)
+            return extrinsics, intrinsics, image_size
+        if gt_camera.dim() == 3:
+            if batch_size is not None and gt_camera.shape[0] == batch_size:
+                # B S 9 -> B 9
+                gt_camera = gt_camera[:, -1, :]
+                extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                    gt_camera.unsqueeze(1),
+                    image_size_hw=image_size,
+                    pose_encoding_type=self.pose_encoding_type,
+                    build_intrinsics=True,
+                )
+                return extrinsics.squeeze(1), intrinsics.squeeze(1), image_size
+            # V S 9 (single sample) -> 1 V 9
+            gt_camera = gt_camera[:, -1, :].unsqueeze(0)
+            bsz, n_views, _ = gt_camera.shape
+            flat = gt_camera.reshape(bsz * n_views, 1, gt_camera.shape[-1])
+            extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                flat,
+                image_size_hw=image_size,
+                pose_encoding_type=self.pose_encoding_type,
+                build_intrinsics=True,
+            )
+            extrinsics = extrinsics.squeeze(1).reshape(bsz, n_views, 3, 4)
+            intrinsics = intrinsics.squeeze(1).reshape(bsz, n_views, 3, 3)
+            return extrinsics, intrinsics, image_size
+        return None
 
     def _get_image_size(self, data_batch, modality):
         input_key = f"input_{modality}"
@@ -289,18 +304,51 @@ class RegressionKeypointHeadV5(BaseHead):
 
     @staticmethod
     def _transform_to_camera(points, extrinsics):
-        R = extrinsics[:, :3, :3]
-        T = extrinsics[:, :3, 3]
-        return torch.einsum("bij,bkj->bki", R, points) + T.unsqueeze(1)
+        if extrinsics.dim() == 3:
+            R = extrinsics[:, :3, :3]
+            T = extrinsics[:, :3, 3]
+            return torch.einsum("bij,bkj->bki", R, points) + T.unsqueeze(1)
+        if extrinsics.dim() == 4:
+            # points: B J 3, extrinsics: B V 3 4 -> B V J 3
+            R = extrinsics[:, :, :3, :3]
+            T = extrinsics[:, :, :3, 3]
+            points_bv = points.unsqueeze(1).expand(-1, extrinsics.shape[1], -1, -1)
+            return torch.einsum("bvij,bvkj->bvki", R, points_bv) + T.unsqueeze(2)
+        raise ValueError(f"Unsupported extrinsics shape {tuple(extrinsics.shape)}")
 
     @staticmethod
     def _project_to_image(points, extrinsics, intrinsics):
         cam_points = RegressionKeypointHeadV5._transform_to_camera(points, extrinsics)
         cam_z = cam_points[..., 2].clamp(min=1e-6)
-        proj = torch.einsum("bij,bkj->bki", intrinsics, cam_points)
+        if intrinsics.dim() == 3:
+            proj = torch.einsum("bij,bkj->bki", intrinsics, cam_points)
+        elif intrinsics.dim() == 4:
+            proj = torch.einsum("bvij,bvkj->bvki", intrinsics, cam_points)
+        else:
+            raise ValueError(f"Unsupported intrinsics shape {tuple(intrinsics.shape)}")
         u = proj[..., 0] / cam_z
         v = proj[..., 1] / cam_z
         return torch.stack([u, v], dim=-1)
+
+    @staticmethod
+    def _expand_pred_to_match_views(pred, target):
+        if pred.dim() + 1 == target.dim():
+            return pred.unsqueeze(1).expand(-1, target.shape[1], -1, -1)
+        return pred
+
+    @staticmethod
+    def _infer_batch_size(data_batch):
+        if not isinstance(data_batch, dict):
+            return None
+        gt_global = data_batch.get("gt_keypoints", None)
+        if isinstance(gt_global, torch.Tensor):
+            if gt_global.dim() >= 3:
+                return int(gt_global.shape[0])
+            return 1
+        sample_ids = data_batch.get("sample_id", None)
+        if isinstance(sample_ids, (list, tuple)):
+            return len(sample_ids)
+        return None
 
     @staticmethod
     def _normalize_2d(points_2d, image_size_hw):

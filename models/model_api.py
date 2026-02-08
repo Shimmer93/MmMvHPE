@@ -123,11 +123,10 @@ class LitModel(L.LightningModule):
         )
 
     @staticmethod
-    def _reduce_view_features(features, batch_size, num_views):
+    def _restore_view_features(features, batch_size, num_views):
         if num_views == 1:
             return features
-        reshaped = features.reshape(batch_size, num_views, *features.shape[1:])
-        return reshaped.mean(dim=1)
+        return features.reshape(batch_size, num_views, *features.shape[1:])
     
     def forward_rgb(self, frames_rgb):
         """Forward function for RGB frames."""
@@ -142,7 +141,7 @@ class LitModel(L.LightningModule):
             frames_rgb = rearrange(frames_rgb, 'b t ... -> (b t) ...')
             features_rgb = self.backbone_rgb(frames_rgb)
             features_rgb = rearrange(features_rgb, '(b t) ... -> b t ...', b=B * num_views)
-        features_rgb = self._reduce_view_features(features_rgb, batch_size=B, num_views=num_views)
+        features_rgb = self._restore_view_features(features_rgb, batch_size=B, num_views=num_views)
 
         return features_rgb
     
@@ -159,7 +158,7 @@ class LitModel(L.LightningModule):
             frames_depth = rearrange(frames_depth, 'b t ... -> (b t) ...')
             features_depth = self.backbone_depth(frames_depth)
             features_depth = rearrange(features_depth, '(b t) ... -> b t ...', b=B * num_views)
-        features_depth = self._reduce_view_features(features_depth, batch_size=B, num_views=num_views)
+        features_depth = self._restore_view_features(features_depth, batch_size=B, num_views=num_views)
 
         return features_depth
     
@@ -176,7 +175,7 @@ class LitModel(L.LightningModule):
             frames_lidar = rearrange(frames_lidar, 'b t n c -> (b t) n c')
             features_lidar = self.backbone_lidar(frames_lidar)
             features_lidar = rearrange(features_lidar, '(b t) ... -> b t ...', b=B * num_views)
-        features_lidar = self._reduce_view_features(features_lidar, batch_size=B, num_views=num_views)
+        features_lidar = self._restore_view_features(features_lidar, batch_size=B, num_views=num_views)
 
         return features_lidar
     
@@ -193,7 +192,7 @@ class LitModel(L.LightningModule):
             frames_mmwave = rearrange(frames_mmwave, 'b t n c -> (b t) n c')
             features_mmwave = self.backbone_mmwave(frames_mmwave)
             features_mmwave = rearrange(features_mmwave, '(b t) ... -> b t ...', b=B * num_views)
-        features_mmwave = self._reduce_view_features(features_mmwave, batch_size=B, num_views=num_views)
+        features_mmwave = self._restore_view_features(features_mmwave, batch_size=B, num_views=num_views)
 
         return features_mmwave
 

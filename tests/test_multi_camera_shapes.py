@@ -12,6 +12,7 @@ from datasets.transforms.camera_param_transform import CameraParamToPoseEncoding
 from datasets.transforms.pc_transforms import PCPad
 from metrics.camera import CameraPoseAUC, CameraRotationAngleError, CameraTranslationL2Error
 from misc.pose_enc import extri_intri_to_pose_encoding
+from models.aggregators.trans_aggregator_v4 import TransformerAggregatorV4
 from models.heads.keypoint_camera_gcn_head_v5 import KeypointCameraGCNHeadV5
 from models.heads.regression_head_v5 import RegressionKeypointHeadV5
 
@@ -144,7 +145,7 @@ def test_camera_metrics_support_multiview_gt_camera():
     assert auc == pytest.approx(1.0, abs=1e-7)
 
 
-def test_regression_head_pc_centered_keypoints_reduce_view_dim():
+def test_regression_head_pc_centered_keypoints_keep_view_dim():
     head = RegressionKeypointHeadV5(losses=[])
     batch_size, views, num_joints = 16, 2, 24
     gt = torch.randn(batch_size, views, num_joints, 3, dtype=torch.float32)
@@ -153,5 +154,41 @@ def test_regression_head_pc_centered_keypoints_reduce_view_dim():
         "gt_keypoints_pc_centered_input_lidar": gt,
     }
     out = head._get_pc_centered_keypoints(data_batch, "lidar", device=gt.device)
-    assert out.shape == (batch_size, num_joints, 3)
-    assert torch.allclose(out, gt.mean(dim=1))
+    assert out.shape == (batch_size, views, num_joints, 3)
+    assert torch.allclose(out, gt)
+
+
+def test_regression_head_project_keypoints_expands_pred_to_views():
+    head = RegressionKeypointHeadV5(losses=[])
+    batch_size, views, num_joints = 4, 3, 24
+    pred = torch.randn(batch_size, num_joints, 3, dtype=torch.float32)
+    gt = torch.randn(batch_size, views, num_joints, 3, dtype=torch.float32)
+    pred_out, gt_out = head._project_keypoints(
+        pred, gt, modality="lidar", data_batch={"gt_keypoints_pc_centered_input_lidar": gt}
+    )
+    assert pred_out.shape == gt_out.shape == (batch_size, views, num_joints, 3)
+
+
+def test_transformer_aggregator_supports_unequal_cross_modality_view_counts():
+    aggregator = TransformerAggregatorV4(
+        input_dims=[8, 8, 8, 8],
+        embed_dim=16,
+        num_register_tokens=1,
+        num_smpl_tokens=1,
+        aa_order=["single"],
+        aa_block_size=1,
+        depth=1,
+        num_heads=2,
+        mlp_ratio=2.0,
+    )
+    batch_size, seq_len, num_tokens = 2, 3, 5
+    rgb = torch.randn(batch_size, 2, seq_len, num_tokens, 8, dtype=torch.float32)   # V_rgb=2
+    lidar = torch.randn(batch_size, 3, seq_len, num_tokens, 8, dtype=torch.float32) # V_lidar=3
+
+    out = aggregator((rgb, None, lidar, None))
+    assert isinstance(out, list)
+    assert len(out) == 1
+    # Output shape: [B, T, M, S, D], with M=2 active modalities.
+    assert out[0].shape[0] == batch_size
+    assert out[0].shape[1] == seq_len
+    assert out[0].shape[2] == 2
