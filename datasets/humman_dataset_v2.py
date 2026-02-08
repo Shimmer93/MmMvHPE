@@ -378,7 +378,8 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             rays = K_inv @ pixels
             cam_points = rays * z
             cam_points = cam_points[:, valid]
-            pc_seq.append(cam_points.T.astype(np.float32))
+            world_points = (R.T @ (cam_points - T)).T
+            pc_seq.append(world_points.astype(np.float32))
         return pc_seq
 
     @staticmethod
@@ -511,7 +512,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
                 if (
                     self.convert_depth_to_lidar
                     and "lidar" not in self.modality_names
@@ -532,9 +532,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 ):
                     sample["lidar_camera"] = {
                         "intrinsic": K,
-                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                        "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
                     }
                 else:
+                    R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
                     sample["depth_camera"] = {
                         "intrinsic": K,
                         "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),

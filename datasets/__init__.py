@@ -3,6 +3,7 @@ from .mmfi_dataset import MMFiDataset, MMFiPreprocessedDataset
 from .h36m_dataset import H36MDataset
 from .humman_dataset import HummanDataset, HummanPreprocessedDataset
 from .humman_dataset_v2 import HummanPreprocessedDatasetV2
+from .humman_dataset_v3 import HummanPreprocessedDatasetV3
 from .humman_camera_dataset_v1 import HummanCameraDatasetV1
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     'HummanDataset',
     'HummanPreprocessedDataset',
     'HummanPreprocessedDatasetV2',
+    'HummanPreprocessedDatasetV3',
     'HummanCameraDatasetV1',
 ]

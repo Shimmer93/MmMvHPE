@@ -23,11 +23,11 @@ train_dataset:
     split: 'train'
     frame_stride: 1
     apply_to_new_world: true
-    real_sample_ratio: 1.0
+    real_sample_ratio: 0.5
     synthetic_strategy: 'interpolate'
     synthetic_rot_jitter_deg: 10.0
     synthetic_trans_jitter: 0.05
-    synthetic_focal_scale: [0.7, 1.3]
+    synthetic_focal_scale: [0.99, 1.01]
     image_size_hw: [224, 224]
     output_pc_centered_lidar: true
 val_dataset:
@@ -88,7 +88,6 @@ camera_head:
     use_layernorm: true
     use_modality_embedding: true
     detach_inputs: true
-    restore_lidar_center: true
     use_gt_ratio: 0.0
     num_iterations: 4
     pose_encoding_type: "absT_quaR_FoV"
@@ -96,6 +95,8 @@ camera_head:
     proj_loss_weight_lidar: 0.1
     proj_loss_type: "l1"
     gcn_depth: 3
+    input_2d_skeleton_format: "smpl"
+    input_3d_skeleton_format: "smpl"
     losses:
       - name: 'CameraLoss'
         params:
@@ -138,9 +139,10 @@ metrics:
 train_pipeline: &train_pipeline
   - name: AddKeypointNoise
     params:
-      noise_std_3d: 0.02
+      noise_std_3d: 0.05
       noise_std_2d: 0.01
       apply_to_global: true
+    prob: 0.8
   - name: ToTensor
     params: null
 val_pipeline:
