@@ -372,14 +372,39 @@ class SyncKeypointsWithCameraEncoding:
 
     @staticmethod
     def _project_to_image(points, extrinsics, intrinsics):
-        # points: (J,3) or (S,J,3), extrinsics/intrinsics: (B,S,3,4)/(B,S,3,3)
+        # points: (J,3), (S,J,3), (B,J,3), or (B,S,J,3)
+        # extrinsics/intrinsics: (B,S,3,4)/(B,S,3,3)
+        B_cam, S_cam = extrinsics.shape[:2]
+
         if points.dim() == 2:
-            points = points.unsqueeze(0).unsqueeze(0)
+            points = points.unsqueeze(0).unsqueeze(0)  # 1,1,J,3
         elif points.dim() == 3:
-            points = points.unsqueeze(0)
-        B, S, J, _ = points.shape
-        extrinsics = extrinsics[:B, :S]
-        intrinsics = intrinsics[:B, :S]
+            # Infer whether dim-0 is temporal (S) or batch (B).
+            if points.shape[0] == S_cam:
+                points = points.unsqueeze(0)  # 1,S,J,3
+            elif points.shape[0] == B_cam:
+                points = points.unsqueeze(1)  # B,1,J,3
+            elif points.shape[0] == 1:
+                points = points.unsqueeze(0)  # 1,1,J,3
+            else:
+                raise ValueError(
+                    f"Ambiguous keypoint shape {tuple(points.shape)} for camera shape "
+                    f"(B={B_cam}, S={S_cam})."
+                )
+        elif points.dim() != 4:
+            raise ValueError(f"Expected points dim in [2, 3, 4], got {points.dim()}.")
+
+        if points.shape[0] == 1 and B_cam > 1:
+            points = points.expand(B_cam, -1, -1, -1)
+        if points.shape[1] == 1 and S_cam > 1:
+            points = points.expand(-1, S_cam, -1, -1)
+
+        if points.shape[0] != B_cam or points.shape[1] != S_cam:
+            raise ValueError(
+                f"Keypoints shape {tuple(points.shape)} does not match camera shape "
+                f"(B={B_cam}, S={S_cam})."
+            )
+
         R = extrinsics[..., :3, :3]
         T = extrinsics[..., :3, 3]
         cam_points = torch.einsum("bsij,bsnj->bsni", R, points) + T.unsqueeze(2)

@@ -40,6 +40,21 @@ A sample usually contains:
 
 This list-vs-tensor behavior is a common source of shape/type bugs in custom heads.
 
+## Temporal (`seq_len > 1`) shape contract
+
+For sequence runs, the pipeline assumes:
+- `input_rgb`: `(T, C, H, W)` after `ToTensor`
+- `input_depth`: `(T, C, H, W)` after `ToTensor`
+- `input_lidar` / `input_mmwave`: `(T, N, C)` after `PCPad` + `ToTensor`
+- `gt_camera_<modality>`: `(T, 9)` pose encodings from `CameraParamToPoseEncoding`
+
+`SyncKeypointsWithCameraEncoding` supports both single-frame and sequence 3D keypoints:
+- if `gt_keypoints` is `(J, 3)`, it is broadcast across all `T` camera steps
+- if `gt_keypoints` is `(T, J, 3)`, it is used step-wise
+
+The synced 2D output is always sequence-aligned:
+- `gt_keypoints_2d_rgb` / `gt_keypoints_2d_depth`: `(T, J, 2)`
+
 ## HummanPreprocessedDatasetV2 notes
 
 `datasets/humman_dataset_v2.py` is the main newer HuMMan preprocessed loader.
@@ -109,7 +124,7 @@ train_dataset:
     split_config: configs/datasets/humman_split_config.yml
     split_to_use: cross_subject_split
     modality_names: [rgb, depth]
-    seq_len: 1
+    seq_len: 3
     seq_step: 1
     convert_depth_to_lidar: true
 ```
