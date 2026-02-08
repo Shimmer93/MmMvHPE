@@ -10,9 +10,11 @@ epochs: &epochs 20
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: &data_root '/opt/data/humman_cropped'
+    rgb_skeleton_json: &rgb_skeleton_json '/opt/data/humman_cropped/skl_rgb.json'
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
@@ -28,9 +30,11 @@ train_dataset:
     use_all_pairs: false
     colocated: false
 val_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
@@ -46,9 +50,11 @@ val_dataset:
     use_all_pairs: false
     colocated: false
 test_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
@@ -110,15 +116,15 @@ backbone_lidar:
     mode: 'xyz'
   has_temporal: true
 aggregator:
-  name: 'TransformerAggregatorV4'
+  name: 'TransformerAggregatorV5'
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
     aa_block_size: 1
-    depth: 8
+    depth: 6
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8
@@ -128,6 +134,11 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
+    json_skeleton_key: 'gt_keypoints_2d_rgb'
+    json_skeleton_type: 'coco'
+    json_skeleton_in_dim: 2
+    json_skeleton_gcn_depth: 2
+    json_skeleton_attn_depth: 1
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
   params:

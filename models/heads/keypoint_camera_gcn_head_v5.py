@@ -2,11 +2,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import warnings
 
 from .base_head import BaseHead
 from misc.pose_enc import pose_encoding_to_extri_intri
 from models.aggregators.layers.gcn import TCN_GCN_unit
-from misc.skeleton import get_adjacency_matrix, SMPLSkeleton
+from misc.skeleton import (
+    get_adjacency_matrix,
+    COCOSkeleton,
+    SimpleCOCOSkeleton,
+    MMBodySkeleton,
+    H36MSkeleton,
+    MiliPointSkeleton,
+    SMPLSkeleton,
+)
 
 
 class KeypointCameraGCNHeadV5(BaseHead):
@@ -33,9 +42,10 @@ class KeypointCameraGCNHeadV5(BaseHead):
         gcn_kernel_size: int = 5,
         gcn_dilations: tuple = (1, 2),
         gcn_depth: int = 2,
+        input_2d_skeleton_format: str = "coco",
+        input_3d_skeleton_format: str = "smpl",
     ):
         super().__init__(losses)
-        self.num_joints = num_joints
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
@@ -51,13 +61,17 @@ class KeypointCameraGCNHeadV5(BaseHead):
         self.detach_inputs = detach_inputs
         self.num_iterations = int(max(1, num_iterations))
         self.gcn_depth = int(max(1, gcn_depth))
+        self.input_2d_skeleton_format = str(input_2d_skeleton_format).lower()
+        self.input_3d_skeleton_format = str(input_3d_skeleton_format).lower()
 
-        skeleton = SMPLSkeleton()
-        if num_joints != skeleton.num_joints:
-            raise ValueError(
-                f"GCN head expects {skeleton.num_joints} joints, got {num_joints}."
+        self.target_skeleton = SimpleCOCOSkeleton()
+        self.num_joints = self.target_skeleton.num_joints
+        if num_joints != self.num_joints:
+            warnings.warn(
+                f"KeypointCameraGCNHeadV5 uses SimpleCOCO skeleton ({self.num_joints} joints). "
+                f"Ignoring configured num_joints={num_joints}."
             )
-        A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
+        A = get_adjacency_matrix(self.target_skeleton.bones, self.target_skeleton.num_joints)
 
         self.gcn_in_channels = 9
         self.gcn_proj_2d = nn.Conv2d(5, self.gcn_in_channels, kernel_size=1)
@@ -152,6 +166,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return None
 
         global_kps = self._maybe_detach(global_kps)
+        global_kps = self._convert_to_target_skeleton(
+            global_kps,
+            source_format=self.input_3d_skeleton_format,
+        )
+        if global_kps is None:
+            return None
         device = global_kps.device
         dtype = global_kps.dtype
         batch_size = global_kps.shape[0] if global_kps.dim() >= 3 else 1
@@ -180,6 +200,18 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
             kps = self._maybe_detach(kps)
             kps = self._ensure_batch(kps, batch_size)
+            if modality_l in {"rgb", "depth"}:
+                kps = self._convert_to_target_skeleton(
+                    kps,
+                    source_format=self.input_2d_skeleton_format,
+                )
+            else:
+                kps = self._convert_to_target_skeleton(
+                    kps,
+                    source_format=self.input_3d_skeleton_format,
+                )
+            if kps is None:
+                continue
             if modality_l in {"rgb", "depth"}:
                 global_3d = self._pad_2d_to_3d(global_kps)
                 if global_3d.shape[-1] != 3:
@@ -280,7 +312,14 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if pred_dict is not None:
             pred = pred_dict.get(f"pred_keypoints_2d_{modality}")
         gt = data_batch.get(f"gt_keypoints_2d_{modality}")
-        keypoints = self._mix_pred_gt(pred, gt)
+        if modality == "rgb":
+            # Prefer dataset-provided RGB 2D skeletons (e.g., JSON-loaded),
+            # and only fall back to predicted RGB keypoints if unavailable.
+            keypoints = self._coerce_sequence(gt)
+            if keypoints is None:
+                keypoints = self._coerce_sequence(pred)
+        else:
+            keypoints = self._mix_pred_gt(pred, gt)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
@@ -370,6 +409,78 @@ class KeypointCameraGCNHeadV5(BaseHead):
                     return v
             return None
         return value
+
+    @staticmethod
+    def _build_source_skeleton(source_format: str):
+        sf = str(source_format).lower()
+        if sf in {"smpl"}:
+            return SMPLSkeleton
+        if sf in {"mmbody"}:
+            return MMBodySkeleton
+        if sf in {"h36m", "mmfi"}:
+            return H36MSkeleton
+        if sf in {"coco"}:
+            return COCOSkeleton
+        if sf in {"simple_coco", "simplecoco"}:
+            return SimpleCOCOSkeleton
+        if sf in {"milipoint"}:
+            return MiliPointSkeleton
+        return None
+
+    def _resolve_source_format(self, points, source_format: str) -> str:
+        sf = str(source_format).lower()
+        if sf == "simplecoco":
+            sf = "simple_coco"
+        if sf != "auto":
+            return sf
+        j = int(points.shape[-2])
+        if j == SMPLSkeleton.num_joints:
+            return "smpl"
+        if j == MMBodySkeleton.num_joints:
+            return "mmbody"
+        if j == H36MSkeleton.num_joints:
+            return "h36m"
+        if j == COCOSkeleton.num_joints:
+            return "coco"
+        if j == SimpleCOCOSkeleton.num_joints:
+            return "simple_coco"
+        if j == MiliPointSkeleton.num_joints:
+            return "milipoint"
+        return "unknown"
+
+    def _convert_to_target_skeleton(self, points, source_format: str):
+        if points is None:
+            return None
+        if not isinstance(points, torch.Tensor):
+            points = torch.as_tensor(points, dtype=torch.float32)
+        if points.dim() < 2:
+            return None
+
+        sf = self._resolve_source_format(points, source_format)
+        source_skeleton = self._build_source_skeleton(sf)
+        if source_skeleton is None:
+            if points.shape[-2] >= self.num_joints:
+                return points[..., : self.num_joints, :]
+            pad_n = self.num_joints - points.shape[-2]
+            pad = torch.zeros(*points.shape[:-2], pad_n, points.shape[-1], device=points.device, dtype=points.dtype)
+            return torch.cat([points, pad], dim=-2)
+
+        if not hasattr(source_skeleton, "to_simple_coco"):
+            raise ValueError(
+                f"Skeleton format '{sf}' does not provide to_simple_coco conversion."
+            )
+
+        converted = source_skeleton.to_simple_coco(points)
+        if converted.shape[-2] > self.num_joints:
+            converted = converted[..., : self.num_joints, :]
+        elif converted.shape[-2] < self.num_joints:
+            pad_n = self.num_joints - converted.shape[-2]
+            pad = torch.zeros(
+                *converted.shape[:-2], pad_n, converted.shape[-1],
+                device=converted.device, dtype=converted.dtype
+            )
+            converted = torch.cat([converted, pad], dim=-2)
+        return converted
 
     def _projection_losses(self, pred_camera_enc_list, modalities, data_batch):
         losses = {}

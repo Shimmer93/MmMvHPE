@@ -88,6 +88,9 @@ class COCOSkeleton:
     flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
+
+    def to_simple_coco(joints):
+        return coco2simplecoco(joints)
             
 class SimpleCOCOSkeleton:
     joint_names = [
@@ -105,6 +108,9 @@ class SimpleCOCOSkeleton:
     flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
+
+    def to_simple_coco(joints):
+        return joints
     
 class MMBodySkeleton:
     joint_names = [
@@ -125,6 +131,9 @@ class MMBodySkeleton:
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
 
+    def to_simple_coco(joints):
+        return mmbody2simplecoco(joints)
+
 class H36MSkeleton:
     joint_names = [
         "pelvis", "right_hip", "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle", 
@@ -142,6 +151,9 @@ class H36MSkeleton:
     flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
+
+    def to_simple_coco(joints):
+        return mmfi2simplecoco(joints)
 
 class MiliPointSkeleton:
     joint_names = [
@@ -162,6 +174,9 @@ class MiliPointSkeleton:
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
 
+    def to_simple_coco(joints):
+        return milipoint2simplecoco(joints)
+
 class ITOPSkeleton:
     joint_names = [
         "nose", "neck", "right_shoulder", "left_shoulder", "right_elbow", "left_elbow", "right_wrist", 
@@ -179,6 +194,9 @@ class ITOPSkeleton:
     flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
+
+    def to_simple_coco(joints):
+        return itop2simplecoco(joints)
 
 class SMPLSkeleton:
     joint_names = [
@@ -199,6 +217,9 @@ class SMPLSkeleton:
     flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 0
+
+    def to_simple_coco(joints):
+        return smpl2simplecoco(joints)
 
 def coco2simplecoco(joints):
     return joints[..., [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], :]

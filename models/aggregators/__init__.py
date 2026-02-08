@@ -6,6 +6,7 @@ from .trans_aggregator_v2_global_smpl import TransformerAggregatorV2GlobalSMPL  
 from .trans_aggregator_v3 import TransformerAggregatorV3  # noqa: F401, F403
 from .trans_aggregator_v3_lite import TransformerAggregatorV3Lite
 from .trans_aggregator_v4 import TransformerAggregatorV4  # noqa: F401, F403
+from .trans_aggregator_v5 import TransformerAggregatorV5  # noqa: F401, F403
 from .simple_aggregator import SimpleAggregator  # noqa: F401, F403
 from .leir_aggregator import LEIRAggregator  # noqa: F401, F403
 
@@ -18,6 +19,7 @@ __all__ = [
     'TransformerAggregatorV3',
     'TransformerAggregatorV3Lite',
     'TransformerAggregatorV4',
+    'TransformerAggregatorV5',
     'SimpleAggregator',
     'LEIRAggregator',
 ]
