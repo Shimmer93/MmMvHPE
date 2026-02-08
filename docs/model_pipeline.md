@@ -49,6 +49,26 @@ To be constructible from config, classes must be exported via:
 - camera heads: `VGGTCameraHead*`, `HeuristicCameraHead`, `KeypointCameraHeadV5`, `KeypointCameraGCNHeadV5`
 - LEIR head: `LEIRHead`
 
+## KeypointCameraGCNHeadV5 branch control
+
+`KeypointCameraGCNHeadV5` supports selecting which branch contributes training loss:
+- `train_branch: both` (default): use 2D modalities (`rgb`, `depth`) and 3D modalities (`lidar`, `mmwave`).
+- `train_branch: 2d`: only `rgb`/`depth` camera and projection losses are applied.
+- `train_branch: 3d`: only `lidar`/`mmwave` camera and projection losses are applied.
+
+Notes:
+- this only affects loss computation; prediction output shape/format stays unchanged.
+- if a disabled-branch modality exists in `modalities`, its loss terms are skipped.
+
+Example:
+
+```yaml
+camera_head:
+  name: KeypointCameraGCNHeadV5
+  params:
+    train_branch: "3d"
+```
+
 ## Notable runtime behaviors
 
 - `camera_only=True` skips backbone+aggregator path and only runs camera head logic.

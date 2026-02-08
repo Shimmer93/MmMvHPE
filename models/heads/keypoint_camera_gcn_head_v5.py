@@ -132,18 +132,18 @@ class KeypointCameraGCNHeadV5(BaseHead):
         for m_idx, modality in enumerate(modalities):
             if not self._is_branch_enabled(modality):
                 continue
-            gt_key = f"gt_camera_{modality.lower()}"
-            gt_camera = data_batch.get(gt_key)
+            gt_camera = self._get_gt_camera_encoding(
+                data_batch,
+                modality.lower(),
+                pred_encodings.device,
+                pred_encodings.dtype,
+                pred_encodings.shape[0],
+            )
             if gt_camera is None:
                 continue
-            gt_camera = self._to_tensor(gt_camera).to(pred_encodings.device)
-            if gt_camera.dim() == 3:
-                gt_camera = gt_camera[:, -1]
-            if gt_camera.dim() == 2:
-                gt_camera = gt_camera.unsqueeze(0) if gt_camera.shape[0] != pred_encodings.shape[0] else gt_camera
 
             pred = pred_encodings[:, m_idx]
-            valid = torch.isfinite(pred).all(dim=-1)
+            valid = torch.isfinite(pred).all(dim=-1) & torch.isfinite(gt_camera).all(dim=-1)
             if valid.sum().item() == 0:
                 continue
             pred = pred[valid]
@@ -183,7 +183,13 @@ class KeypointCameraGCNHeadV5(BaseHead):
         device = global_kps.device
         dtype = global_kps.dtype
         batch_size = global_kps.shape[0] if global_kps.dim() >= 3 else 1
-        global_kps = self._ensure_batch(global_kps, batch_size)
+        global_kps = self._ensure_bstjc(global_kps, batch_size)
+        if global_kps is None:
+            return None
+        if global_kps.shape[-1] != 3:
+            raise ValueError(
+                f"global_kps must have last dimension 3 (x, y, z), got shape={tuple(global_kps.shape)}"
+            )
         num_modalities = len(modalities)
 
         pred_encodings = torch.full(
@@ -207,7 +213,9 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 continue
 
             kps = self._maybe_detach(kps)
-            kps = self._ensure_batch(kps, batch_size)
+            kps = self._ensure_bstjc(kps, batch_size)
+            if kps is None:
+                continue
             if modality_l in {"rgb", "depth"}:
                 kps = self._convert_to_target_skeleton(
                     kps,
@@ -220,29 +228,28 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 )
             if kps is None:
                 continue
+            global_seq, kps = self._align_temporal_length(global_kps, kps)
+            if global_seq is None:
+                continue
             if modality_l in {"rgb", "depth"}:
-                global_3d = self._pad_2d_to_3d(global_kps)
-                if global_3d.shape[-1] != 3:
-                    continue
+                global_3d = global_seq
                 kps_2d = kps[..., :2] if kps.shape[-1] >= 2 else kps
                 if kps_2d.shape[-1] != 2:
                     continue
                 feat = torch.cat([global_3d, kps_2d], dim=-1)
-                gcn_in = feat.permute(0, 2, 1).unsqueeze(2)
+                gcn_in = feat.permute(0, 3, 1, 2)
                 gcn_in = self.gcn_proj_2d(gcn_in)
                 gcn_out = self.gcn_2d(gcn_in)
                 prev_proj = self.prev_proj_2d
                 mlp = self.mlp_2d
                 pooled = self.post_gcn_norm_2d(gcn_out.mean(dim=-1).mean(dim=-1))
             else:
-                global_3d = self._pad_2d_to_3d(global_kps)
-                if global_3d.shape[-1] != 3:
-                    continue
-                kps_3d = self._pad_2d_to_3d(kps)
+                global_3d = global_seq
+                kps_3d = kps
                 if kps_3d.shape[-1] != 3:
                     continue
                 feat = torch.cat([global_3d, kps_3d], dim=-1)
-                gcn_in = feat.permute(0, 2, 1).unsqueeze(2)
+                gcn_in = feat.permute(0, 3, 1, 2)
                 gcn_in = self.gcn_proj_3d(gcn_in)
                 gcn_out = self.gcn_3d(gcn_in)
                 prev_proj = self.prev_proj_3d
@@ -312,7 +319,6 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints)
-        keypoints = self._select_frame(keypoints)
         return keypoints
 
     def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype):
@@ -323,15 +329,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if modality == "rgb":
             # Prefer dataset-provided RGB 2D skeletons (e.g., JSON-loaded),
             # and only fall back to predicted RGB keypoints if unavailable.
-            keypoints = self._coerce_sequence(gt)
-            if keypoints is None:
-                keypoints = self._coerce_sequence(pred)
+            keypoints = gt if gt is not None else pred
         else:
             keypoints = self._mix_pred_gt(pred, gt)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
-        keypoints = self._select_frame(keypoints)
         return keypoints
 
     def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype):
@@ -348,7 +351,6 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
-        keypoints = self._select_frame(keypoints)
         return keypoints
 
     @staticmethod
@@ -357,42 +359,51 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return x
         return torch.as_tensor(x, dtype=torch.float32)
 
-    @staticmethod
-    def _select_frame(x):
-        if not isinstance(x, torch.Tensor):
-            return x
-        if x.dim() == 4:
-            return x[:, -1]
-        return x
-
-    @staticmethod
-    def _pad_2d_to_3d(points):
-        if points.shape[-1] == 3:
-            return points
-        if points.shape[-1] != 2:
-            return points
-        zeros = torch.zeros(points.shape[:-1] + (1,), device=points.device, dtype=points.dtype)
-        return torch.cat([points, zeros], dim=-1)
-
-
     def _maybe_detach(self, tensor):
         if not isinstance(tensor, torch.Tensor):
             return tensor
         return tensor.detach() if self.detach_inputs else tensor
 
     @staticmethod
-    def _ensure_batch(tensor, batch_size):
+    def _ensure_bstjc(tensor, batch_size):
+        """Normalize keypoint tensor to [B, S, J, C]."""
         if not isinstance(tensor, torch.Tensor):
-            return tensor
+            return None
         if tensor.dim() == 2:
-            tensor = tensor.unsqueeze(0)
-        if tensor.shape[0] == 1 and batch_size > 1:
-            tensor = tensor.expand(batch_size, *tensor.shape[1:])
+            tensor = tensor.unsqueeze(0).unsqueeze(0)
+        elif tensor.dim() == 3:
+            if tensor.shape[0] == batch_size:
+                tensor = tensor.unsqueeze(1)
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.unsqueeze(1).expand(batch_size, -1, -1, -1)
+            elif batch_size == 1:
+                tensor = tensor.unsqueeze(0)
+            else:
+                return None
+        elif tensor.dim() == 4:
+            if tensor.shape[0] == batch_size:
+                pass
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.expand(batch_size, -1, -1, -1)
+            elif batch_size == 1:
+                tensor = tensor[-1:].contiguous()
+            else:
+                return None
+        else:
+            return None
         return tensor
 
+    @staticmethod
+    def _align_temporal_length(global_kps, kps):
+        if global_kps.shape[1] == kps.shape[1]:
+            return global_kps, kps
+        if global_kps.shape[1] == 1 and kps.shape[1] > 1:
+            return global_kps.expand(-1, kps.shape[1], -1, -1), kps
+        if kps.shape[1] == 1 and global_kps.shape[1] > 1:
+            return global_kps, kps.expand(-1, global_kps.shape[1], -1, -1)
+        return None, None
+
     def _mix_pred_gt(self, pred, gt):
-        pred = self._coerce_sequence(pred)
-        gt = self._coerce_sequence(gt)
         if pred is None and gt is None:
             return None
         if pred is None:
@@ -406,17 +417,6 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if torch.rand(1).item() < self.use_gt_ratio:
             return gt
         return pred
-
-    @staticmethod
-    def _coerce_sequence(value):
-        if value is None:
-            return None
-        if isinstance(value, (list, tuple)):
-            for v in value:
-                if v is not None:
-                    return v
-            return None
-        return value
 
     @staticmethod
     def _build_source_skeleton(source_format: str):
@@ -467,11 +467,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
         sf = self._resolve_source_format(points, source_format)
         source_skeleton = self._build_source_skeleton(sf)
         if source_skeleton is None:
-            if points.shape[-2] >= self.num_joints:
-                return points[..., : self.num_joints, :]
-            pad_n = self.num_joints - points.shape[-2]
-            pad = torch.zeros(*points.shape[:-2], pad_n, points.shape[-1], device=points.device, dtype=points.dtype)
-            return torch.cat([points, pad], dim=-2)
+            raise ValueError(
+                f"Unknown source skeleton format '{sf}' (configured: '{source_format}') "
+                f"for points shape {tuple(points.shape)}. "
+                "Supported formats: ['smpl', 'mmbody', 'h36m', 'mmfi', 'coco', 'simple_coco', "
+                "'simplecoco', 'milipoint', 'auto']."
+            )
 
         if not hasattr(source_skeleton, "to_simple_coco"):
             raise ValueError(
@@ -510,17 +511,51 @@ class KeypointCameraGCNHeadV5(BaseHead):
             if not self._is_branch_enabled(modality):
                 continue
             modality = modality.lower()
+            batch_size = pred_camera_enc.shape[0]
+            gt_camera = self._get_gt_camera_encoding(
+                data_batch,
+                modality,
+                device,
+                pred_camera_enc.dtype,
+                batch_size,
+            )
+            if gt_camera is None:
+                continue
+
+            if gt_keypoints.shape[0] == batch_size:
+                gt_keypoints_b = gt_keypoints
+            elif gt_keypoints.shape[0] == 1 and batch_size > 1:
+                gt_keypoints_b = gt_keypoints.expand(batch_size, *gt_keypoints.shape[1:])
+            elif batch_size == 1 and gt_keypoints.shape[0] > 1:
+                gt_keypoints_b = gt_keypoints[-1:].contiguous()
+            else:
+                continue
+
+            valid = torch.isfinite(pred_camera_enc).all(dim=-1) & torch.isfinite(gt_camera).all(dim=-1)
+            valid = valid & torch.isfinite(gt_keypoints_b).view(batch_size, -1).all(dim=-1)
+            if valid.sum().item() == 0:
+                continue
+
+            pred_camera_enc_v = pred_camera_enc[valid]
+            gt_camera_v = gt_camera[valid]
+            gt_keypoints_v = gt_keypoints_b[valid]
+            if gt_keypoints_v.dim() == 4:
+                gt_keypoints_v = gt_keypoints_v.reshape(
+                    gt_keypoints_v.shape[0],
+                    -1,
+                    gt_keypoints_v.shape[-1],
+                )
+            if gt_keypoints_v.dim() != 3 or gt_keypoints_v.shape[-1] != 3:
+                continue
+
             if modality in {"rgb", "depth"} and self.proj_loss_weight_rgb > 0:
                 image_size = self._get_image_size(data_batch, modality)
-                gt_camera = self._get_gt_camera_encoding(data_batch, modality, device)
-                if gt_camera is None:
-                    continue
-                pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc, None)
+                pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc_v, None)
                 gt_extrinsics, gt_intrinsics = self._pose_enc_to_extrinsics_intrinsics(
-                    gt_camera, image_size
+                    gt_camera_v, image_size
                 )
-                pred_proj = self._project_to_image(gt_keypoints, pred_extrinsics, gt_intrinsics)
-                gt_proj = self._project_to_image(gt_keypoints, gt_extrinsics, gt_intrinsics)
+                pred_proj = self._project_to_image(gt_keypoints_v, pred_extrinsics, gt_intrinsics)
+                gt_proj = self._project_to_image(gt_keypoints_v, gt_extrinsics, gt_intrinsics)
                 pred_proj = self._normalize_2d(pred_proj, image_size)
                 gt_proj = self._normalize_2d(gt_proj, image_size)
                 pred_proj = torch.clamp(pred_proj, -1.0, 1.0)
@@ -528,13 +563,10 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 loss_val = self._projection_loss(pred_proj, gt_proj, self.proj_loss_type)
                 losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_rgb)
             elif modality in {"lidar", "mmwave"} and self.proj_loss_weight_lidar > 0:
-                pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc, None)
-                gt_camera = self._get_gt_camera_encoding(data_batch, modality, device)
-                if gt_camera is None:
-                    continue
-                gt_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(gt_camera, None)
-                pred_points = self._transform_to_camera(gt_keypoints, pred_extrinsics)
-                gt_points = self._transform_to_camera(gt_keypoints, gt_extrinsics)
+                pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc_v, None)
+                gt_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(gt_camera_v, None)
+                pred_points = self._transform_to_camera(gt_keypoints_v, pred_extrinsics)
+                gt_points = self._transform_to_camera(gt_keypoints_v, gt_extrinsics)
                 loss_val = self._projection_loss(pred_points, gt_points, self.proj_loss_type)
                 losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_lidar)
 
@@ -559,18 +591,78 @@ class KeypointCameraGCNHeadV5(BaseHead):
         )
         return extrinsics.squeeze(1), None if intrinsics is None else intrinsics.squeeze(1)
 
-    def _get_gt_camera_encoding(self, data_batch, modality, device):
+    def _get_gt_camera_encoding(self, data_batch, modality, device, dtype, batch_size):
         gt_camera = data_batch.get(f"gt_camera_{modality}", None)
         if gt_camera is None:
             return None
+        return self._prepare_gt_camera_batch(gt_camera, batch_size, device, dtype)
+
+    def _prepare_gt_camera_batch(self, gt_camera, batch_size, device, dtype):
+        if isinstance(gt_camera, (list, tuple)):
+            out = torch.full(
+                (batch_size, self.pose_encoding_dim),
+                float("nan"),
+                device=device,
+                dtype=dtype,
+            )
+            for i, value in enumerate(gt_camera[:batch_size]):
+                parsed = self._parse_single_gt_camera(value, device=device, dtype=dtype)
+                if parsed is not None:
+                    out[i] = parsed
+            return out
+
         if not isinstance(gt_camera, torch.Tensor):
-            gt_camera = torch.as_tensor(gt_camera, dtype=torch.float32)
-        gt_camera = gt_camera.to(device).float()
-        if gt_camera.dim() == 2:
-            gt_camera = gt_camera.unsqueeze(0)
+            gt_camera = torch.as_tensor(gt_camera, dtype=dtype)
+        gt_camera = gt_camera.to(device=device, dtype=dtype)
+        return self._normalize_gt_camera_shape(gt_camera, batch_size)
+
+    def _parse_single_gt_camera(self, value, device, dtype):
+        if value is None:
+            return None
+        if not isinstance(value, torch.Tensor):
+            value = torch.as_tensor(value, dtype=dtype)
+        value = value.to(device=device, dtype=dtype)
+        value = self._normalize_gt_camera_shape(value, batch_size=1)
+        if value is None:
+            return None
+        return value[0]
+
+    def _normalize_gt_camera_shape(self, gt_camera, batch_size):
+        if not isinstance(gt_camera, torch.Tensor):
+            return None
+
         if gt_camera.dim() == 3:
-            gt_camera = gt_camera[:, -1]
-        return gt_camera
+            if gt_camera.shape[0] == batch_size:
+                gt_camera = gt_camera[:, -1]
+            elif gt_camera.shape[0] == 1:
+                gt_camera = gt_camera[:, -1]
+                if batch_size > 1:
+                    gt_camera = gt_camera.expand(batch_size, -1)
+            elif batch_size == 1:
+                gt_camera = gt_camera[-1, -1].unsqueeze(0)
+            else:
+                return None
+
+        if gt_camera.dim() == 2:
+            if gt_camera.shape[-1] != self.pose_encoding_dim:
+                return None
+            if gt_camera.shape[0] == batch_size:
+                return gt_camera
+            if gt_camera.shape[0] == 1 and batch_size > 1:
+                return gt_camera.expand(batch_size, -1)
+            if batch_size == 1:
+                return gt_camera[-1:].contiguous()
+            return None
+
+        if gt_camera.dim() == 1:
+            if gt_camera.shape[0] != self.pose_encoding_dim:
+                return None
+            gt_camera = gt_camera.unsqueeze(0)
+            if batch_size > 1:
+                gt_camera = gt_camera.expand(batch_size, -1)
+            return gt_camera
+
+        return None
 
     def _get_image_size(self, data_batch, modality):
         size_key = f"image_size_hw_{modality}"
