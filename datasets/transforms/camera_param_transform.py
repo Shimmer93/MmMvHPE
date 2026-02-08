@@ -4,6 +4,88 @@ import torch
 from misc.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 
 
+def _camera_to_list(camera):
+    if camera is None:
+        return []
+    if isinstance(camera, (list, tuple)):
+        return list(camera)
+    return [camera]
+
+
+def _restore_camera_type(cameras, original):
+    if isinstance(original, (list, tuple)):
+        return cameras
+    return cameras[0] if cameras else None
+
+
+def _split_frames_by_view(frames):
+    if frames is None:
+        return []
+    if isinstance(frames, (list, tuple)):
+        if len(frames) == 0:
+            return []
+        if isinstance(frames[0], (list, tuple)):
+            return [list(view_frames) for view_frames in frames]
+        return [list(frames)]
+    if isinstance(frames, torch.Tensor):
+        if frames.dim() >= 5:
+            return [frames[i] for i in range(frames.shape[0])]
+        return [frames]
+    if isinstance(frames, np.ndarray):
+        if frames.ndim >= 5:
+            return [frames[i] for i in range(frames.shape[0])]
+        return [frames]
+    return []
+
+
+def _sequence_len(frames):
+    if isinstance(frames, (list, tuple)):
+        return len(frames)
+    if isinstance(frames, torch.Tensor):
+        return int(frames.shape[0]) if frames.dim() >= 1 else 0
+    if isinstance(frames, np.ndarray):
+        return int(frames.shape[0]) if frames.ndim >= 1 else 0
+    return 0
+
+
+def _frame_hw_from_view(frames):
+    if isinstance(frames, (list, tuple)):
+        if len(frames) == 0:
+            return None
+        frame0 = frames[0]
+        if hasattr(frame0, "shape") and len(frame0.shape) >= 2:
+            shape = frame0.shape
+            if len(shape) == 3 and shape[0] in (1, 3, 4) and shape[1] > 4:
+                return int(shape[1]), int(shape[2])
+            return int(shape[0]), int(shape[1])
+        return None
+    if isinstance(frames, torch.Tensor):
+        if frames.dim() >= 5:
+            return int(frames.shape[-2]), int(frames.shape[-1])
+        if frames.dim() == 4:
+            if frames.shape[-1] in (1, 3, 4):
+                return int(frames.shape[-3]), int(frames.shape[-2])
+            return int(frames.shape[-2]), int(frames.shape[-1])
+        if frames.dim() == 3:
+            if frames.shape[0] in (1, 3, 4):
+                return int(frames.shape[1]), int(frames.shape[2])
+            return int(frames.shape[-2]), int(frames.shape[-1])
+        return None
+    if isinstance(frames, np.ndarray):
+        if frames.ndim >= 5:
+            return int(frames.shape[-3]), int(frames.shape[-2])
+        if frames.ndim == 4:
+            if frames.shape[-1] in (1, 3, 4):
+                return int(frames.shape[-3]), int(frames.shape[-2])
+            return int(frames.shape[-2]), int(frames.shape[-1])
+        if frames.ndim == 3:
+            if frames.shape[-1] in (1, 3, 4):
+                return int(frames.shape[0]), int(frames.shape[1])
+            return int(frames.shape[-2]), int(frames.shape[-1])
+        return None
+    return None
+
+
 class CameraParamToPoseEncoding:
     """Convert camera intrinsics/extrinsics into pose encodings for supervision."""
 
@@ -22,25 +104,45 @@ class CameraParamToPoseEncoding:
             if camera is None or frames is None:
                 continue
 
-            # Prepare batched extrinsics/intrinsics for the sequence length
-            seq_len = len(frames)
-            extrinsic = np.asarray(camera["extrinsic"], dtype=np.float32)
-            intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
+            camera_list = _camera_to_list(camera)
+            frame_views = _split_frames_by_view(frames)
+            if not camera_list or not frame_views:
+                continue
 
-            extrinsics = torch.from_numpy(np.stack([extrinsic] * seq_len, axis=0)).unsqueeze(0)
-            intrinsics = torch.from_numpy(np.stack([intrinsic] * seq_len, axis=0)).unsqueeze(0)
+            if len(frame_views) == 1 and len(camera_list) > 1:
+                frame_views = frame_views * len(camera_list)
+            elif len(frame_views) != len(camera_list):
+                n = min(len(frame_views), len(camera_list))
+                camera_list = camera_list[:n]
+                frame_views = frame_views[:n]
 
-            # Image size is (H, W)
-            height, width = frames[0].shape[:2]
-            pose_enc = extri_intri_to_pose_encoding(
-                extrinsics,
-                intrinsics,
-                image_size_hw=(height, width),
-                pose_encoding_type=self.pose_encoding_type,
-            )
+            pose_enc_views = []
+            for camera_view, frames_view in zip(camera_list, frame_views):
+                seq_len = _sequence_len(frames_view)
+                if seq_len <= 0:
+                    continue
+                hw = _frame_hw_from_view(frames_view)
+                if hw is None:
+                    continue
+                extrinsic = np.asarray(camera_view["extrinsic"], dtype=np.float32)
+                intrinsic = np.asarray(camera_view["intrinsic"], dtype=np.float32)
 
-            # Store per-sample (S x 9) pose encoding; collate will add batch dim
-            sample[f"gt_camera_{modality}"] = pose_enc.squeeze(0)
+                extrinsics = torch.from_numpy(np.stack([extrinsic] * seq_len, axis=0)).unsqueeze(0)
+                intrinsics = torch.from_numpy(np.stack([intrinsic] * seq_len, axis=0)).unsqueeze(0)
+                pose_enc = extri_intri_to_pose_encoding(
+                    extrinsics,
+                    intrinsics,
+                    image_size_hw=hw,
+                    pose_encoding_type=self.pose_encoding_type,
+                )
+                pose_enc_views.append(pose_enc.squeeze(0))
+
+            if not pose_enc_views:
+                continue
+            if len(pose_enc_views) == 1:
+                sample[f"gt_camera_{modality}"] = pose_enc_views[0]
+            else:
+                sample[f"gt_camera_{modality}"] = torch.stack(pose_enc_views, dim=0)
 
         return sample
 
@@ -167,29 +269,26 @@ class ReplaceBySyntheticCamera:
 
         for modality in modalities:
             camera_key = f"{modality}_camera"
-            camera = sample.get(camera_key)
-            if camera is None:
+            camera_raw = sample.get(camera_key)
+            camera_list = _camera_to_list(camera_raw)
+            if not camera_list:
                 continue
-            intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
-            extrinsic = np.asarray(camera["extrinsic"], dtype=np.float32)
 
             if gt_keypoints is not None:
-                self._update_keypoints(sample, modality, gt_keypoints, extrinsic, intrinsic)
+                self._update_keypoints(sample, modality, gt_keypoints, camera_list)
 
             if not apply_synth:
                 continue
 
-            synthetic_cam = self._jitter_camera(intrinsic, extrinsic)
-            sample[camera_key] = synthetic_cam
+            synthetic_cameras = []
+            for camera in camera_list:
+                intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
+                extrinsic = np.asarray(camera["extrinsic"], dtype=np.float32)
+                synthetic_cameras.append(self._jitter_camera(intrinsic, extrinsic))
+            sample[camera_key] = _restore_camera_type(synthetic_cameras, camera_raw)
 
             if gt_keypoints is not None:
-                self._update_keypoints(
-                    sample,
-                    modality,
-                    gt_keypoints,
-                    synthetic_cam["extrinsic"],
-                    synthetic_cam["intrinsic"],
-                )
+                self._update_keypoints(sample, modality, gt_keypoints, synthetic_cameras)
 
         return sample
 
@@ -222,14 +321,23 @@ class ReplaceBySyntheticCamera:
             "extrinsic": np.hstack((R, T)).astype(np.float32),
         }
 
-    def _update_keypoints(self, sample, modality, gt_keypoints, extrinsic, intrinsic):
+    def _update_keypoints(self, sample, modality, gt_keypoints, cameras):
         if modality in {"rgb", "depth"}:
             image_size_hw = self._get_image_size(sample, modality)
-            kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
-            if self.normalize_2d:
-                kp_2d = self._normalize_2d(kp_2d, image_size_hw)
-                kp_2d = np.clip(kp_2d, -1.0, 1.0)
-            sample[f"gt_keypoints_2d_{modality}"] = kp_2d.astype(np.float32)
+            points = np.asarray(gt_keypoints, dtype=np.float32)
+            kp_2d_views = []
+            for camera in cameras:
+                extrinsic = np.asarray(camera["extrinsic"], dtype=np.float32)
+                intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
+                kp_2d = self._project_to_image(points, extrinsic, intrinsic)
+                if self.normalize_2d:
+                    kp_2d = self._normalize_2d(kp_2d, image_size_hw)
+                    kp_2d = np.clip(kp_2d, -1.0, 1.0)
+                kp_2d_views.append(kp_2d.astype(np.float32))
+            if len(kp_2d_views) == 1:
+                sample[f"gt_keypoints_2d_{modality}"] = kp_2d_views[0]
+            elif kp_2d_views:
+                sample[f"gt_keypoints_2d_{modality}"] = np.stack(kp_2d_views, axis=0)
             return
 
         # cam_kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
@@ -255,8 +363,16 @@ class ReplaceBySyntheticCamera:
         if input_key in sample:
             frames = sample[input_key]
             if isinstance(frames, (list, tuple)) and len(frames) > 0:
-                h, w = frames[0].shape[:2]
-                return int(h), int(w)
+                frame0 = frames[0]
+                if isinstance(frame0, (list, tuple)) and len(frame0) > 0:
+                    frame0 = frame0[0]
+                if hasattr(frame0, "shape") and len(frame0.shape) >= 2:
+                    shape = frame0.shape
+                    if len(shape) == 3 and shape[0] in (1, 3, 4) and shape[1] > 4:
+                        return int(shape[1]), int(shape[2])
+                    return int(shape[0]), int(shape[1])
+            if isinstance(frames, torch.Tensor) and frames.dim() >= 4:
+                return int(frames.shape[-2]), int(frames.shape[-1])
             if isinstance(frames, np.ndarray) and frames.ndim >= 3:
                 return int(frames.shape[-3]), int(frames.shape[-2])
         return self.default_image_size_hw
@@ -336,17 +452,33 @@ class SyncKeypointsWithCameraEncoding:
         return sample
 
     def _decode_camera(self, gt_camera, image_size_hw):
+        if gt_camera.dim() == 1:
+            gt_camera = gt_camera.unsqueeze(0).unsqueeze(0)
         if gt_camera.dim() == 2:
             gt_camera = gt_camera.unsqueeze(0)
+        if gt_camera.dim() == 3:
+            extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                gt_camera,
+                image_size_hw=image_size_hw,
+                pose_encoding_type=self.pose_encoding_type,
+                build_intrinsics=True,
+            )
+            return extrinsics, intrinsics
+        if gt_camera.dim() == 4:
+            b, v, s, d = gt_camera.shape
+            gt_camera = gt_camera.reshape(b * v, s, d)
+            extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                gt_camera,
+                image_size_hw=image_size_hw,
+                pose_encoding_type=self.pose_encoding_type,
+                build_intrinsics=True,
+            )
+            extrinsics = extrinsics.reshape(b, v, s, 3, 4)
+            intrinsics = intrinsics.reshape(b, v, s, 3, 3)
+            return extrinsics, intrinsics
         if gt_camera.dim() != 3:
             return None, None
-        extrinsics, intrinsics = pose_encoding_to_extri_intri(
-            gt_camera,
-            image_size_hw=image_size_hw,
-            pose_encoding_type=self.pose_encoding_type,
-            build_intrinsics=True,
-        )
-        return extrinsics, intrinsics
+        return None, None
 
     def _get_image_size(self, sample, modality):
         size_key = f"image_size_hw_{modality}"
@@ -362,8 +494,14 @@ class SyncKeypointsWithCameraEncoding:
         if input_key in sample:
             frames = sample[input_key]
             if isinstance(frames, (list, tuple)) and len(frames) > 0:
-                h, w = frames[0].shape[:2]
-                return int(h), int(w)
+                frame0 = frames[0]
+                if isinstance(frame0, (list, tuple)) and len(frame0) > 0:
+                    frame0 = frame0[0]
+                if hasattr(frame0, "shape") and len(frame0.shape) >= 2:
+                    shape = frame0.shape
+                    if len(shape) == 3 and shape[0] in (1, 3, 4) and shape[1] > 4:
+                        return int(shape[1]), int(shape[2])
+                    return int(shape[0]), int(shape[1])
             if isinstance(frames, torch.Tensor) and frames.dim() >= 4:
                 return int(frames.shape[-2]), int(frames.shape[-1])
             if isinstance(frames, np.ndarray) and frames.ndim >= 3:
@@ -372,47 +510,50 @@ class SyncKeypointsWithCameraEncoding:
 
     @staticmethod
     def _project_to_image(points, extrinsics, intrinsics):
-        # points: (J,3), (S,J,3), (B,J,3), or (B,S,J,3)
-        # extrinsics/intrinsics: (B,S,3,4)/(B,S,3,3)
-        B_cam, S_cam = extrinsics.shape[:2]
+        # points: (J,3), (S,J,3), (L,J,3), or (L,S,J,3)
+        # extrinsics/intrinsics: (...,S,3,4)/(...,S,3,3)
+        leading_shape = extrinsics.shape[:-3]
+        seq_len = extrinsics.shape[-3]
+        leading_size = int(np.prod(leading_shape)) if len(leading_shape) > 0 else 1
+
+        extrinsics_flat = extrinsics.reshape(leading_size, seq_len, 3, 4)
+        intrinsics_flat = intrinsics.reshape(leading_size, seq_len, 3, 3)
 
         if points.dim() == 2:
-            points = points.unsqueeze(0).unsqueeze(0)  # 1,1,J,3
+            points = points.unsqueeze(0).unsqueeze(0)
         elif points.dim() == 3:
-            # Infer whether dim-0 is temporal (S) or batch (B).
-            if points.shape[0] == S_cam:
-                points = points.unsqueeze(0)  # 1,S,J,3
-            elif points.shape[0] == B_cam:
-                points = points.unsqueeze(1)  # B,1,J,3
-            elif points.shape[0] == 1:
-                points = points.unsqueeze(0)  # 1,1,J,3
+            if points.shape[0] == seq_len:
+                points = points.unsqueeze(0)
+            elif points.shape[0] in {1, leading_size}:
+                points = points.unsqueeze(1)
             else:
                 raise ValueError(
                     f"Ambiguous keypoint shape {tuple(points.shape)} for camera shape "
-                    f"(B={B_cam}, S={S_cam})."
+                    f"(L={leading_size}, S={seq_len})."
                 )
         elif points.dim() != 4:
             raise ValueError(f"Expected points dim in [2, 3, 4], got {points.dim()}.")
 
-        if points.shape[0] == 1 and B_cam > 1:
-            points = points.expand(B_cam, -1, -1, -1)
-        if points.shape[1] == 1 and S_cam > 1:
-            points = points.expand(-1, S_cam, -1, -1)
+        if points.shape[0] == 1 and leading_size > 1:
+            points = points.expand(leading_size, -1, -1, -1)
+        if points.shape[1] == 1 and seq_len > 1:
+            points = points.expand(-1, seq_len, -1, -1)
 
-        if points.shape[0] != B_cam or points.shape[1] != S_cam:
+        if points.shape[0] != leading_size or points.shape[1] != seq_len:
             raise ValueError(
                 f"Keypoints shape {tuple(points.shape)} does not match camera shape "
-                f"(B={B_cam}, S={S_cam})."
+                f"(L={leading_size}, S={seq_len})."
             )
 
-        R = extrinsics[..., :3, :3]
-        T = extrinsics[..., :3, 3]
-        cam_points = torch.einsum("bsij,bsnj->bsni", R, points) + T.unsqueeze(2)
+        R = extrinsics_flat[..., :3, :3]
+        T = extrinsics_flat[..., :3, 3]
+        cam_points = torch.einsum("lsij,lsnj->lsni", R, points) + T.unsqueeze(2)
         cam_z = cam_points[..., 2].clamp(min=1e-6)
-        proj = torch.einsum("bsij,bsnj->bsni", intrinsics, cam_points)
+        proj = torch.einsum("lsij,lsnj->lsni", intrinsics_flat, cam_points)
         u = proj[..., 0] / cam_z
         v = proj[..., 1] / cam_z
-        return torch.stack([u, v], dim=-1)
+        out = torch.stack([u, v], dim=-1)
+        return out.reshape(*leading_shape, seq_len, out.shape[-2], 2)
 
     @staticmethod
     def _normalize_2d(points_2d, image_size_hw):

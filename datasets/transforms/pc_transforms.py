@@ -23,32 +23,47 @@ class PCPad():
     def __call__(self, results):
         for key in self.keys:
             pc_seq = results[key]
-            padded_pc_seq = []
-
-            for pc in pc_seq:
-                N, C = pc.shape
-
-                if N == 0:
-                    pc = np.random.normal(0, 1, (self.num_points, C)).astype(pc.dtype)
-
-                elif N < self.num_points:
-                    if self.pad_mode == 'zero':
-                        pad = np.zeros((self.num_points - N, C), dtype=pc.dtype)
-                    elif self.pad_mode == 'repeat':
-                        np.random.shuffle(pc)
-                        repeat_times = (self.num_points - N) // N + 1
-                        pad = np.tile(pc, (repeat_times, 1))[:self.num_points - N]
-                    pc = np.vstack((pc, pad))
-
-                elif N > self.num_points:
-                    np.random.shuffle(pc)
-                    pc = pc[:self.num_points]
-
-                padded_pc_seq.append(pc)
-
-            results[key] = padded_pc_seq
+            is_multi_view = (
+                isinstance(pc_seq, (list, tuple))
+                and len(pc_seq) > 0
+                and isinstance(pc_seq[0], (list, tuple))
+            )
+            if is_multi_view:
+                padded_views = []
+                for view_seq in pc_seq:
+                    padded_view = []
+                    for pc in view_seq:
+                        padded_view.append(self._pad_single_pc(pc))
+                    padded_views.append(padded_view)
+                results[key] = padded_views
+            else:
+                padded_pc_seq = []
+                for pc in pc_seq:
+                    padded_pc_seq.append(self._pad_single_pc(pc))
+                results[key] = padded_pc_seq
 
         return results
+
+    def _pad_single_pc(self, pc):
+        N, C = pc.shape
+
+        if N == 0:
+            return np.random.normal(0, 1, (self.num_points, C)).astype(pc.dtype)
+
+        if N < self.num_points:
+            if self.pad_mode == 'zero':
+                pad = np.zeros((self.num_points - N, C), dtype=pc.dtype)
+            elif self.pad_mode == 'repeat':
+                np.random.shuffle(pc)
+                repeat_times = (self.num_points - N) // N + 1
+                pad = np.tile(pc, (repeat_times, 1))[:self.num_points - N]
+            return np.vstack((pc, pad))
+
+        if N > self.num_points:
+            np.random.shuffle(pc)
+            return pc[:self.num_points]
+
+        return pc
     
 class PCJitter():
     def __init__(self, 
@@ -273,13 +288,142 @@ class PCCenterWithKeypoints():
         pts = (R @ pts.T).T + T.reshape(1, 3)
         return pts.reshape(shape)
 
+    @staticmethod
+    def _to_camera_list(camera):
+        if camera is None:
+            return []
+        if isinstance(camera, (list, tuple)):
+            return list(camera)
+        return [camera]
+
+    @staticmethod
+    def _restore_camera_type(cameras, original):
+        if isinstance(original, (list, tuple)):
+            return cameras
+        return cameras[0] if cameras else None
+
+    @staticmethod
+    def _flatten_pc_sequence(pc_seq):
+        if (
+            isinstance(pc_seq, (list, tuple))
+            and len(pc_seq) > 0
+            and isinstance(pc_seq[0], (list, tuple))
+        ):
+            return [pc for view_seq in pc_seq for pc in view_seq]
+        return list(pc_seq)
+
+    @staticmethod
+    def _center_pc_sequence(pc_seq, center):
+        if (
+            isinstance(pc_seq, (list, tuple))
+            and len(pc_seq) > 0
+            and isinstance(pc_seq[0], (list, tuple))
+        ):
+            out = []
+            for view_seq in pc_seq:
+                out_view = []
+                for pc in view_seq:
+                    pc[:, :3] = pc[:, :3] - center
+                    out_view.append(pc)
+                out.append(out_view)
+            return out
+        out = []
+        for pc in pc_seq:
+            pc[:, :3] = pc[:, :3] - center
+            out.append(pc)
+        return out
+
+    @staticmethod
+    def _is_pelvis_centered(keypoints):
+        if isinstance(keypoints, np.ndarray):
+            if keypoints.shape[-1] != 3 or keypoints.size < 3:
+                return False
+            return np.linalg.norm(keypoints.reshape(-1, 3)[0]) < 1e-4
+        if isinstance(keypoints, torch.Tensor):
+            if keypoints.shape[-1] != 3 or keypoints.numel() < 3:
+                return False
+            return torch.linalg.norm(keypoints.reshape(-1, 3)[0]).item() < 1e-4
+        return False
+
+    @staticmethod
+    def _subtract_center(keypoints, center):
+        if isinstance(keypoints, torch.Tensor):
+            out = keypoints.clone()
+            out[..., :3] = out[..., :3] - torch.as_tensor(center, dtype=out.dtype, device=out.device)
+            return out
+        out = np.asarray(keypoints, dtype=np.float32).copy()
+        out[..., :3] = out[..., :3] - center
+        return out
+
+    def _update_gt_camera_translation(self, gt_camera, translations):
+        if gt_camera is None:
+            return None
+        trans = np.asarray(translations, dtype=np.float32)
+        if trans.ndim == 1:
+            trans = trans[None, :]
+        num_views = trans.shape[0]
+
+        if isinstance(gt_camera, torch.Tensor):
+            gt_cam = gt_camera.clone()
+            trans_t = torch.as_tensor(trans, dtype=gt_cam.dtype, device=gt_cam.device)
+            if gt_cam.dim() == 1:
+                gt_cam[:3] = trans_t[0]
+            elif gt_cam.dim() == 2:
+                if num_views > 1 and gt_cam.shape[0] == num_views and gt_cam.shape[-1] == 9:
+                    gt_cam[:, :3] = trans_t
+                else:
+                    gt_cam[..., :3] = trans_t[0]
+            elif gt_cam.dim() == 3:
+                if num_views > 1 and gt_cam.shape[0] == num_views and gt_cam.shape[-1] == 9:
+                    gt_cam[..., :3] = trans_t[:, None, :]
+                elif num_views > 1 and gt_cam.shape[1] == num_views and gt_cam.shape[-1] == 9:
+                    gt_cam[..., :3] = trans_t[None, :, :]
+                else:
+                    gt_cam[..., :3] = trans_t[0]
+            elif gt_cam.dim() == 4:
+                if num_views > 1 and gt_cam.shape[1] == num_views and gt_cam.shape[-1] == 9:
+                    gt_cam[..., :3] = trans_t[None, :, None, :]
+                elif num_views > 1 and gt_cam.shape[2] == num_views and gt_cam.shape[-1] == 9:
+                    gt_cam[..., :3] = trans_t[None, None, :, :]
+                else:
+                    gt_cam[..., :3] = trans_t[0]
+            return gt_cam
+
+        gt_cam = np.asarray(gt_camera, dtype=np.float32).copy()
+        if gt_cam.ndim == 1:
+            gt_cam[:3] = trans[0]
+        elif gt_cam.ndim == 2:
+            if num_views > 1 and gt_cam.shape[0] == num_views and gt_cam.shape[-1] == 9:
+                gt_cam[:, :3] = trans
+            else:
+                gt_cam[..., :3] = trans[0]
+        elif gt_cam.ndim == 3:
+            if num_views > 1 and gt_cam.shape[0] == num_views and gt_cam.shape[-1] == 9:
+                gt_cam[..., :3] = trans[:, None, :]
+            elif num_views > 1 and gt_cam.shape[1] == num_views and gt_cam.shape[-1] == 9:
+                gt_cam[..., :3] = trans[None, :, :]
+            else:
+                gt_cam[..., :3] = trans[0]
+        elif gt_cam.ndim == 4:
+            if num_views > 1 and gt_cam.shape[1] == num_views and gt_cam.shape[-1] == 9:
+                gt_cam[..., :3] = trans[None, :, None, :]
+            elif num_views > 1 and gt_cam.shape[2] == num_views and gt_cam.shape[-1] == 9:
+                gt_cam[..., :3] = trans[None, None, :, :]
+            else:
+                gt_cam[..., :3] = trans[0]
+        return gt_cam
+
     def __call__(self, results):
         for key in self.keys:
             if key not in results:
                 results[f'{key}_affine'] = initialize_affine_matrix()
                 continue
             pc_seq = results[key]
-            all_ps = np.concatenate(pc_seq, axis=0)
+            flat_pc = self._flatten_pc_sequence(pc_seq)
+            valid_pc = [pc for pc in flat_pc if pc is not None and pc.size > 0]
+            if not valid_pc:
+                continue
+            all_ps = np.concatenate(valid_pc, axis=0)
             if all_ps.size == 0:
                 continue
 
@@ -292,72 +436,53 @@ class PCCenterWithKeypoints():
             modality = self._modality_from_key(key)
             camera_key = f"{modality}_camera"
             gt_camera_key = f"gt_camera_{modality}"
-            camera = results.get(camera_key)
-            extrinsic_before = None
-            if camera is not None and "extrinsic" in camera:
-                extrinsic_before = np.asarray(camera["extrinsic"], dtype=np.float32)
+            camera_raw = results.get(camera_key)
+            camera_list = self._to_camera_list(camera_raw)
+            extrinsic_before_list = []
+            for camera in camera_list:
+                if camera is not None and "extrinsic" in camera:
+                    extrinsic_before_list.append(np.asarray(camera["extrinsic"], dtype=np.float32))
 
-            centered_pc_seq = []
-            for pc in pc_seq:
-                pc[:, :3] = pc[:, :3] - center
-                centered_pc_seq.append(pc)
-            results[key] = centered_pc_seq
+            results[key] = self._center_pc_sequence(pc_seq, center)
             if f'{key}_affine' not in results:
                 results[f'{key}_affine'] = initialize_affine_matrix()
             results[f'{key}_affine'][:3, 3] = results[f'{key}_affine'][:3, 3] - center
 
             if self.keypoints_key in results and results[self.keypoints_key] is not None:
                 keypoints = results[self.keypoints_key]
-                keypoints_for_pc = keypoints
-                if extrinsic_before is not None:
-                    if isinstance(keypoints, np.ndarray):
-                        if keypoints.shape[-1] == 3 and keypoints.shape[0] >= 1:
-                            pelvis_norm = np.linalg.norm(keypoints.reshape(-1, 3)[0])
-                            if pelvis_norm < 1e-4:
-                                keypoints_for_pc = self._apply_extrinsic(keypoints, extrinsic_before)
-                    elif isinstance(keypoints, torch.Tensor):
-                        if keypoints.shape[-1] == 3 and keypoints.numel() >= 3:
-                            pelvis_norm = torch.linalg.norm(keypoints.reshape(-1, 3)[0]).item()
-                            if pelvis_norm < 1e-4:
-                                keypoints_for_pc = self._apply_extrinsic(keypoints, extrinsic_before)
-
-                if isinstance(keypoints_for_pc, torch.Tensor):
-                    shifted = keypoints_for_pc.clone()
-                    shifted[..., :3] = shifted[..., :3] - torch.as_tensor(center, dtype=shifted.dtype, device=shifted.device)
+                if extrinsic_before_list:
+                    shifted_views = []
+                    for extrinsic_before in extrinsic_before_list:
+                        keypoints_for_pc = keypoints
+                        if self._is_pelvis_centered(keypoints):
+                            keypoints_for_pc = self._apply_extrinsic(keypoints_for_pc, extrinsic_before)
+                        shifted_views.append(self._subtract_center(keypoints_for_pc, center))
+                    if len(shifted_views) == 1:
+                        shifted = shifted_views[0]
+                    elif isinstance(shifted_views[0], torch.Tensor):
+                        shifted = torch.stack(shifted_views, dim=0)
+                    else:
+                        shifted = np.stack(shifted_views, axis=0)
                 else:
-                    shifted = np.asarray(keypoints_for_pc, dtype=np.float32).copy()
-                    shifted[..., :3] = shifted[..., :3] - center
+                    shifted = self._subtract_center(keypoints, center)
                 results[f'{self.keypoints_key}{self.shifted_keypoints_suffix}_{key}'] = shifted
 
-            if extrinsic_before is not None:
-                extrinsic_after = extrinsic_before.copy()
-                extrinsic_after[:, 3] = extrinsic_after[:, 3] - center
-                camera = dict(camera)
-                camera["extrinsic"] = extrinsic_after.astype(np.float32)
-                results[camera_key] = camera
+            if extrinsic_before_list:
+                updated_camera_list = []
+                translations = []
+                for camera, extrinsic_before in zip(camera_list, extrinsic_before_list):
+                    extrinsic_after = extrinsic_before.copy()
+                    extrinsic_after[:, 3] = extrinsic_after[:, 3] - center
+                    camera_out = dict(camera)
+                    camera_out["extrinsic"] = extrinsic_after.astype(np.float32)
+                    updated_camera_list.append(camera_out)
+                    translations.append(extrinsic_after[:, 3])
+                results[camera_key] = self._restore_camera_type(updated_camera_list, camera_raw)
 
                 if gt_camera_key in results and results[gt_camera_key] is not None:
-                    gt_camera = results[gt_camera_key]
-                    if isinstance(gt_camera, torch.Tensor):
-                        gt_cam = gt_camera.clone()
-                        if gt_cam.dim() == 1:
-                            gt_cam = gt_cam.unsqueeze(0)
-                            squeeze_back = True
-                        else:
-                            squeeze_back = False
-                        gt_cam[..., :3] = torch.as_tensor(
-                            extrinsic_after[:, 3], dtype=gt_cam.dtype, device=gt_cam.device
-                        )
-                        results[gt_camera_key] = gt_cam.squeeze(0) if squeeze_back else gt_cam
-                    else:
-                        gt_cam = np.asarray(gt_camera, dtype=np.float32).copy()
-                        if gt_cam.ndim == 1:
-                            gt_cam = gt_cam[None, :]
-                            squeeze_back = True
-                        else:
-                            squeeze_back = False
-                        gt_cam[..., :3] = extrinsic_after[:, 3]
-                        results[gt_camera_key] = gt_cam.squeeze(0) if squeeze_back else gt_cam
+                    results[gt_camera_key] = self._update_gt_camera_translation(
+                        results[gt_camera_key], np.stack(translations, axis=0)
+                    )
 
         return results
     

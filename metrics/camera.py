@@ -174,7 +174,7 @@ class CameraTranslationError:
             pred_cameras = pred_cameras[-1]
         
         pred_cameras = to_numpy(pred_cameras)
-        gt_cameras = to_numpy(gt_cameras)
+        gt_cameras = to_numpy(_select_gt_camera_last_frame(gt_cameras))
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -230,7 +230,7 @@ class CameraRotationError:
             pred_cameras = pred_cameras[-1]
         
         pred_cameras = to_numpy(pred_cameras)
-        gt_cameras = to_numpy(gt_cameras)
+        gt_cameras = to_numpy(_select_gt_camera_last_frame(gt_cameras))
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -286,7 +286,7 @@ class CameraFoVError:
             pred_cameras = pred_cameras[-1]
         
         pred_cameras = to_numpy(pred_cameras)
-        gt_cameras = to_numpy(gt_cameras)
+        gt_cameras = to_numpy(_select_gt_camera_last_frame(gt_cameras))
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -344,7 +344,7 @@ class CameraFocalError:
             pred_cameras = pred_cameras[-1]
         
         pred_cameras = to_numpy(pred_cameras)
-        gt_cameras = to_numpy(gt_cameras)
+        gt_cameras = to_numpy(_select_gt_camera_last_frame(gt_cameras))
         
         # Handle batch dimensions - flatten if needed
         if pred_cameras.ndim > 2:
@@ -420,13 +420,7 @@ class CameraTranslationL2Error:
 
     @staticmethod
     def _select_gt_camera(gt_cameras):
-        if gt_cameras is None:
-            return None
-        if isinstance(gt_cameras, np.ndarray):
-            return gt_cameras[:, -1] if gt_cameras.ndim == 3 else gt_cameras
-        if isinstance(gt_cameras, torch.Tensor):
-            return gt_cameras[:, -1] if gt_cameras.dim() == 3 else gt_cameras
-        return gt_cameras
+        return _select_gt_camera_last_frame(gt_cameras)
 
 
 class CameraRotationAngleError:
@@ -490,13 +484,7 @@ class CameraRotationAngleError:
 
     @staticmethod
     def _select_gt_camera(gt_cameras):
-        if gt_cameras is None:
-            return None
-        if isinstance(gt_cameras, np.ndarray):
-            return gt_cameras[:, -1] if gt_cameras.ndim == 3 else gt_cameras
-        if isinstance(gt_cameras, torch.Tensor):
-            return gt_cameras[:, -1] if gt_cameras.dim() == 3 else gt_cameras
-        return gt_cameras
+        return _select_gt_camera_last_frame(gt_cameras)
 
 
 def _rotation_angle_from_quats(pred_quats, gt_quats, eps=1e-15):
@@ -532,6 +520,24 @@ def _calculate_auc_np(r_error, t_error, max_threshold=30):
     return np.mean(np.cumsum(normalized_histogram))
 
 
+def _select_gt_camera_last_frame(gt_cameras):
+    if gt_cameras is None:
+        return None
+    if isinstance(gt_cameras, np.ndarray):
+        if gt_cameras.ndim == 4:
+            return gt_cameras[:, :, -1, :].mean(axis=1)
+        if gt_cameras.ndim == 3:
+            return gt_cameras[:, -1, :]
+        return gt_cameras
+    if isinstance(gt_cameras, torch.Tensor):
+        if gt_cameras.dim() == 4:
+            return gt_cameras[:, :, -1, :].mean(dim=1)
+        if gt_cameras.dim() == 3:
+            return gt_cameras[:, -1, :]
+        return gt_cameras
+    return gt_cameras
+
+
 class CameraPoseAUC:
     """AUC metric for absolute camera pose errors in the pelvis-based human frame."""
 
@@ -553,10 +559,8 @@ class CameraPoseAUC:
         if gt_cameras is None:
             return 0.0
 
+        gt_cameras = _select_gt_camera_last_frame(gt_cameras)
         gt_cameras = to_numpy(gt_cameras)
-
-        if gt_cameras.ndim == 3:
-            gt_cameras = gt_cameras[:, -1]
 
         if pred_cameras.ndim == 3:
             modalities = targets.get('modalities', [])

@@ -30,6 +30,9 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         modality_names: Sequence[str] = ("rgb", "depth"),
         rgb_cameras: Optional[Sequence[str]] = None,
         depth_cameras: Optional[Sequence[str]] = None,
+        rgb_cameras_per_sample: int = 1,
+        depth_cameras_per_sample: int = 1,
+        lidar_cameras_per_sample: int = 1,
         seq_len: int = 5,
         seq_step: int = 1,
         pad_seq: bool = False,
@@ -54,6 +57,9 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             modality_names=modality_names,
             rgb_cameras=rgb_cameras,
             depth_cameras=depth_cameras,
+            rgb_cameras_per_sample=rgb_cameras_per_sample,
+            depth_cameras_per_sample=depth_cameras_per_sample,
+            lidar_cameras_per_sample=lidar_cameras_per_sample,
             seq_len=seq_len,
             seq_step=seq_step,
             pad_seq=pad_seq,
@@ -191,12 +197,16 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             if rgb.dim() >= 4:
                 return int(rgb.shape[-2]), int(rgb.shape[-1])
         elif isinstance(rgb, np.ndarray):
+            if rgb.ndim == 5:
+                return int(rgb.shape[2]), int(rgb.shape[3])
             if rgb.ndim == 4:
                 return int(rgb.shape[1]), int(rgb.shape[2])
             if rgb.ndim == 3:
                 return int(rgb.shape[0]), int(rgb.shape[1])
         elif isinstance(rgb, (list, tuple)) and len(rgb) > 0:
             frame0 = rgb[0]
+            if isinstance(frame0, (list, tuple)) and len(frame0) > 0:
+                frame0 = frame0[0]
             if hasattr(frame0, "shape") and len(frame0.shape) >= 2:
                 return int(frame0.shape[0]), int(frame0.shape[1])
         return self.rgb_skeleton_image_size_hw
@@ -236,16 +246,35 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             frames.append(frame_list[idx][1].copy())
         return np.stack(frames, axis=0).astype(np.float32)
 
+    def _load_rgb_skeleton_frames_multi(
+        self, seq_name: str, rgb_cameras: Sequence[Optional[str]], start_frame: int
+    ) -> np.ndarray:
+        if not rgb_cameras:
+            return self._load_rgb_skeleton_frames(seq_name, None, start_frame)
+        view_kpts = []
+        for camera_name in rgb_cameras:
+            view_kpts.append(self._load_rgb_skeleton_frames(seq_name, camera_name, start_frame))
+        if len(view_kpts) == 1:
+            return view_kpts[0]
+        return np.stack(view_kpts, axis=0).astype(np.float32)
+
     def __getitem__(self, index):
         sample = super().__getitem__(index)
         if not self.rgb_skeleton_index:
             return sample
 
-        seq_name, rgb_camera, start_frame = self._parse_sample_id(sample.get("sample_id", ""))
-        if seq_name is None:
-            return sample
+        seq_name = sample.get("seq_name")
+        start_frame = sample.get("start_frame")
+        selected = sample.get("selected_cameras", {})
+        rgb_cameras = selected.get("rgb", []) if isinstance(selected, dict) else []
 
-        kpts = self._load_rgb_skeleton_frames(seq_name, rgb_camera, start_frame)
+        if seq_name is None or start_frame is None:
+            seq_name, rgb_camera, start_frame = self._parse_sample_id(sample.get("sample_id", ""))
+            if seq_name is None:
+                return sample
+            rgb_cameras = [rgb_camera]
+
+        kpts = self._load_rgb_skeleton_frames_multi(seq_name, rgb_cameras, int(start_frame))
         image_size_hw = self._resolve_image_size_hw(sample)
         kpts = self._normalize_2d(kpts, image_size_hw)
         sample["gt_keypoints_2d_rgb"] = torch.from_numpy(kpts.astype(np.float32))

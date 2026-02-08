@@ -118,6 +118,10 @@ class HummanCameraDatasetV1(BaseDataset):
         depth_cameras: Optional[Sequence[str]] = None,
         lidar_cameras: Optional[Sequence[str]] = None,
         mmwave_cameras: Optional[Sequence[str]] = None,
+        rgb_cameras_per_sample: int = 1,
+        depth_cameras_per_sample: int = 1,
+        lidar_cameras_per_sample: int = 1,
+        mmwave_cameras_per_sample: int = 1,
         frame_stride: int = 1,
         max_samples: Optional[int] = None,
         apply_to_new_world: bool = True,
@@ -161,6 +165,10 @@ class HummanCameraDatasetV1(BaseDataset):
         )
         self.lidar_cameras = list(lidar_cameras) if lidar_cameras is not None else list(self.depth_cameras)
         self.mmwave_cameras = list(mmwave_cameras) if mmwave_cameras is not None else []
+        self.rgb_cameras_per_sample = max(1, int(rgb_cameras_per_sample))
+        self.depth_cameras_per_sample = max(1, int(depth_cameras_per_sample))
+        self.lidar_cameras_per_sample = max(1, int(lidar_cameras_per_sample))
+        self.mmwave_cameras_per_sample = max(1, int(mmwave_cameras_per_sample))
 
         if unit not in {"mm", "m"}:
             warnings.warn(f"Invalid unit: {unit}. Defaulting to 'm'.")
@@ -451,6 +459,17 @@ class HummanCameraDatasetV1(BaseDataset):
         y = points_2d[..., 1] / (height - 1) * 2.0 - 1.0
         return np.stack([x, y], axis=-1)
 
+    @staticmethod
+    def _sample_cameras(candidates: List[Dict[str, np.ndarray]], count: int):
+        if not candidates:
+            return []
+        if len(candidates) >= count:
+            return random.sample(candidates, count)
+        sampled = list(candidates)
+        while len(sampled) < count:
+            sampled.append(random.choice(candidates))
+        return sampled
+
     def __len__(self):
         return len(self.data_list)
 
@@ -486,44 +505,80 @@ class HummanCameraDatasetV1(BaseDataset):
         }
 
         candidates = self._build_camera_candidates(cameras)
+        per_modality_count = {
+            "rgb": self.rgb_cameras_per_sample,
+            "depth": self.depth_cameras_per_sample,
+            "lidar": self.lidar_cameras_per_sample,
+            "mmwave": self.mmwave_cameras_per_sample,
+        }
         for modality in self.modality_names:
-            cam = self._sample_camera(modality, candidates.get(modality, []))
-            if cam is None:
+            sampled_cams = self._sample_cameras(
+                candidates.get(modality, []),
+                per_modality_count.get(modality, 1),
+            )
+            if not sampled_cams:
                 continue
 
-            extrinsic = cam["extrinsic"]
-            intrinsic = cam["intrinsic"]
-            if self.apply_to_new_world:
-                R_wc = extrinsic[:, :3]
-                T_wc = extrinsic[:, 3:]
-                R_new, T_new = self._update_extrinsic(R_wc, T_wc, R_root, pelvis)
-                extrinsic = np.hstack((R_new, T_new)).astype(np.float32)
+            keypoint_views = []
+            pose_enc_views = []
+            centered_lidar_views = []
+            centered_lidar_centers = []
 
-            if modality in {"rgb", "depth"}:
-                kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
-                kp_2d = self._normalize_2d(kp_2d, self.image_size_hw)
-                kp_2d = np.clip(kp_2d, -1.0, 1.0)
-                sample[f"gt_keypoints_2d_{modality}"] = torch.from_numpy(kp_2d.astype(np.float32))
-            else:
-                kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
-                if modality == "lidar" and self.output_pc_centered_lidar:
-                    center = kp_3d.mean(axis=0, keepdims=True)
-                    kp_3d = kp_3d - center
-                    extrinsic = extrinsic.copy()
-                    extrinsic[:, 3:] = extrinsic[:, 3:] - center.T
-                    sample["gt_keypoints_pc_centered_input_lidar"] = torch.from_numpy(kp_3d.astype(np.float32))
-                    sample["gt_keypoints_pc_center_lidar"] = torch.from_numpy(center.astype(np.float32)).squeeze(0)
-                sample[f"gt_keypoints_{modality}"] = torch.from_numpy(kp_3d.astype(np.float32))
+            for cam in sampled_cams:
+                extrinsic = cam["extrinsic"]
+                intrinsic = cam["intrinsic"]
+                if self.apply_to_new_world:
+                    R_wc = extrinsic[:, :3]
+                    T_wc = extrinsic[:, 3:]
+                    R_new, T_new = self._update_extrinsic(R_wc, T_wc, R_root, pelvis)
+                    extrinsic = np.hstack((R_new, T_new)).astype(np.float32)
 
-            extrinsics = torch.from_numpy(extrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
-            intrinsics = torch.from_numpy(intrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
-            pose_enc = extri_intri_to_pose_encoding(
-                extrinsics,
-                intrinsics,
-                image_size_hw=self.image_size_hw,
-                pose_encoding_type="absT_quaR_FoV",
-            )
-            sample[f"gt_camera_{modality}"] = pose_enc.squeeze(0)
+                if modality in {"rgb", "depth"}:
+                    kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
+                    kp_2d = self._normalize_2d(kp_2d, self.image_size_hw)
+                    kp_2d = np.clip(kp_2d, -1.0, 1.0)
+                    keypoint_views.append(torch.from_numpy(kp_2d.astype(np.float32)))
+                else:
+                    kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
+                    if modality == "lidar" and self.output_pc_centered_lidar:
+                        center = kp_3d.mean(axis=0, keepdims=True)
+                        kp_3d = kp_3d - center
+                        extrinsic = extrinsic.copy()
+                        extrinsic[:, 3:] = extrinsic[:, 3:] - center.T
+                        centered_lidar_views.append(torch.from_numpy(kp_3d.astype(np.float32)))
+                        centered_lidar_centers.append(torch.from_numpy(center.astype(np.float32)).squeeze(0))
+                    keypoint_views.append(torch.from_numpy(kp_3d.astype(np.float32)))
+
+                extrinsics = torch.from_numpy(extrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                intrinsics = torch.from_numpy(intrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                pose_enc = extri_intri_to_pose_encoding(
+                    extrinsics,
+                    intrinsics,
+                    image_size_hw=self.image_size_hw,
+                    pose_encoding_type="absT_quaR_FoV",
+                )
+                pose_enc_views.append(pose_enc.squeeze(0))
+
+            if keypoint_views:
+                kp_key = f"gt_keypoints_2d_{modality}" if modality in {"rgb", "depth"} else f"gt_keypoints_{modality}"
+                if len(keypoint_views) == 1:
+                    sample[kp_key] = keypoint_views[0]
+                else:
+                    sample[kp_key] = torch.stack(keypoint_views, dim=0)
+
+            if modality == "lidar" and self.output_pc_centered_lidar and centered_lidar_views:
+                if len(centered_lidar_views) == 1:
+                    sample["gt_keypoints_pc_centered_input_lidar"] = centered_lidar_views[0]
+                    sample["gt_keypoints_pc_center_lidar"] = centered_lidar_centers[0]
+                else:
+                    sample["gt_keypoints_pc_centered_input_lidar"] = torch.stack(centered_lidar_views, dim=0)
+                    sample["gt_keypoints_pc_center_lidar"] = torch.stack(centered_lidar_centers, dim=0)
+
+            if pose_enc_views:
+                if len(pose_enc_views) == 1:
+                    sample[f"gt_camera_{modality}"] = pose_enc_views[0]
+                else:
+                    sample[f"gt_camera_{modality}"] = torch.stack(pose_enc_views, dim=0)
 
         sample = self.pipeline(sample)
         return sample

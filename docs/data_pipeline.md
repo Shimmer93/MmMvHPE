@@ -31,7 +31,8 @@ A sample usually contains:
 - `input_rgb`, `input_depth`, `input_lidar`, `input_mmwave` (as available)
 - `gt_keypoints`: 3D keypoints
 - `gt_smpl_params`: SMPL params
-- `*_camera`: modality camera metadata dicts
+- `*_camera`: modality camera metadata
+: one camera is a dict, multi-camera is a list of dicts
 
 `BaseDataset.collate_fn` behavior to know:
 - if all sample values of a key are tensors, they are stacked.
@@ -40,20 +41,25 @@ A sample usually contains:
 
 This list-vs-tensor behavior is a common source of shape/type bugs in custom heads.
 
-## Temporal (`seq_len > 1`) shape contract
+## Temporal + Multi-Camera shape contract
 
-For sequence runs, the pipeline assumes:
-- `input_rgb`: `(T, C, H, W)` after `ToTensor`
-- `input_depth`: `(T, C, H, W)` after `ToTensor`
-- `input_lidar` / `input_mmwave`: `(T, N, C)` after `PCPad` + `ToTensor`
-- `gt_camera_<modality>`: `(T, 9)` pose encodings from `CameraParamToPoseEncoding`
+For sequence runs (`seq_len > 1`) and `configs/exp` multi-camera settings:
+- one-camera tensors remain unchanged:
+: `input_rgb` / `input_depth`: `(T, C, H, W)` after `ToTensor`
+: `input_lidar` / `input_mmwave`: `(T, N, C)` after `PCPad` + `ToTensor`
+: `gt_camera_<modality>`: `(T, 9)`
+- multi-camera tensors use an added leading view axis `V`:
+: `input_rgb` / `input_depth`: `(V, T, C, H, W)`
+: `input_lidar` / `input_mmwave`: `(V, T, N, C)`
+: `gt_camera_<modality>`: `(V, T, 9)`
 
 `SyncKeypointsWithCameraEncoding` supports both single-frame and sequence 3D keypoints:
 - if `gt_keypoints` is `(J, 3)`, it is broadcast across all `T` camera steps
 - if `gt_keypoints` is `(T, J, 3)`, it is used step-wise
 
-The synced 2D output is always sequence-aligned:
-- `gt_keypoints_2d_rgb` / `gt_keypoints_2d_depth`: `(T, J, 2)`
+The synced 2D output is sequence-aligned and view-aligned:
+- one-camera: `gt_keypoints_2d_rgb` / `gt_keypoints_2d_depth`: `(T, J, 2)`
+- multi-camera: `gt_keypoints_2d_rgb` / `gt_keypoints_2d_depth`: `(V, T, J, 2)`
 
 ## HummanPreprocessedDatasetV2 notes
 
@@ -72,6 +78,9 @@ Important behavior:
 - if no split config, defaults to person-based 80/20 split.
 - can convert depth to point cloud on the fly (`convert_depth_to_lidar=True`).
 - can skip heavy image loading while keeping geometry labels (`skeleton_only=True`).
+- supports sampling multiple cameras per modality with:
+: `rgb_cameras_per_sample`, `depth_cameras_per_sample`, `lidar_cameras_per_sample`
+- one-camera configs are still valid without any changes.
 
 ## Split config usage
 

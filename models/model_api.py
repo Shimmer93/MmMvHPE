@@ -106,6 +106,28 @@ class LitModel(L.LightningModule):
     @property
     def with_smpl_head(self):
         return hasattr(self.hparams, 'smpl_head') and not self.camera_only
+
+    @staticmethod
+    def _flatten_input_views(frames, expected_dims_without_view):
+        if frames is None:
+            return None, 1
+        if frames.dim() == expected_dims_without_view:
+            return frames, 1
+        if frames.dim() == expected_dims_without_view + 1:
+            b, v = frames.shape[:2]
+            flat = frames.reshape(b * v, *frames.shape[2:])
+            return flat, v
+        raise ValueError(
+            f"Unexpected input shape {tuple(frames.shape)}. "
+            f"Expected {expected_dims_without_view}D or {expected_dims_without_view + 1}D tensor."
+        )
+
+    @staticmethod
+    def _reduce_view_features(features, batch_size, num_views):
+        if num_views == 1:
+            return features
+        reshaped = features.reshape(batch_size, num_views, *features.shape[1:])
+        return reshaped.mean(dim=1)
     
     def forward_rgb(self, frames_rgb):
         """Forward function for RGB frames."""
@@ -113,12 +135,14 @@ class LitModel(L.LightningModule):
             return None
         
         B = frames_rgb.shape[0]
+        frames_rgb, num_views = self._flatten_input_views(frames_rgb, expected_dims_without_view=5)
         if self.has_temporal_rgb:
             features_rgb = self.backbone_rgb(frames_rgb)
         else:
             frames_rgb = rearrange(frames_rgb, 'b t ... -> (b t) ...')
             features_rgb = self.backbone_rgb(frames_rgb)
-            features_rgb = rearrange(features_rgb, '(b t) ... -> b t ...', b=B)
+            features_rgb = rearrange(features_rgb, '(b t) ... -> b t ...', b=B * num_views)
+        features_rgb = self._reduce_view_features(features_rgb, batch_size=B, num_views=num_views)
 
         return features_rgb
     
@@ -128,12 +152,14 @@ class LitModel(L.LightningModule):
             return None
 
         B = frames_depth.shape[0]
+        frames_depth, num_views = self._flatten_input_views(frames_depth, expected_dims_without_view=5)
         if self.has_temporal_depth:
             features_depth = self.backbone_depth(frames_depth)
         else:
             frames_depth = rearrange(frames_depth, 'b t ... -> (b t) ...')
             features_depth = self.backbone_depth(frames_depth)
-            features_depth = rearrange(features_depth, '(b t) ... -> b t ...', b=B)
+            features_depth = rearrange(features_depth, '(b t) ... -> b t ...', b=B * num_views)
+        features_depth = self._reduce_view_features(features_depth, batch_size=B, num_views=num_views)
 
         return features_depth
     
@@ -143,12 +169,14 @@ class LitModel(L.LightningModule):
             return None
 
         B = frames_lidar.shape[0]
+        frames_lidar, num_views = self._flatten_input_views(frames_lidar, expected_dims_without_view=4)
         if self.has_temporal_lidar:
             features_lidar = self.backbone_lidar(frames_lidar)
         else:
             frames_lidar = rearrange(frames_lidar, 'b t n c -> (b t) n c')
             features_lidar = self.backbone_lidar(frames_lidar)
-            features_lidar = rearrange(features_lidar, '(b t) ... -> b t ...', b=B)
+            features_lidar = rearrange(features_lidar, '(b t) ... -> b t ...', b=B * num_views)
+        features_lidar = self._reduce_view_features(features_lidar, batch_size=B, num_views=num_views)
 
         return features_lidar
     
@@ -158,12 +186,14 @@ class LitModel(L.LightningModule):
             return None
         
         B = frames_mmwave.shape[0]
+        frames_mmwave, num_views = self._flatten_input_views(frames_mmwave, expected_dims_without_view=4)
         if self.has_temporal_mmwave:
             features_mmwave = self.backbone_mmwave(frames_mmwave)
         else:
             frames_mmwave = rearrange(frames_mmwave, 'b t n c -> (b t) n c')
             features_mmwave = self.backbone_mmwave(frames_mmwave)
-            features_mmwave = rearrange(features_mmwave, '(b t) ... -> b t ...', b=B)
+            features_mmwave = rearrange(features_mmwave, '(b t) ... -> b t ...', b=B * num_views)
+        features_mmwave = self._reduce_view_features(features_mmwave, batch_size=B, num_views=num_views)
 
         return features_mmwave
 

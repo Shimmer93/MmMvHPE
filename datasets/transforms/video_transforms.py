@@ -97,22 +97,30 @@ class VideoNormalize():
             self.std = np.array(std).reshape(1, 1, 3)
         self.keys = keys
 
+    def _normalize_frame(self, frame):
+        if frame.ndim == 2:
+            mean = self.mean[0, 0, 0]
+            std = self.std[0, 0, 0]
+            return (frame.astype(np.float32) - mean) / std
+        return (frame.astype(np.float32) - self.mean) / self.std
+
+    def _normalize_sequence(self, frames):
+        normalized_frames = []
+        for frame in frames:
+            normalized_frames.append(self._normalize_frame(frame))
+        return normalized_frames
+
     def __call__(self, sample):
         for key in self.keys:
             frames = sample[key]
-            normalized_frames = []
-            for frame in frames:
-                # Handle both RGB (H, W, 3) and grayscale (H, W) images
-                if frame.ndim == 2:
-                    # Grayscale image - use scalar mean/std
-                    mean = self.mean[0, 0, 0]
-                    std = self.std[0, 0, 0]
-                    frame = (frame.astype(np.float32) - mean) / std
-                else:
-                    # RGB image - use channel-wise mean/std
-                    frame = (frame.astype(np.float32) - self.mean) / self.std
-                normalized_frames.append(frame)
-            sample[key] = normalized_frames
+            if (
+                isinstance(frames, (list, tuple))
+                and len(frames) > 0
+                and isinstance(frames[0], (list, tuple))
+            ):
+                sample[key] = [self._normalize_sequence(view_frames) for view_frames in frames]
+            else:
+                sample[key] = self._normalize_sequence(frames)
         return sample
 
 

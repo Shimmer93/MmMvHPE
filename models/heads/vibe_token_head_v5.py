@@ -284,10 +284,17 @@ class VIBETokenHeadV5(BaseHead):
         if not isinstance(gt_camera, torch.Tensor):
             gt_camera = torch.as_tensor(gt_camera, dtype=torch.float32)
         gt_camera = gt_camera.to(device).float()
+        if gt_camera.dim() == 1:
+            gt_camera = gt_camera.unsqueeze(0)
         if gt_camera.dim() == 2:
             gt_camera = gt_camera.unsqueeze(0)
-        if gt_camera.dim() == 3:
+        if gt_camera.dim() == 4:
+            # [B, V, S, 9] -> use last time step and average across views.
+            gt_camera = gt_camera[:, :, -1, :].mean(dim=1)
+        elif gt_camera.dim() == 3:
             gt_camera = gt_camera[:, -1]
+        else:
+            return None
 
         image_size = self._get_image_size(data_batch, modality)
         extrinsics, intrinsics = pose_encoding_to_extri_intri(

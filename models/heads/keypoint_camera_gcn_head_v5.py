@@ -369,6 +369,16 @@ class KeypointCameraGCNHeadV5(BaseHead):
         """Normalize keypoint tensor to [B, S, J, C]."""
         if not isinstance(tensor, torch.Tensor):
             return None
+        if tensor.dim() == 5:
+            # [B, V, S, J, C] -> reduce views.
+            if tensor.shape[0] == batch_size:
+                tensor = tensor.mean(dim=1)
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.expand(batch_size, -1, -1, -1, -1).mean(dim=1)
+            elif batch_size == 1:
+                tensor = tensor.mean(dim=0, keepdim=True)
+            else:
+                return None
         if tensor.dim() == 2:
             tensor = tensor.unsqueeze(0).unsqueeze(0)
         elif tensor.dim() == 3:
@@ -386,7 +396,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
             elif tensor.shape[0] == 1 and batch_size > 1:
                 tensor = tensor.expand(batch_size, -1, -1, -1)
             elif batch_size == 1:
-                tensor = tensor[-1:].contiguous()
+                tensor = tensor.mean(dim=0, keepdim=True)
             else:
                 return None
         else:
@@ -631,7 +641,23 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if not isinstance(gt_camera, torch.Tensor):
             return None
 
+        if gt_camera.dim() == 4:
+            if gt_camera.shape[-1] != self.pose_encoding_dim:
+                return None
+            # [B, V, S, 9] -> use last time step, then average over views.
+            if gt_camera.shape[0] == batch_size:
+                return gt_camera[:, :, -1, :].mean(dim=1)
+            if gt_camera.shape[0] == 1 and batch_size > 1:
+                gt_camera = gt_camera.expand(batch_size, -1, -1, -1)
+                return gt_camera[:, :, -1, :].mean(dim=1)
+            if batch_size == 1:
+                flat = gt_camera.reshape(-1, gt_camera.shape[-2], gt_camera.shape[-1])
+                return flat[:, -1, :].mean(dim=0, keepdim=True)
+            return None
+
         if gt_camera.dim() == 3:
+            if gt_camera.shape[-1] != self.pose_encoding_dim:
+                return None
             if gt_camera.shape[0] == batch_size:
                 gt_camera = gt_camera[:, -1]
             elif gt_camera.shape[0] == 1:
@@ -639,7 +665,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 if batch_size > 1:
                     gt_camera = gt_camera.expand(batch_size, -1)
             elif batch_size == 1:
-                gt_camera = gt_camera[-1, -1].unsqueeze(0)
+                gt_camera = gt_camera[:, -1, :].mean(dim=0, keepdim=True)
             else:
                 return None
 
