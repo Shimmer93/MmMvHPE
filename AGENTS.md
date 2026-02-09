@@ -40,3 +40,8 @@ The structure of documentation are dynamic, one documentation file can focus on 
 
 # 5. Git
 Only commit the changes when the user explicitly asks so. 
+
+# 6. Current Pipeline (For RGB+PC-based HPE)
+- Train the HPE model (Encoders + Aggregator + Keypoint Head + SMPL Head (Optional) )
+- Train the Camera Head for PC
+- Train the Camera Head for RGB

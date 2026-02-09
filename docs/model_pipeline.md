@@ -73,6 +73,7 @@ camera_head:
 
 - `camera_only=True` skips backbone+aggregator path and only runs camera head logic.
 - if a backbone has `has_temporal: false`, `LitModel` flattens `(B, T, ...) -> (B*T, ...)`, applies encoder, then restores temporal shape.
+- `TemporalTimmWrapper` is the temporal ViT path for image modalities; it keeps frame-wise ViT patch tokens and applies a causal GRU over time per patch token, then fuses with residual addition.
 - camera head API compatibility is handled with multi-signature fallback (`try/except TypeError`) for older/newer head implementations.
 - optional `save_test_preds` gathers predictions from all distributed ranks and writes one merged pickle.
 

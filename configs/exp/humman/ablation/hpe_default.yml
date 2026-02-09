@@ -17,14 +17,11 @@ train_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
-    depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: false
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -38,14 +35,11 @@ val_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
-    depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -59,18 +53,15 @@ test_dataset:
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
-    depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     colocated: false
 # --------------------------------------
 # Optimizer parameters
@@ -93,17 +84,11 @@ sched_params:
 # --------------------------------------
 model_name: HummanVIBEToken
 backbone_rgb:
-  name: 'TemporalTimmWrapper'
+  name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
-    gru_hidden_dim: 384
-    gru_num_layers: 1
-    gru_dropout: 0.0
-    causal: true
-    fusion: 'residual_add'
-    token_pool: 'none'
-  has_temporal: true
+  has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
   params:
