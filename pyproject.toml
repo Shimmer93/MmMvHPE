@@ -95,7 +95,10 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 pcdet = ["torch"]
 chumpy = ["pip"]
 xtcocotools = ["numpy"]
-mmcv = [{ requirement = "torch", match-runtime = true }]
+mmcv = [
+    { requirement = "torch", match-runtime = true },
+    { requirement = "setuptools<81", match-runtime = false },
+]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
