@@ -1,0 +1,38 @@
+schema: spec-driven
+
+context: |
+  Project: MMHPE (Multimodal Multiview Human Pose Estimation) using PyTorch Lightning.
+  Goal: Train/evaluate human pose models that fuse RGB, depth, LiDAR, and mmWave to predict keypoints/SMPL.
+  Environment: Use `uv` for dependencies; run Python via `uv run`. Do not auto-install packages.
+  Prefer CUDA/GPU-enabled builds when applicable; update `pyproject.toml`/`uv.lock` only when requested.
+  Structure: configs/, datasets/, models/, losses/, metrics/, misc/, tools/, scripts/ (untracked), weights/logs/data (local).
+  Documentation: Keep code comments brief; add lightweight docs under `docs/` when needed.
+  Git: Only commit when explicitly asked.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Summarize impact on training/eval workflows and affected modalities.
+  specs:
+    - Reference existing repo structure (configs/, datasets/, models/, losses/, metrics/, misc/, tools/).
+  design:
+    - Note CUDA/GPU considerations and where compute-heavy logic lives.
+  tasks:
+    - Include `uv run` in command examples; do not add auto-install steps.
