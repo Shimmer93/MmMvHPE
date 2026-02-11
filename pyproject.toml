@@ -12,6 +12,7 @@ dependencies = [
     "cuda-toolkit==12.4",
     "einops>=0.8.1",
     "flash-attn>=2.8.3",
+    "huggingface-hub>=1.3.0,<2.0",
     "lightning>=2.6.0",
     "opencv-python>=4.12.0.88",
     "pcdet",
