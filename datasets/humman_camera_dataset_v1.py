@@ -6,6 +6,7 @@ import re
 import warnings
 from typing import List, Optional, Sequence, Dict, Any
 
+import cv2
 import numpy as np
 import torch
 
@@ -133,6 +134,11 @@ class HummanCameraDatasetV1(BaseDataset):
         synthetic_focal_scale: Sequence[float] = (0.8, 1.2),
         image_size_hw: Sequence[int] = (224, 224),
         output_pc_centered_lidar: bool = False,
+        lidar_regen_from_depth: bool = True,
+        lidar_pose_interpolation: bool = True,
+        lidar_pair_alpha_range: Sequence[float] = (0.0, 1.0),
+        lidar_min_depth: float = 1e-6,
+        lidar_regen_output_frame: str = "camera",
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -153,6 +159,20 @@ class HummanCameraDatasetV1(BaseDataset):
         self.synthetic_focal_scale = synthetic_focal_scale
         self.image_size_hw = (int(image_size_hw[0]), int(image_size_hw[1]))
         self.output_pc_centered_lidar = bool(output_pc_centered_lidar)
+        self.lidar_regen_from_depth = bool(lidar_regen_from_depth)
+        self.lidar_pose_interpolation = bool(lidar_pose_interpolation)
+        self.lidar_pair_alpha_range = (
+            float(lidar_pair_alpha_range[0]),
+            float(lidar_pair_alpha_range[1]),
+        )
+        self.lidar_min_depth = float(lidar_min_depth)
+        self.lidar_regen_output_frame = str(lidar_regen_output_frame).lower()
+        if self.lidar_regen_output_frame not in {"camera", "world"}:
+            warnings.warn(
+                f"Invalid lidar_regen_output_frame={lidar_regen_output_frame}. "
+                "Falling back to 'camera'."
+            )
+            self.lidar_regen_output_frame = "camera"
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
         self.available_iphone_cameras = ["iphone"]
@@ -175,6 +195,18 @@ class HummanCameraDatasetV1(BaseDataset):
             self.unit = "m"
 
         self._seq_re = re.compile(r"(p\d+_a\d+)")
+        self._cam_re = re.compile(r"(kinect_\d{3}|iphone)")
+        self._frame_re = re.compile(r"(\d+)$")
+
+        self.depth_file_index = {}
+        if self.lidar_regen_from_depth and "lidar" in self.modality_names:
+            self.depth_file_index = self._index_depth_files()
+            if not self.depth_file_index:
+                warnings.warn(
+                    "lidar_regen_from_depth=True but depth files were not indexed. "
+                    "Falling back to legacy lidar target generation."
+                )
+                self.lidar_regen_from_depth = False
 
         self.data_list = self._build_dataset()
         if self.max_samples is not None:
@@ -300,6 +332,294 @@ class HummanCameraDatasetV1(BaseDataset):
         )
         return None
 
+    def _index_depth_files(self):
+        depth_dir = osp.join(self.data_root, "depth")
+        if not osp.isdir(depth_dir):
+            return {}
+
+        file_index: Dict[str, Dict[str, List[Any]]] = {}
+        for fn in os.listdir(depth_dir):
+            name, _ = osp.splitext(fn)
+            seq_match = self._seq_re.search(name)
+            cam_match = self._cam_re.search(name)
+            frame_match = self._frame_re.search(name)
+            if not (seq_match and cam_match and frame_match):
+                continue
+            seq_name = seq_match.group(1)
+            camera = cam_match.group(1)
+            frame_idx = int(frame_match.group(1))
+            file_index.setdefault(seq_name, {}).setdefault(camera, []).append(
+                (frame_idx, osp.join(depth_dir, fn))
+            )
+
+        for seq_name in file_index:
+            for camera in file_index[seq_name]:
+                file_index[seq_name][camera].sort(key=lambda x: x[0])
+        return file_index
+
+    @staticmethod
+    def _camera_name_to_key(camera_name: str, modality: str) -> str:
+        if camera_name.startswith("kinect"):
+            suffix = camera_name.split("_")[1]
+            if modality == "rgb":
+                return f"kinect_color_{suffix}"
+            if modality in {"depth", "lidar"}:
+                return f"kinect_depth_{suffix}"
+        return "iphone"
+
+    def _load_depth_frame(self, seq_name: str, camera_name: str, frame_idx: int):
+        seq_data = self.depth_file_index.get(seq_name, {})
+        frame_list = seq_data.get(camera_name, [])
+        if not frame_list:
+            return None
+
+        frame_ids = [item[0] for item in frame_list]
+        nearest_idx = int(np.argmin(np.abs(np.asarray(frame_ids, dtype=np.int64) - int(frame_idx))))
+        depth_path = frame_list[nearest_idx][1]
+
+        depth = cv2.imread(depth_path, cv2.IMREAD_ANYDEPTH)
+        if depth is None:
+            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+        if depth is None:
+            return None
+
+        depth = depth.astype(np.float32)
+        if self.unit == "m":
+            depth = depth / 1000.0
+        return depth
+
+    @staticmethod
+    def _depth_to_world_points(
+        depth: np.ndarray,
+        K: np.ndarray,
+        R: np.ndarray,
+        T: np.ndarray,
+        min_depth: float = 1e-6,
+    ) -> np.ndarray:
+        H, W = depth.shape
+        xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
+        z = depth.reshape(-1)
+        valid = z > float(min_depth)
+        if not np.any(valid):
+            return np.zeros((0, 3), dtype=np.float32)
+
+        pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0).astype(np.float32)
+        K_inv = np.linalg.inv(K.astype(np.float32))
+        rays = K_inv @ pixels
+        cam_points = rays * z.reshape(1, -1)
+        cam_points = cam_points[:, valid]
+        world_points = (R.T @ (cam_points - T)).T
+        return world_points.astype(np.float32)
+
+    @staticmethod
+    def _to_new_world_points(R_root: np.ndarray, pelvis: np.ndarray, points: np.ndarray) -> np.ndarray:
+        if points.size == 0:
+            return points.astype(np.float32)
+        return (R_root.T @ (points - pelvis.reshape(1, 3)).T).T.astype(np.float32)
+
+    def _camera_to_pose_space(self, camera: Dict[str, Any], R_root: np.ndarray, pelvis: np.ndarray):
+        intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
+        extrinsic_raw = np.asarray(camera.get("extrinsic_raw", camera["extrinsic"]), dtype=np.float32)
+        if self.apply_to_new_world:
+            R_wc = extrinsic_raw[:, :3]
+            T_wc = extrinsic_raw[:, 3:]
+            R_new, T_new = self._update_extrinsic(R_wc, T_wc, R_root, pelvis)
+            extrinsic = np.hstack((R_new, T_new)).astype(np.float32)
+        else:
+            extrinsic = extrinsic_raw.astype(np.float32)
+        return {
+            "intrinsic": intrinsic,
+            "extrinsic": extrinsic,
+            "camera_name": camera.get("camera_name"),
+            "camera_key": camera.get("camera_key"),
+            "extrinsic_raw": extrinsic_raw.astype(np.float32),
+        }
+
+    def _load_canonical_lidar_from_camera(
+        self,
+        seq_name: str,
+        frame_idx: int,
+        camera: Dict[str, Any],
+        R_root: np.ndarray,
+        pelvis: np.ndarray,
+        to_new_world: bool = True,
+    ) -> np.ndarray:
+        camera_name = camera.get("camera_name")
+        if camera_name is None:
+            return np.zeros((0, 3), dtype=np.float32)
+
+        depth = self._load_depth_frame(seq_name, camera_name, frame_idx)
+        if depth is None:
+            return np.zeros((0, 3), dtype=np.float32)
+
+        intrinsic = np.asarray(camera["intrinsic"], dtype=np.float32)
+        extrinsic_raw = np.asarray(camera.get("extrinsic_raw", camera["extrinsic"]), dtype=np.float32)
+        R_wc = extrinsic_raw[:, :3]
+        T_wc = extrinsic_raw[:, 3:]
+        world_points = self._depth_to_world_points(
+            depth,
+            intrinsic,
+            R_wc,
+            T_wc,
+            min_depth=self.lidar_min_depth,
+        )
+        if self.apply_to_new_world and to_new_world:
+            world_points = self._to_new_world_points(R_root, pelvis, world_points)
+        return world_points.astype(np.float32)
+
+    @staticmethod
+    def _to_world_from_new_world_points(
+        R_root: np.ndarray,
+        pelvis: np.ndarray,
+        points: np.ndarray,
+    ) -> np.ndarray:
+        if points.size == 0:
+            return points.astype(np.float32)
+        return ((R_root @ points.T).T + pelvis.reshape(1, 3)).astype(np.float32)
+
+    def _interpolate_camera_pose(
+        self,
+        cam_a: Dict[str, Any],
+        cam_b: Dict[str, Any],
+        alpha: Optional[float] = None,
+        jitter: bool = True,
+    ) -> Dict[str, np.ndarray]:
+        if alpha is None:
+            alpha = random.uniform(self.lidar_pair_alpha_range[0], self.lidar_pair_alpha_range[1])
+
+        Ra = cam_a["extrinsic"][:, :3]
+        Ta = cam_a["extrinsic"][:, 3:]
+        Rb = cam_b["extrinsic"][:, :3]
+        Tb = cam_b["extrinsic"][:, 3:]
+        qa = mat_to_quat_np(Ra)
+        qb = mat_to_quat_np(Rb)
+        q = slerp_np(qa, qb, alpha)
+        R = quat_to_mat_np(q)
+        T = (1.0 - alpha) * Ta + alpha * Tb
+        K = (1.0 - alpha) * cam_a["intrinsic"] + alpha * cam_b["intrinsic"]
+
+        out = {
+            "intrinsic": K.astype(np.float32),
+            "extrinsic": np.hstack((R, T)).astype(np.float32),
+        }
+        if jitter:
+            out = self._jitter_camera(out)
+        return out
+
+    def _regenerate_lidar_view(
+        self,
+        seq_name: str,
+        frame_idx: int,
+        lidar_candidates: List[Dict[str, Any]],
+        gt_keypoints: np.ndarray,
+        R_root: np.ndarray,
+        pelvis: np.ndarray,
+    ):
+        if not lidar_candidates:
+            return None
+
+        use_interpolation = (
+            self.lidar_pose_interpolation
+            and len(lidar_candidates) >= 2
+            and (random.random() >= self.real_sample_ratio)
+        )
+
+        if use_interpolation:
+            src_a, src_b = random.sample(lidar_candidates, 2)
+            src_a_pose = self._camera_to_pose_space(src_a, R_root, pelvis)
+            src_b_pose = self._camera_to_pose_space(src_b, R_root, pelvis)
+            target_cam = self._interpolate_camera_pose(
+                src_a_pose,
+                src_b_pose,
+                alpha=None,
+                jitter=not self.test_mode,
+            )
+            source_cams = [src_a, src_b]
+        else:
+            src_a = random.choice(lidar_candidates)
+            target_cam = self._camera_to_pose_space(src_a, R_root, pelvis)
+            source_cams = [src_a]
+            if not self.test_mode and random.random() >= self.real_sample_ratio:
+                target_cam = self._jitter_camera(target_cam)
+
+        canonical_sets = []
+        for src_cam in source_cams:
+            canonical_pc = self._load_canonical_lidar_from_camera(
+                seq_name=seq_name,
+                frame_idx=frame_idx,
+                camera=src_cam,
+                R_root=R_root,
+                pelvis=pelvis,
+            )
+            if canonical_pc.size > 0:
+                canonical_sets.append(canonical_pc)
+
+        if canonical_sets:
+            canonical_pc = np.concatenate(canonical_sets, axis=0)
+        else:
+            canonical_pc = np.asarray(gt_keypoints, dtype=np.float32).copy()
+
+        if self.lidar_regen_output_frame == "world":
+            world_sets = []
+            for src_cam in source_cams:
+                world_pc = self._load_canonical_lidar_from_camera(
+                    seq_name=seq_name,
+                    frame_idx=frame_idx,
+                    camera=src_cam,
+                    R_root=R_root,
+                    pelvis=pelvis,
+                    to_new_world=False,
+                )
+                if world_pc.size > 0:
+                    world_sets.append(world_pc)
+
+            if world_sets:
+                input_lidar = np.concatenate(world_sets, axis=0).astype(np.float32)
+            else:
+                if self.apply_to_new_world:
+                    input_lidar = self._to_world_from_new_world_points(
+                        R_root,
+                        pelvis,
+                        np.asarray(gt_keypoints, dtype=np.float32),
+                    )
+                else:
+                    input_lidar = np.asarray(gt_keypoints, dtype=np.float32).copy()
+
+            if self.apply_to_new_world:
+                gt_kp_lidar = self._to_world_from_new_world_points(
+                    R_root,
+                    pelvis,
+                    np.asarray(gt_keypoints, dtype=np.float32),
+                )
+                lidar_extrinsic = np.hstack(
+                    (
+                        np.asarray(R_root, dtype=np.float32),
+                        np.asarray(pelvis, dtype=np.float32).reshape(3, 1),
+                    )
+                ).astype(np.float32)
+            else:
+                gt_kp_lidar = np.asarray(gt_keypoints, dtype=np.float32).copy()
+                lidar_extrinsic = np.hstack(
+                    (
+                        np.eye(3, dtype=np.float32),
+                        np.zeros((3, 1), dtype=np.float32),
+                    )
+                ).astype(np.float32)
+        else:
+            extrinsic = np.asarray(target_cam["extrinsic"], dtype=np.float32)
+            gt_kp_lidar = self._transform_to_camera(np.asarray(gt_keypoints, dtype=np.float32), extrinsic)
+            input_lidar = self._transform_to_camera(canonical_pc, extrinsic)
+            lidar_extrinsic = extrinsic.astype(np.float32)
+
+        return {
+            "input_lidar": input_lidar.astype(np.float32),
+            "gt_keypoints_lidar": gt_kp_lidar.astype(np.float32),
+            "lidar_camera": {
+                "intrinsic": np.asarray(target_cam["intrinsic"], dtype=np.float32),
+                "extrinsic": lidar_extrinsic,
+            },
+        }
+
     @staticmethod
     def _extract_pelvis(gt_keypoints, gt_transl):
         if gt_keypoints is not None:
@@ -321,16 +641,20 @@ class HummanCameraDatasetV1(BaseDataset):
     def _build_camera_candidates(self, cameras: Dict[str, Any]):
         candidates = {"rgb": [], "depth": [], "lidar": [], "mmwave": []}
 
-        def add_cam(modality, cam_key):
+        def add_cam(modality, cam_key, camera_name):
             if cam_key not in cameras:
                 return
             cam_params = cameras[cam_key]
             K = np.array(cam_params["K"], dtype=np.float32)
             R = np.array(cam_params["R"], dtype=np.float32)
             T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
+            extrinsic = np.hstack((R, T)).astype(np.float32)
             candidates[modality].append({
                 "intrinsic": K,
-                "extrinsic": np.hstack((R, T)).astype(np.float32),
+                "extrinsic": extrinsic.copy(),
+                "extrinsic_raw": extrinsic.copy(),
+                "camera_name": camera_name,
+                "camera_key": cam_key,
             })
 
         for cam in self.rgb_cameras:
@@ -338,24 +662,24 @@ class HummanCameraDatasetV1(BaseDataset):
                 cam_key = f"kinect_color_{cam.split('_')[1]}"
             else:
                 cam_key = "iphone"
-            add_cam("rgb", cam_key)
+            add_cam("rgb", cam_key, cam)
 
         for cam in self.depth_cameras:
             if cam.startswith("kinect"):
                 cam_key = f"kinect_depth_{cam.split('_')[1]}"
             else:
                 cam_key = "iphone"
-            add_cam("depth", cam_key)
+            add_cam("depth", cam_key, cam)
 
         for cam in self.lidar_cameras:
             if cam.startswith("kinect"):
                 cam_key = f"kinect_depth_{cam.split('_')[1]}"
             else:
                 cam_key = "iphone"
-            add_cam("lidar", cam_key)
+            add_cam("lidar", cam_key, cam)
 
         for cam in self.mmwave_cameras:
-            add_cam("mmwave", cam)
+            add_cam("mmwave", cam, cam)
 
         return candidates
 
@@ -512,67 +836,125 @@ class HummanCameraDatasetV1(BaseDataset):
             "mmwave": self.mmwave_cameras_per_sample,
         }
         for modality in self.modality_names:
-            sampled_cams = self._sample_cameras(
-                candidates.get(modality, []),
-                per_modality_count.get(modality, 1),
-            )
-            if not sampled_cams:
-                continue
-
+            num_views = per_modality_count.get(modality, 1)
             keypoint_views = []
             pose_enc_views = []
+            camera_views = []
+            lidar_input_views = []
             centered_lidar_views = []
             centered_lidar_centers = []
 
-            for cam in sampled_cams:
-                extrinsic = cam["extrinsic"]
-                intrinsic = cam["intrinsic"]
-                if self.apply_to_new_world:
-                    R_wc = extrinsic[:, :3]
-                    T_wc = extrinsic[:, 3:]
-                    R_new, T_new = self._update_extrinsic(R_wc, T_wc, R_root, pelvis)
-                    extrinsic = np.hstack((R_new, T_new)).astype(np.float32)
+            if modality == "lidar" and self.lidar_regen_from_depth:
+                lidar_candidates = candidates.get("lidar", [])
+                for _ in range(num_views):
+                    regenerated = self._regenerate_lidar_view(
+                        seq_name=seq_name,
+                        frame_idx=gt_frame_idx,
+                        lidar_candidates=lidar_candidates,
+                        gt_keypoints=np.asarray(gt_keypoints, dtype=np.float32),
+                        R_root=R_root,
+                        pelvis=np.asarray(pelvis, dtype=np.float32),
+                    )
+                    if regenerated is None:
+                        continue
 
-                if modality in {"rgb", "depth"}:
-                    kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
-                    kp_2d = self._normalize_2d(kp_2d, self.image_size_hw)
-                    kp_2d = np.clip(kp_2d, -1.0, 1.0)
-                    keypoint_views.append(torch.from_numpy(kp_2d.astype(np.float32)))
-                else:
-                    kp_3d = self._transform_to_camera(gt_keypoints, extrinsic)
-                    if modality == "lidar" and self.output_pc_centered_lidar:
-                        center = kp_3d.mean(axis=0, keepdims=True)
-                        kp_3d = kp_3d - center
-                        extrinsic = extrinsic.copy()
-                        extrinsic[:, 3:] = extrinsic[:, 3:] - center.T
-                        centered_lidar_views.append(torch.from_numpy(kp_3d.astype(np.float32)))
-                        centered_lidar_centers.append(torch.from_numpy(center.astype(np.float32)).squeeze(0))
-                    keypoint_views.append(torch.from_numpy(kp_3d.astype(np.float32)))
+                    lidar_camera = regenerated["lidar_camera"]
+                    intrinsic = np.asarray(lidar_camera["intrinsic"], dtype=np.float32)
+                    extrinsic = np.asarray(lidar_camera["extrinsic"], dtype=np.float32)
+                    kp_3d = np.asarray(regenerated["gt_keypoints_lidar"], dtype=np.float32)
+                    input_lidar = np.asarray(regenerated["input_lidar"], dtype=np.float32)
 
-                extrinsics = torch.from_numpy(extrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
-                intrinsics = torch.from_numpy(intrinsic.astype(np.float32)).unsqueeze(0).unsqueeze(0)
-                pose_enc = extri_intri_to_pose_encoding(
-                    extrinsics,
-                    intrinsics,
-                    image_size_hw=self.image_size_hw,
-                    pose_encoding_type="absT_quaR_FoV",
-                )
-                pose_enc_views.append(pose_enc.squeeze(0))
+                    keypoint_views.append(kp_3d)
+                    lidar_input_views.append([input_lidar])
+                    camera_views.append(
+                        {
+                            "intrinsic": intrinsic.astype(np.float32),
+                            "extrinsic": extrinsic.astype(np.float32),
+                        }
+                    )
+
+                    if self.output_pc_centered_lidar:
+                        center = kp_3d.mean(axis=0)
+                        centered_lidar_views.append((kp_3d - center.reshape(1, 3)).astype(np.float32))
+                        centered_lidar_centers.append(center.astype(np.float32))
+
+                    extrinsics = torch.from_numpy(extrinsic).unsqueeze(0).unsqueeze(0)
+                    intrinsics = torch.from_numpy(intrinsic).unsqueeze(0).unsqueeze(0)
+                    pose_enc = extri_intri_to_pose_encoding(
+                        extrinsics,
+                        intrinsics,
+                        image_size_hw=self.image_size_hw,
+                        pose_encoding_type="absT_quaR_FoV",
+                    )
+                    pose_enc_views.append(pose_enc.squeeze(0))
+            else:
+                modality_candidates = candidates.get(modality, [])
+                if not modality_candidates:
+                    continue
+                sampled_cams = [self._sample_camera(modality, modality_candidates) for _ in range(num_views)]
+
+                for cam in sampled_cams:
+                    cam_pose = self._camera_to_pose_space(cam, R_root, np.asarray(pelvis, dtype=np.float32))
+                    intrinsic = np.asarray(cam_pose["intrinsic"], dtype=np.float32)
+                    extrinsic = np.asarray(cam_pose["extrinsic"], dtype=np.float32)
+                    camera_views.append(
+                        {
+                            "intrinsic": intrinsic.astype(np.float32),
+                            "extrinsic": extrinsic.astype(np.float32),
+                        }
+                    )
+
+                    if modality in {"rgb", "depth"}:
+                        kp_2d = self._project_to_image(gt_keypoints, extrinsic, intrinsic)
+                        kp_2d = self._normalize_2d(kp_2d, self.image_size_hw)
+                        kp_2d = np.clip(kp_2d, -1.0, 1.0)
+                        keypoint_views.append(kp_2d.astype(np.float32))
+                    else:
+                        kp_3d = self._transform_to_camera(gt_keypoints, extrinsic).astype(np.float32)
+                        keypoint_views.append(kp_3d)
+                        if modality == "lidar":
+                            lidar_input_views.append([kp_3d.copy()])
+                            if self.output_pc_centered_lidar:
+                                center = kp_3d.mean(axis=0)
+                                centered_lidar_views.append((kp_3d - center.reshape(1, 3)).astype(np.float32))
+                                centered_lidar_centers.append(center.astype(np.float32))
+
+                    extrinsics = torch.from_numpy(extrinsic).unsqueeze(0).unsqueeze(0)
+                    intrinsics = torch.from_numpy(intrinsic).unsqueeze(0).unsqueeze(0)
+                    pose_enc = extri_intri_to_pose_encoding(
+                        extrinsics,
+                        intrinsics,
+                        image_size_hw=self.image_size_hw,
+                        pose_encoding_type="absT_quaR_FoV",
+                    )
+                    pose_enc_views.append(pose_enc.squeeze(0))
 
             if keypoint_views:
                 kp_key = f"gt_keypoints_2d_{modality}" if modality in {"rgb", "depth"} else f"gt_keypoints_{modality}"
                 if len(keypoint_views) == 1:
                     sample[kp_key] = keypoint_views[0]
                 else:
-                    sample[kp_key] = torch.stack(keypoint_views, dim=0)
+                    sample[kp_key] = np.stack(keypoint_views, axis=0).astype(np.float32)
+
+            if camera_views:
+                if len(camera_views) == 1:
+                    sample[f"{modality}_camera"] = camera_views[0]
+                else:
+                    sample[f"{modality}_camera"] = camera_views
+
+            if modality == "lidar" and lidar_input_views:
+                if len(lidar_input_views) == 1:
+                    sample["input_lidar"] = lidar_input_views[0]
+                else:
+                    sample["input_lidar"] = lidar_input_views
 
             if modality == "lidar" and self.output_pc_centered_lidar and centered_lidar_views:
                 if len(centered_lidar_views) == 1:
                     sample["gt_keypoints_pc_centered_input_lidar"] = centered_lidar_views[0]
                     sample["gt_keypoints_pc_center_lidar"] = centered_lidar_centers[0]
                 else:
-                    sample["gt_keypoints_pc_centered_input_lidar"] = torch.stack(centered_lidar_views, dim=0)
-                    sample["gt_keypoints_pc_center_lidar"] = torch.stack(centered_lidar_centers, dim=0)
+                    sample["gt_keypoints_pc_centered_input_lidar"] = np.stack(centered_lidar_views, axis=0).astype(np.float32)
+                    sample["gt_keypoints_pc_center_lidar"] = np.stack(centered_lidar_centers, axis=0).astype(np.float32)
 
             if pose_enc_views:
                 if len(pose_enc_views) == 1:
