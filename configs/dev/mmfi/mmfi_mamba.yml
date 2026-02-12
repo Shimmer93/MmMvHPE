@@ -1,0 +1,186 @@
+strategy: ddp
+benchmark: true
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 5
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'MMFiDataset'
+  params:
+    data_root: &data_root '/data/shared/pc/MMFi_Dataset'
+    rgb_root: &rgb_root '/data/shared/pc/MMFi_Defaced_RGB'
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: &split_config 'configs/datasets/mmfi_split_config.yml'
+    split_to_use: &split_to_use 'manual_split'
+    protocol: &protocol 'protocol3'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: false
+val_dataset:
+  name: 'MMFiDataset'
+  params:
+    data_root: *data_root
+    rgb_root: *rgb_root
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: *split_config
+    split_to_use: *split_to_use
+    protocol: *protocol
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: true
+test_dataset:
+  name: 'MMFiDataset'
+  params:
+    data_root: *data_root
+    rgb_root: *rgb_root
+    modality_names: ['rgb', 'depth', 'lidar', 'mmwave']
+    split_config: *split_config
+    split_to_use: *split_to_use
+    protocol: *protocol
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    test_mode: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: 0.0001
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 1
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: XFi
+backbone_rgb:
+  name: 'XFiResNet'
+  params:
+    block_type: 'Block'
+    layer_list: [2, 2, 2, 2]
+  has_temporal: false
+backbone_depth:
+  name: 'XFiResNet'
+  params:
+    block_type: 'Block'
+    layer_list: [2, 2, 2, 2]
+  has_temporal: false
+backbone_lidar:
+  name: 'MAMBA4DEncoder'
+  params:
+    radius: 0.1
+    nsamples: 16
+    spatial_stride: 32
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    mlp_dim: 1024
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
+    mode: 'xyz'
+  has_temporal: true
+backbone_mmwave:
+  name: 'MAMBA4DEncoder'
+  params:
+    radius: 0.4
+    nsamples: 16
+    spatial_stride: 1
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 128
+    mlp_dim: 256
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
+    mode: 'all'
+  has_temporal: true
+aggregator:
+  name: 'XFiAggregator'
+  params:
+    input_dim: 512
+    output_dim: 512
+    num_modalities: 4
+    dim_expansion: 2
+    hidden_dim: 512
+    num_heads: 8
+    dim_heads: 64
+    model_depth: 4
+keypoint_head:
+  name: 'XFiRegressionHead'
+  params:
+    emb_size: 512
+    num_classes: 51
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  # - name: VideoResize
+  #   params:
+  #     size: [240, 320]
+  #     keys: ['input_rgb', 'input_depth']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'zero_one'
+      keys: ['input_depth']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: PCPad
+    params:
+      num_points: 32
+      pad_mode: 'repeat'
+      keys: ['input_mmwave']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+
+

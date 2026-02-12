@@ -23,9 +23,10 @@ import json
 import random
 import re
 import warnings
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Dict, Any
 
 import numpy as np
+import yaml
 
 from datasets.base_dataset import BaseDataset
 
@@ -55,9 +56,15 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         unit: str = "m",
         pipeline: List[dict] = [],
         split: str = "train",
+        split_config: Optional[str] = None,
+        split_to_use: str = "random_split",
+        test_mode: bool = False,
         modality_names: Sequence[str] = ("rgb", "depth"),
         rgb_cameras: Optional[Sequence[str]] = None,
         depth_cameras: Optional[Sequence[str]] = None,
+        rgb_cameras_per_sample: int = 1,
+        depth_cameras_per_sample: int = 1,
+        lidar_cameras_per_sample: int = 1,
         seq_len: int = 5,
         seq_step: int = 1,
         pad_seq: bool = False,
@@ -66,11 +73,17 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         max_samples: Optional[int] = None,
         colocated: bool = False,
         return_keypoints_sequence: bool = False,
+        convert_depth_to_lidar: bool = True,
+        apply_to_new_world: bool = True,
+        skeleton_only: bool = True,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
         self.unit = unit
         self.split = split
+        self.split_config = split_config
+        self.split_to_use = split_to_use
+        self.test_mode = test_mode
         self.modality_names = list(modality_names)
         self.seq_len = seq_len
         self.seq_step = seq_step
@@ -80,6 +93,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.max_samples = max_samples
         self.colocated = colocated
         self.return_keypoints_sequence = return_keypoints_sequence
+        self.convert_depth_to_lidar = convert_depth_to_lidar
+        self.apply_to_new_world = apply_to_new_world
+        # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
+        self.skeleton_only = bool(skeleton_only)
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -96,6 +113,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             self.depth_cameras = list(depth_cameras)
 
         self.lidar_cameras = list(self.depth_cameras)
+        self.rgb_cameras_per_sample = max(1, int(rgb_cameras_per_sample))
+        self.depth_cameras_per_sample = max(1, int(depth_cameras_per_sample))
+        self.lidar_cameras_per_sample = max(1, int(lidar_cameras_per_sample))
 
         if unit not in {"mm", "m"}:
             warnings.warn(f"Invalid unit: {unit}. Defaulting to 'm'.")
@@ -149,22 +169,33 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             seq_names.update(self.file_index.get(modality, {}).keys())
         seq_names = sorted(seq_names)
 
-        person_ids = sorted(list(set([s.split("_")[0] for s in seq_names])))
-        split_idx = int(len(person_ids) * 0.8)
-        if self.split == "train":
-            valid_persons = set(person_ids[:split_idx])
-        elif self.split == "test":
-            valid_persons = set(person_ids[split_idx:])
-        elif self.split == "train_mini":
-            valid_persons = set(person_ids[:16])
-        elif self.split == "test_mini":
-            valid_persons = set(person_ids[split_idx:split_idx + 4])
+        split_info = self._resolve_split_info(seq_names)
+        if split_info is None:
+            person_ids = sorted(list(set([s.split("_")[0] for s in seq_names])))
+            split_idx = int(len(person_ids) * 0.8)
+            if self.split == "train":
+                valid_persons = set(person_ids[:split_idx])
+            elif self.split == "test":
+                valid_persons = set(person_ids[split_idx:])
+            elif self.split == "train_mini":
+                valid_persons = set(person_ids[:16])
+            elif self.split == "test_mini":
+                valid_persons = set(person_ids[split_idx:split_idx + 4])
+            else:
+                valid_persons = set(person_ids)
+            valid_actions = None
+            valid_cameras = None
         else:
-            valid_persons = set(person_ids)
+            valid_persons = set(split_info["subjects"]) if split_info["subjects"] else None
+            valid_actions = set(split_info["actions"]) if split_info["actions"] else None
+            valid_cameras = set(split_info["cameras"]) if split_info["cameras"] else None
 
         for seq_name in seq_names:
             person_id = seq_name.split("_")[0]
-            if person_id not in valid_persons:
+            if valid_persons is not None and person_id not in valid_persons:
+                continue
+            action_id = seq_name.split("_")[1]
+            if valid_actions is not None and action_id not in valid_actions:
                 continue
 
             rgb_cams = list(self.file_index.get("rgb", {}).get(seq_name, {}).keys())
@@ -176,6 +207,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 depth_cams = [c for c in depth_cams if c in self.depth_cameras]
             if self.lidar_cameras:
                 lidar_cams = [c for c in lidar_cams if c in self.lidar_cameras]
+            if valid_cameras is not None:
+                rgb_cams = [c for c in rgb_cams if c in valid_cameras]
+                depth_cams = [c for c in depth_cams if c in valid_cameras]
+                lidar_cams = [c for c in lidar_cams if c in valid_cameras]
 
             if "rgb" in self.modality_names and not rgb_cams:
                 continue
@@ -224,6 +259,41 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     })
 
         return data_list
+
+    def _resolve_split_info(self, seq_names):
+        if self.split_config is None:
+            return None
+
+        with open(self.split_config, "r") as f:
+            split_config = yaml.safe_load(f)
+
+        if self.split_to_use not in split_config:
+            raise ValueError(f"split_to_use {self.split_to_use} not found in {self.split_config}.")
+
+        split_entry = split_config[self.split_to_use]
+        split_key = "val_dataset" if self.test_mode else "train_dataset"
+
+        if self.split_to_use == "random_split":
+            ratio = split_entry["ratio"]
+            seed = split_entry["random_seed"]
+            subjects = sorted(list(set([s.split("_")[0] for s in seq_names])))
+            rng = np.random.RandomState(seed)
+            idx = rng.permutation(len(subjects))
+            split_idx = int(np.floor(ratio * len(subjects)))
+            train_subjects = [subjects[i] for i in idx[:split_idx]]
+            val_subjects = [subjects[i] for i in idx[split_idx:]]
+            subjects = train_subjects if split_key == "train_dataset" else val_subjects
+
+            entry = split_entry.get(split_key, {})
+            actions = entry.get("actions", None)
+            cameras = entry.get("cameras", None)
+        else:
+            entry = split_entry[split_key]
+            subjects = entry.get("subjects", None)
+            actions = entry.get("actions", None)
+            cameras = entry.get("cameras", None)
+
+        return {"subjects": subjects, "actions": actions, "cameras": cameras}
 
     def _load_camera_params(self, seq_name):
         camera_file = osp.join(self.data_root, "cameras", f"{seq_name}_cameras.json")
@@ -304,6 +374,23 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return frames
 
     @staticmethod
+    def _depth_to_lidar_frames(depth_frames, K, R, T, min_depth=1e-6):
+        K_inv = np.linalg.inv(K)
+        pc_seq = []
+        for depth in depth_frames:
+            H, W = depth.shape
+            xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
+            z = depth.reshape(-1)
+            valid = z > min_depth
+            pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0)
+            rays = K_inv @ pixels
+            cam_points = rays * z
+            cam_points = cam_points[:, valid]
+            world_points = (R.T @ (cam_points - T)).T
+            pc_seq.append(world_points.astype(np.float32))
+        return pc_seq
+
+    @staticmethod
     def _flatten_pose(global_orient, body_pose):
         global_orient = np.asarray(global_orient, dtype=np.float32).reshape(-1)
         body_pose = np.asarray(body_pose, dtype=np.float32)
@@ -328,27 +415,133 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
         return R_new, T_new
 
+    @staticmethod
+    def _sample_camera_names(camera_pool: List[str], num_samples: int) -> List[str]:
+        if not camera_pool:
+            return []
+        if len(camera_pool) >= num_samples:
+            return random.sample(camera_pool, num_samples)
+        sampled = list(camera_pool)
+        while len(sampled) < num_samples:
+            sampled.append(random.choice(camera_pool))
+        return sampled
+
+    @staticmethod
+    def _camera_name_to_key(camera_name: str, modality: str) -> str:
+        if camera_name.startswith("kinect"):
+            suffix = camera_name.split("_")[1]
+            if modality == "rgb":
+                return f"kinect_color_{suffix}"
+            if modality in {"depth", "lidar"}:
+                return f"kinect_depth_{suffix}"
+        return "iphone"
+
+    @staticmethod
+    def _maybe_single(items):
+        if len(items) == 1:
+            return items[0]
+        return items
+
+    @staticmethod
+    def _transform_cameras_to_anchor(cameras_list, anchor_R, anchor_T):
+        out = []
+        inv_anchor_R = np.linalg.inv(anchor_R)
+        for cam in cameras_list:
+            extrinsic = np.asarray(cam["extrinsic"], dtype=np.float32)
+            R_cam = extrinsic[:, :3]
+            T_cam = extrinsic[:, 3:]
+            R_rel = R_cam @ inv_anchor_R
+            T_rel = T_cam - R_rel @ anchor_T
+            out.append(
+                {
+                    "intrinsic": np.asarray(cam["intrinsic"], dtype=np.float32),
+                    "extrinsic": np.hstack((R_rel, T_rel)).astype(np.float32),
+                }
+            )
+        return out
+
     def __len__(self):
         return len(self.data_list)
 
     def __getitem__(self, index):
         data_info = self.data_list[index].copy()
 
+        selected_rgb: List[str] = []
+        selected_depth: List[str] = []
+        selected_lidar: List[str] = []
+
         if not self.use_all_pairs:
-            if data_info.get("rgb_camera") is None and "rgb" in self.modality_names:
-                data_info["rgb_camera"] = random.choice(data_info["rgb_cameras"])
-            if data_info.get("depth_camera") is None and "depth" in self.modality_names:
-                data_info["depth_camera"] = random.choice(data_info["depth_cameras"])
-            if data_info.get("lidar_camera") is None and "lidar" in self.modality_names:
-                if data_info["depth_camera"] is not None:
-                    data_info["lidar_camera"] = data_info["depth_camera"]
-                elif data_info["lidar_cameras"]:
-                    data_info["lidar_camera"] = random.choice(data_info["lidar_cameras"])
+            if "rgb" in self.modality_names:
+                selected_rgb = self._sample_camera_names(
+                    list(data_info.get("rgb_cameras", [])),
+                    self.rgb_cameras_per_sample,
+                )
+            if "depth" in self.modality_names:
+                selected_depth = self._sample_camera_names(
+                    list(data_info.get("depth_cameras", [])),
+                    self.depth_cameras_per_sample,
+                )
+            if "lidar" in self.modality_names:
+                if selected_depth:
+                    selected_lidar = selected_depth[: self.lidar_cameras_per_sample]
+                    if len(selected_lidar) < self.lidar_cameras_per_sample:
+                        selected_lidar.extend(
+                            self._sample_camera_names(
+                                list(data_info.get("lidar_cameras", [])),
+                                self.lidar_cameras_per_sample - len(selected_lidar),
+                            )
+                        )
+                else:
+                    selected_lidar = self._sample_camera_names(
+                        list(data_info.get("lidar_cameras", [])),
+                        self.lidar_cameras_per_sample,
+                    )
             if self.colocated and "rgb" in self.modality_names and "depth" in self.modality_names:
-                if data_info["rgb_camera"] != data_info["depth_camera"]:
-                    data_info["depth_camera"] = data_info["rgb_camera"]
+                common = sorted(
+                    list(
+                        set(data_info.get("rgb_cameras", []))
+                        & set(data_info.get("depth_cameras", []))
+                    )
+                )
+                if common:
+                    selected_rgb = self._sample_camera_names(common, self.rgb_cameras_per_sample)
+                    selected_depth = self._sample_camera_names(common, self.depth_cameras_per_sample)
                     if "lidar" in self.modality_names:
-                        data_info["lidar_camera"] = data_info["rgb_camera"]
+                        selected_lidar = self._sample_camera_names(common, self.lidar_cameras_per_sample)
+        else:
+            def _expand_fixed(base_name, pool, count):
+                if base_name is None and not pool:
+                    return []
+                out = [base_name] if base_name is not None else []
+                if count <= len(out):
+                    return out[:count]
+                pool = [p for p in pool if p is not None]
+                if base_name is not None:
+                    pool = [p for p in pool if p != base_name] + [base_name]
+                if not pool:
+                    return out
+                while len(out) < count:
+                    out.append(random.choice(pool))
+                return out
+
+            if "rgb" in self.modality_names:
+                selected_rgb = _expand_fixed(
+                    data_info.get("rgb_camera"),
+                    list(data_info.get("rgb_cameras", [])),
+                    self.rgb_cameras_per_sample,
+                )
+            if "depth" in self.modality_names:
+                selected_depth = _expand_fixed(
+                    data_info.get("depth_camera"),
+                    list(data_info.get("depth_cameras", [])),
+                    self.depth_cameras_per_sample,
+                )
+            if "lidar" in self.modality_names:
+                selected_lidar = _expand_fixed(
+                    data_info.get("lidar_camera"),
+                    list(data_info.get("lidar_cameras", [])),
+                    self.lidar_cameras_per_sample,
+                )
 
         cameras = self._load_camera_params(data_info["seq_name"])
         smpl_params = self._load_smpl_params(data_info["seq_name"])
@@ -370,7 +563,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
         R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
 
-        if gt_keypoints is not None:
+        if gt_keypoints is not None and self.apply_to_new_world:
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
@@ -380,14 +573,25 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         betas = np.asarray(gt_betas, dtype=np.float32)[:10]
         gt_smpl_params = np.concatenate([pose, betas], axis=0)
 
+        primary_rgb = selected_rgb[0] if selected_rgb else None
+        primary_depth = selected_depth[0] if selected_depth else None
         sample = {
             "sample_id": (
-                f"{data_info['seq_name']}_rgb_{data_info.get('rgb_camera')}_"
-                f"depth_{data_info.get('depth_camera')}_{data_info['start_frame']}"
+                f"{data_info['seq_name']}_rgb_{primary_rgb}_"
+                f"depth_{primary_depth}_{data_info['start_frame']}"
             ),
             "modalities": list(self.modality_names),
             "gt_keypoints": gt_keypoints,
             "gt_smpl_params": gt_smpl_params,
+            "gt_global_orient": np.asarray(gt_global_orient, dtype=np.float32),
+            "gt_pelvis": np.asarray(pelvis, dtype=np.float32),
+            "seq_name": data_info["seq_name"],
+            "start_frame": int(data_info["start_frame"]),
+            "selected_cameras": {
+                "rgb": list(selected_rgb),
+                "depth": list(selected_depth),
+                "lidar": list(selected_lidar),
+            },
         }
 
         if self.return_keypoints_sequence and keypoints_3d is not None:
@@ -401,56 +605,129 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             sample["gt_keypoints_seq"] = np.stack(seq_keypoints, axis=0)
 
         if "rgb" in self.modality_names:
-            rgb_frames = self._load_rgb_frames(
-                data_info["seq_name"],
-                data_info["rgb_camera"],
-                data_info["start_frame"],
-            )
-            sample["input_rgb"] = rgb_frames
-            if data_info["rgb_camera"].startswith("kinect"):
-                cam_key = f"kinect_color_{data_info['rgb_camera'].split('_')[1]}"
-            else:
-                cam_key = "iphone"
-            if cam_key in cameras:
+            rgb_frames_views = []
+            rgb_cameras_out = []
+            for camera_name in selected_rgb:
+                if self.skeleton_only:
+                    rgb_frames = self._load_rgb_frames(
+                        data_info["seq_name"],
+                        camera_name,
+                        data_info["start_frame"],
+                    )
+                    rgb_frames_views.append(rgb_frames)
+
+                cam_key = self._camera_name_to_key(camera_name, "rgb")
+                if cam_key not in cameras:
+                    continue
                 cam_params = cameras[cam_key]
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
                 R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
-                sample["rgb_camera"] = {
-                    "intrinsic": K,
-                    "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
-                }
+                rgb_cameras_out.append(
+                    {
+                        "intrinsic": K,
+                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                    }
+                )
+
+            if self.skeleton_only and rgb_frames_views:
+                sample["input_rgb"] = self._maybe_single(rgb_frames_views)
+            if rgb_cameras_out:
+                sample["rgb_camera"] = self._maybe_single(rgb_cameras_out)
 
         if "depth" in self.modality_names:
-            depth_frames = self._load_depth_frames(
-                data_info["seq_name"],
-                data_info["depth_camera"],
-                data_info["start_frame"],
-            )
-            sample["input_depth"] = depth_frames
-            if data_info["depth_camera"].startswith("kinect"):
-                cam_key = f"kinect_depth_{data_info['depth_camera'].split('_')[1]}"
-            else:
-                cam_key = "iphone"
-            if cam_key in cameras:
+            depth_frames_views = []
+            depth_raw_params = []
+            depth_cameras_out = []
+
+            for camera_name in selected_depth:
+                if self.skeleton_only:
+                    depth_frames = self._load_depth_frames(
+                        data_info["seq_name"],
+                        camera_name,
+                        data_info["start_frame"],
+                    )
+                    depth_frames_views.append(depth_frames)
+
+                cam_key = self._camera_name_to_key(camera_name, "depth")
+                if cam_key not in cameras:
+                    continue
+                cam_params = cameras[cam_key]
+                K = np.array(cam_params["K"], dtype=np.float32)
+                R = np.array(cam_params["R"], dtype=np.float32)
+                T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
+                depth_raw_params.append((K, R, T))
+                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                depth_cameras_out.append(
+                    {
+                        "intrinsic": K,
+                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                    }
+                )
+
+            if self.skeleton_only and depth_frames_views:
+                sample["input_depth"] = self._maybe_single(depth_frames_views)
+
+            converted_to_lidar = self.convert_depth_to_lidar and "lidar" not in self.modality_names
+            if converted_to_lidar and depth_frames_views:
+                lidar_frames_views = []
+                for depth_frames, (K, R, T) in zip(depth_frames_views, depth_raw_params):
+                    lidar_frames = self._depth_to_lidar_frames(depth_frames, K, R, T)
+                    lidar_frames_views.append(lidar_frames)
+
+                if lidar_frames_views:
+                    sample["input_lidar"] = self._maybe_single(lidar_frames_views)
+                    if "lidar" not in sample["modalities"]:
+                        sample["modalities"].append("lidar")
+                    if "depth" in sample["modalities"]:
+                        sample["modalities"].remove("depth")
+                    sample.pop("input_depth", None)
+                    sample["selected_cameras"]["lidar"] = list(selected_depth)
+
+                lidar_cameras = []
+                for K, _, _ in depth_raw_params:
+                    lidar_cameras.append(
+                        {
+                            "intrinsic": K,
+                            "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
+                        }
+                    )
+                if lidar_cameras:
+                    sample["lidar_camera"] = self._maybe_single(lidar_cameras)
+            elif depth_cameras_out:
+                sample["depth_camera"] = self._maybe_single(depth_cameras_out)
+
+        if "lidar" in self.modality_names:
+            lidar_frames_views = []
+            lidar_cameras_out = []
+            for camera_name in selected_lidar:
+                lidar_frames = self._load_lidar_frames(
+                    data_info["seq_name"],
+                    camera_name,
+                    data_info["start_frame"],
+                )
+                lidar_frames_views.append(lidar_frames)
+
+                cam_key = self._camera_name_to_key(camera_name, "lidar")
+                if cam_key not in cameras:
+                    continue
                 cam_params = cameras[cam_key]
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
                 R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
-                sample["depth_camera"] = {
-                    "intrinsic": K,
-                    "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
-                }
+                lidar_cameras_out.append(
+                    {
+                        "intrinsic": K,
+                        "extrinsic": np.hstack((R_new, T_new)).astype(np.float32),
+                    }
+                )
 
-        if "lidar" in self.modality_names:
-            lidar_frames = self._load_lidar_frames(
-                data_info["seq_name"],
-                data_info["lidar_camera"],
-                data_info["start_frame"],
-            )
-            sample["input_lidar"] = lidar_frames
+            if lidar_frames_views:
+                sample["input_lidar"] = self._maybe_single(lidar_frames_views)
+            if lidar_cameras_out:
+                sample["lidar_camera"] = self._maybe_single(lidar_cameras_out)
 
         sample = self.pipeline(sample)
         return sample

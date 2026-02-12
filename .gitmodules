@@ -1,0 +1,8 @@
+[submodule "third_party/mmpose"]
+	path = third_party/mmpose
+	url = https://github.com/Shimmer93/SNSNet.git
+	branch = mmhpe
+[submodule "third_party/emdul"]
+	path = third_party/emdul
+	url = https://github.com/Shimmer93/EMDUL.git
+	branch = mmhpe

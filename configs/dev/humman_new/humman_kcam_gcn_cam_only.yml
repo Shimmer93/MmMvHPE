@@ -1,0 +1,153 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 20
+camera_only: true
+monitor: 'val_cam_pose_auc_30_rgb'
+monitor_mode: 'max'
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'HummanCameraDatasetV1'
+  params:
+    data_root: &data_root '/opt/data/humman_cropped'
+    unit: 'm'
+    modality_names: ['rgb', 'lidar']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    split: 'train'
+    frame_stride: 1
+    apply_to_new_world: true
+    real_sample_ratio: 0.5
+    synthetic_strategy: 'interpolate'
+    synthetic_rot_jitter_deg: 10.0
+    synthetic_trans_jitter: 0.05
+    synthetic_focal_scale: [0.99, 1.01]
+    image_size_hw: [224, 224]
+    output_pc_centered_lidar: true
+val_dataset:
+  name: 'HummanCameraDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'lidar']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    split: 'test'
+    frame_stride: 1
+    apply_to_new_world: true
+    real_sample_ratio: 1.0
+    image_size_hw: [224, 224]
+    output_pc_centered_lidar: true
+test_dataset:
+  name: 'HummanCameraDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'lidar']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    split: 'test'
+    frame_stride: 1
+    apply_to_new_world: true
+    real_sample_ratio: 1.0
+    image_size_hw: [224, 224]
+    output_pc_centered_lidar: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0001
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 4
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: HummanCameraGCNOnly
+camera_head:
+  name: 'KeypointCameraGCNHeadV5'
+  params:
+    num_joints: 24
+    hidden_dim: 256
+    num_layers: 4
+    dropout: 0.1
+    use_layernorm: true
+    use_modality_embedding: true
+    detach_inputs: true
+    use_gt_ratio: 0.0
+    num_iterations: 4
+    pose_encoding_type: "absT_quaR_FoV"
+    proj_loss_weight_rgb: 0.1
+    proj_loss_weight_lidar: 0.1
+    proj_loss_type: "l1"
+    gcn_depth: 3
+    input_2d_skeleton_format: "smpl"
+    input_3d_skeleton_format: "smpl"
+    losses:
+      - name: 'CameraLoss'
+        params:
+          loss_type: 'l1'
+          weights: [1.0, 1.0, 0]
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'rgb'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_rgb'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'lidar'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_lidar'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'rgb'
+    alias: 'CameraTransL2_rgb'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'lidar'
+    alias: 'CameraTransL2_lidar'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'rgb'
+    alias: 'CameraRotAngle_rgb'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'lidar'
+    alias: 'CameraRotAngle_lidar'
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: AddKeypointNoise
+    params:
+      noise_std_3d: 0.05
+      noise_std_2d: 0.01
+      apply_to_global: true
+    prob: 0.8
+  - name: ToTensor
+    params: null
+val_pipeline:
+  - name: ToTensor
+    params: null
+test_pipeline:
+  - name: ToTensor
+    params: null

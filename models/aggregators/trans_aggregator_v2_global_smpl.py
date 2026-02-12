@@ -93,6 +93,8 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
             self.single_blocks = nn.ModuleList([block_cls(**block_params) for _ in range(depth)])
         if "cross_joint" in aa_order:
             self.cross_joint_blocks = nn.ModuleList([CABlock(**block_params) for _ in range(depth)])
+        if "joint_to_camera" in aa_order:
+            self.joint_to_camera_blocks = nn.ModuleList([CABlock(**block_params) for _ in range(depth)])
         if "gcn" in aa_order:
             A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
             self.gcn_blocks = nn.ModuleList(
@@ -165,6 +167,7 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
 
         single_idx = 0
         cross_idx = 0
+        joint_to_camera_idx = 0
         gcn_idx = 0
         output_list = []
 
@@ -178,6 +181,10 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
                     case "cross_joint":
                         smpl_tokens, joint_tokens, cross_idx, intermediates = self._process_cross_joint_attention(
                             smpl_tokens, joint_tokens, modality_tokens, Ns, cross_idx, pos=None
+                        )
+                    case "joint_to_camera":
+                        modality_tokens, joint_to_camera_idx, intermediates = self._process_joint_to_camera_attention(
+                            modality_tokens, smpl_tokens, joint_tokens, Ns, joint_to_camera_idx, pos=None
                         )
                     case "gcn":
                         joint_tokens, gcn_idx, intermediates = self._process_gcn(
@@ -265,6 +272,39 @@ class TransformerAggregatorV2GlobalSMPL(nn.Module):
             intermediates.append(self._extract_output_tokens(modality_tokens, smpl_base, joint_base, Ns))
 
         return smpl_base, joint_base, idx, intermediates
+
+    def _process_joint_to_camera_attention(self, modality_tokens, smpl_tokens, joint_tokens, Ns, idx, pos=None):
+        intermediates = []
+        tokens_base = modality_tokens
+
+        for _ in range(self.aa_block_size):
+            updated = list(tokens_base)
+            context = joint_tokens.reshape(
+                joint_tokens.shape[0],
+                joint_tokens.shape[1] * self.num_joints,
+                joint_tokens.shape[3],
+            )
+            for i, tokens in enumerate(tokens_base):
+                if tokens is None:
+                    continue
+                B, T, _, C = tokens.shape
+                camera_tokens = tokens[:, :, :1, :].reshape(B, T, C)
+
+                if self.use_grad_ckpt and self.training:
+                    updated_camera = checkpoint(
+                        self.joint_to_camera_blocks[idx], camera_tokens, context, pos, use_reentrant=False
+                    )
+                else:
+                    updated_camera = self.joint_to_camera_blocks[idx](camera_tokens, context=context, pos=pos)
+
+                updated_camera = updated_camera.reshape(B, T, 1, C)
+                updated[i] = torch.cat([updated_camera, tokens[:, :, 1:, :]], dim=2)
+
+            tokens_base = updated
+            idx += 1
+            intermediates.append(self._extract_output_tokens(tokens_base, smpl_tokens, joint_tokens, Ns))
+
+        return tokens_base, idx, intermediates
 
     def _process_gcn(self, smpl_tokens, joint_tokens, modality_tokens, Ns, idx):
         intermediates = []

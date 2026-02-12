@@ -133,6 +133,12 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
 
     def forward(self, features, **kwargs):
         features_rgb, features_depth, features_lidar, features_mmwave = features
+        print("[DEBUG]: Entered TransformerAggregatorV2GlobalJoint forward pass.")
+        print(f"[DEBUG]: features_rgb shape: {features_rgb.shape if features_rgb is not None else 'None'}")
+        print(f"[DEBUG]: features_depth shape: {features_depth.shape if features_depth is not None else 'None'}")
+        print(f"[DEBUG]: features_lidar shape: {features_lidar.shape if features_lidar is not None else 'None'}")
+        print(f"[DEBUG]: features_mmwave shape: {features_mmwave.shape if features_mmwave is not None else 'None'}")
+        
 
         B, T = 0, 0
         if features_rgb is not None:
@@ -200,6 +206,8 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
                     case _:
                         raise ValueError(f"Unknown attention type: {aa_type}")
             output_list.append(intermediates[-1])
+        
+        print("[DEBUG]: TransformerAggregatorV2GlobalJoint forward pass completed.")
 
         return output_list
 
@@ -296,4 +304,5 @@ class TransformerAggregatorV2GlobalJoint(nn.Module):
             return joint_tokens.new_zeros(B, 0, T, 1 + self.num_joints, C)
 
         output = torch.stack(token_slices, dim=1)
+        print("[DEBUG]: Extracted output tokens shape:", output.shape)
         return output

@@ -13,7 +13,7 @@ def timer(name="Operation"):
     start = time.time()
     yield
     elapsed = time.time() - start
-    print(f"{name}: {elapsed:.4f} seconds")
+    # print(f"{name}: {elapsed:.4f} seconds")
 
 def time_function(func):
     """Decorator for timing functions.
@@ -28,7 +28,7 @@ def time_function(func):
         start = time.time()
         result = func(*args, **kwargs)
         elapsed = time.time() - start
-        print(f"{func.__name__}: {elapsed:.4f} seconds")
+        # print(f"{func.__name__}: {elapsed:.4f} seconds")
         return result
     return wrapper
 

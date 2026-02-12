@@ -1,38 +1,57 @@
 schema: spec-driven
 
 context: |
-  Project: MMHPE (Multimodal Multiview Human Pose Estimation) using PyTorch Lightning.
-  Goal: Train/evaluate human pose models that fuse RGB, depth, LiDAR, and mmWave to predict keypoints/SMPL.
-  Environment: Use `uv` for dependencies; run Python via `uv run`. Do not auto-install packages.
-  Prefer CUDA/GPU-enabled builds when applicable; update `pyproject.toml`/`uv.lock` only when requested.
-  Structure: configs/, datasets/, models/, losses/, metrics/, misc/, tools/, scripts/ (untracked), weights/logs/data (local).
-  Documentation: Keep code comments brief; add lightweight docs under `docs/` when needed.
-  Git: Only commit when explicitly asked.
+  Project: MMHPE (Multimodal Multiview Human Pose Estimation), a Python codebase for training, evaluation, and inference.
+  Main entrypoint: main.py.
+  Workflow: config-driven runs from configs/, outputs/checkpoints/artifacts under logs/.
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+  Tech stack:
+  - Python >= 3.12 on Linux
+  - PyTorch + Lightning
+  - CUDA-sensitive deps (CUDA 12.4 target): torch, spconv-cu124, flash-attn, mmcv, etc.
+  - Data/model configs in YAML
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Environment and execution conventions:
+  - Use uv for dependency and command execution.
+  - Install with: uv sync
+  - Run with: uv run python ...
+  - If CUDA/environment assumptions change, update pyproject.toml and do NOT edit uv.lock manually.
+
+  Repository structure:
+  - configs/: experiment configs
+  - datasets/: dataset classes and transforms
+  - models/: encoders, aggregators, heads, model API
+  - losses/, metrics/, misc/: training/eval utilities
+  - tools/: preprocessing and helper scripts
+  - docs/: onboarding + implementation documentation
+  - logs/: run outputs
+
+  Documentation conventions:
+  - Keep source comments short and necessary.
+  - Put high-level intent, tricky details, and usage examples in docs/.
+  - For scripts, include concrete command-line usage examples.
+
+  Git convention:
+  - Do not create commits unless the user explicitly asks.
+
 rules:
   proposal:
-    - Summarize impact on training/eval workflows and affected modalities.
+    - Explain why the change is needed for MMHPE training/evaluation/prediction workflow.
+    - List affected modalities/datasets/components explicitly (RGB, depth, LiDAR, mmWave when relevant).
+    - Include scope boundaries and non-goals to avoid oversized changes.
+    - Describe expected impact on configs and runtime outputs in logs/.
   specs:
-    - Reference existing repo structure (configs/, datasets/, models/, losses/, metrics/, misc/, tools/).
+    - Define requirements with concrete input/output expectations and key tensor/data shapes when relevant.
+    - State compatibility requirements for existing config-driven runs from configs/.
+    - Include at least one scenario per requirement with clear pass/fail behavior.
+    - Call out dataset split assumptions, camera conventions, or coordinate-frame assumptions if touched.
   design:
-    - Note CUDA/GPU considerations and where compute-heavy logic lives.
+    - Map the design to current architecture paths (main.py, datasets/data_api.py, models/model_api.py, configs/).
+    - Document tradeoffs and failure modes (performance, CUDA dependency, backward compatibility).
+    - Specify where docs/ updates are needed when behavior or usage changes.
+    - Avoid unnecessary framework churn; prefer incremental integration with current modules.
   tasks:
-    - Include `uv run` in command examples; do not add auto-install steps.
+    - Break tasks into small, verifiable steps with concrete file paths.
+    - Include implementation, validation, and documentation updates (docs/) as explicit tasks.
+    - Include runnable validation commands using uv run.
+    - Do not include any commit task unless explicitly requested by the user.

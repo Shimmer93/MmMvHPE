@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import os
 import os.path as osp
+import json
 import re
 import rerun as rr
 import time
@@ -21,7 +22,7 @@ SAM_AVAILABLE = False
 import sys
 import os.path as osp
 sys.path.append(osp.dirname(osp.dirname(osp.abspath(__file__))))
-import smplx
+from models.smpl import SMPL
 from misc.skeleton import H36MSkeleton, SMPLSkeleton
 from misc.utils import load
 
@@ -66,17 +67,18 @@ def load_pred_file_new(pred_file):
 def get_verts(smpl_model, pose, global_orient, beta, translation, center=None):
     smpl_model.eval()
     with torch.no_grad():
-        # pose is (batch, 72) - split into global_orient (3) and body_pose (69)
+        # pose is body pose (batch, 69) in axis-angle
         pose_tensor = torch.from_numpy(pose).float()
         global_orient_tensor = torch.from_numpy(global_orient).float()
+        full_pose = torch.cat([global_orient_tensor, pose_tensor], dim=1)
         beta_tensor = torch.from_numpy(beta).float()
         translation_tensor = torch.from_numpy(translation).float()
-        
-        output = smpl_model(body_pose=pose_tensor, 
-                            global_orient=global_orient_tensor,
-                            betas=beta_tensor,
-                            transl=translation_tensor)
-        verts = output.vertices
+
+        verts, _ = smpl_model(
+            th_pose_axisang=full_pose,
+            th_betas=beta_tensor,
+            th_trans=translation_tensor,
+        )
     return verts.cpu().numpy()
 
 def id_to_file_name(sample_id):
@@ -104,6 +106,19 @@ def id_to_file_name_humman(sample_id, modality):
         raise ValueError(f"Unsupported modality: {modality}")
     return f"{match.group('seq')}_{camera}_{frame_token}"
 
+def depth_to_lidar_frame(depth, K, R, T, min_depth=1e-6):
+    K_inv = np.linalg.inv(K)
+    H, W = depth.shape
+    xmap, ymap = np.meshgrid(np.arange(W), np.arange(H))
+    z = depth.reshape(-1)
+    valid = z > min_depth
+    pixels = np.stack([xmap.reshape(-1), ymap.reshape(-1), np.ones(H * W)], axis=0)
+    rays = K_inv @ pixels
+    cam_points = rays * z
+    cam_points = cam_points[:, valid]
+    world_points = (R.T @ (cam_points - T)).T
+    return world_points.astype(np.float32)
+
 def get_input_data(sample_id, dataset='mmfi_preproc', data_root='data/mmfi'):
     match dataset:
         case 'mmfi_preproc':
@@ -128,9 +143,29 @@ def get_input_data(sample_id, dataset='mmfi_preproc', data_root='data/mmfi'):
             rgb = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
             rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+            depth = depth.astype(np.float32) / 1000.0  # convert mm to meters
+            lidar = None
+            match = _HUMMAN_ID_RE.match(sample_id)
+            if match is not None:
+                seq_name = match.group("seq")
+                depth_cam = match.group("depth")
+                camera_file = osp.join(data_root, "cameras", f"{seq_name}_cameras.json")
+                with open(camera_file, "r") as f:
+                    cameras = json.load(f)
+                if depth_cam.startswith("kinect"):
+                    cam_key = f"kinect_depth_{depth_cam.split('_')[1]}"
+                else:
+                    cam_key = "iphone"
+                if cam_key in cameras:
+                    cam_params = cameras[cam_key]
+                    K = np.array(cam_params["K"], dtype=np.float32)
+                    R = np.array(cam_params["R"], dtype=np.float32)
+                    T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
+                    lidar = depth_to_lidar_frame(depth, K, R, T)
+
             # repeat depth to make it 3-channel
             depth = np.repeat(depth[:, :, np.newaxis], 3, axis=2)
-            return rgb, depth, None, None
+            return rgb, depth, lidar, None
         case _:
             raise NotImplementedError(f'Unknown dataset: {dataset}')
 
@@ -186,8 +221,8 @@ def process_batch(smpl_model, batch, meta, dataset='mmfi', data_root='data/mmfi'
     batch_pred_translation = batch['pred_translation']
     batch_pred_kps = batch['pred_keypoints']
 
-    batch_gt_translation += batch_gt_kps[:, 0, :] + np.array([0., 0.1, 0.])  # add pelvis position back
-    batch_pred_translation += batch_pred_kps[:, 0, :] + np.array([0., 0.1, 0.])  # add pelvis position back
+    batch_gt_translation += batch_gt_kps[:, 0, :] + np.array([0., 0.2, 0.])  # add pelvis position back
+    # batch_pred_translation += batch_pred_kps[:, 0, :] + np.array([0., 0.1, 0.])  # add pelvis position back
     batch_gt_verts = get_verts(smpl_model, batch_gt_pose, batch_gt_global_orient, batch_gt_beta, batch_gt_translation)
     # batch_gt_verts /= meta['gt_rot'][np.newaxis, np.newaxis, :]
     # batch_gt_verts += batch['gt_center'][:, np.newaxis, :]
@@ -257,9 +292,9 @@ def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
     server_uri = rr.serve_grpc(grpc_port=port+1)
     rr.serve_web_viewer(web_port=port, open_browser=False, connect_to=server_uri)
 
-    rr.log("gt_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    rr.log("gt_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
     rr.log("pred_smpl_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
-    # rr.log("lidar_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    rr.log("lidar_world", rr.ViewCoordinates.RIGHT_HAND_Y_UP)
     # rr.log("mmwave_world", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
 
     if SAM_AVAILABLE:
@@ -278,7 +313,7 @@ def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
             rr.log("segmented_rgb", rr.Image(segs[frame_idx]))
         
         # Log point clouds
-        # rr.log("lidar_world/lidar", rr.Points3D(input_data['lidar'][frame_idx]))
+        rr.log("lidar_world/lidar", rr.Points3D(input_data['lidar'][frame_idx]))
         # rr.log("mmwave_world/mmwave", rr.Points3D(input_data['mmwave'][frame_idx][:, :3], radii=0.03, colors=[225,184,230]))
 
         # Compute normals for this frame
@@ -327,25 +362,26 @@ def vis_batch_in_rerun(input_data, output_data, faces, edges, port=8097):
         print("\nShutting down visualization server.")
 
 if __name__ == '__main__':
-    pred_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl/humman_smpl_token_new4_test/HummanVIBEToken_test_predictions.pkl'
+    pred_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev_humman_smpl/humman_smpl_token_fixed_mv_wcam5/HummanVIBEToken_test_predictions.pkl'
     # pred_smpl_file = '/home/zpengac/mmhpe/MmMvHPE/logs/dev/20251210_001128/TestModel_1208_test_predictions_smpl.pkl'
-    data_root = '/opt/data/humman'
+    data_root = '/opt/data/humman_cropped'
     dataset = 'humman_preproc'
 
     preds = load_pred_file_new(pred_file)
     # preds = load_pred_file(pred_file, pred_smpl_file)
 
-    # smpl_model = SMPL(model_path='/home/zpengac/mmhpe/MmMvHPE/weights/smpl/SMPL_NEUTRAL.pkl', device='cpu')
-    smpl_model = smpl_model = smplx.create('/home/zpengac/mmhpe/MmMvHPE/weights', 
-                                            model_type='smpl', 
-                                            gender='neutral', 
-                                            use_face_contour=False,
-                                            num_betas=10)
-    faces = smpl_model.faces
-
+    smpl_model = SMPL(model_path='/home/zpengac/mmhpe/MmMvHPE/weights/smpl/SMPL_NEUTRAL.pkl')
+    # smpl_model = smpl_model = smplx.create('/home/zpengac/mmhpe/MmMvHPE/weights', 
+    #                                         model_type='smpl', 
+    #                                         gender='neutral', 
+    #                                         use_face_contour=False,
+    #                                         num_betas=10)
+    faces = smpl_model.th_faces.cpu().numpy()
+    print(f'Loaded SMPL model with {faces.shape[0]} faces.')
+    # print(f"SMPL model loaded from {model_path}")
     edges = SMPLSkeleton.bones
 
-    batch_size = 10
+    batch_size = 50
     i_batch = 0 # 0 90 160
     batch = {}
     meta = {}

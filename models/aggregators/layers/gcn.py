@@ -142,7 +142,7 @@ class CTRGC(nn.Module):
         super(CTRGC, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        if in_channels == 3 or in_channels == 9:
+        if in_channels in {3, 5, 6, 9}:
             self.rel_channels = 8
             self.mid_channels = 16
         else:
