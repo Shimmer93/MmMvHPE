@@ -162,6 +162,25 @@ Current status:
 uv run python tools/vis_smpl.py
 ```
 
+## Single-model lidar HPE
+
+### `tools/single_model_hpe/main_lidar.py`
+
+Purpose:
+- run a standalone LiDAR-only HPE pipeline (no config file dependency),
+- train on depth-derived point clouds and output test predictions.
+
+Example:
+
+```bash
+uv run python tools/single_model_hpe/main_lidar.py \
+  --data-root /opt/data/humman_cropped \
+  --epochs 20 \
+  --batch-size 8 \
+  --num-points 1024 \
+  --output-dir logs/single_model_hpe/run1
+```
+
 ## Script writing guideline
 
 When adding new scripts:
