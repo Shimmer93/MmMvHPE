@@ -43,6 +43,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
         skeleton_only: bool = True,
+        return_keypoints_sequence: bool = False,
         rgb_skeleton_json: Optional[str] = None,
         rgb_skeleton_image_size_hw: Sequence[int] = (512, 512),
     ):
@@ -70,6 +71,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             convert_depth_to_lidar=convert_depth_to_lidar,
             apply_to_new_world=apply_to_new_world,
             skeleton_only=skeleton_only,
+            return_keypoints_sequence=return_keypoints_sequence,
         )
 
         self.rgb_skeleton_json = rgb_skeleton_json

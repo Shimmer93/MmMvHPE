@@ -18,7 +18,7 @@ Required files:
 
 - `/opt/data/SAM_3dbody_checkpoints/model_config.yaml`
 - `/opt/data/SAM_3dbody_checkpoints/model.ckpt`
-- `/opt/data/SAM_3dbody_checkpoints/assets/mhr_model.pt`
+- `/opt/data/SAM_3dbody_checkpoints/mhr_model.pt`
 
 ## Install / Sync
 
@@ -76,7 +76,7 @@ uv run --no-sync python main.py -c configs/dev/humman_fusionformer_gt_pose_mini.
   - Re-run preflight to confirm.
 
 - Missing checkpoint assets:
-  - Ensure all three files exist under `/opt/data/SAM_3dbody_checkpoints/assets/`.
+  - Ensure all three files exist under `/opt/data/SAM_3dbody_checkpoints/`.
   - Preflight prints the exact missing file path.
 
 - CUDA errors:

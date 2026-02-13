@@ -14,6 +14,7 @@ The goal is practical:
 - `docs/data_pipeline.md`: datasets, transforms, sample format, and split logic.
 - `docs/model_pipeline.md`: model composition, heads, metrics, and extension points.
 - `docs/tools.md`: preprocessing and helper scripts with command-line examples.
+- `docs/rerun_visualization.md`: rerun inference visualization scripts and shared helper modules.
 
 ## Quickstart
 
