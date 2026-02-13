@@ -19,8 +19,8 @@ train_dataset:
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_000']
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -39,8 +39,8 @@ val_dataset:
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_000']
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -59,8 +59,8 @@ test_dataset:
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    rgb_cameras: ['kinect_000']
+    depth_cameras: ['kinect_000']
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
