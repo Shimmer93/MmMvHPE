@@ -6,3 +6,6 @@
 	path = third_party/emdul
 	url = https://github.com/Shimmer93/EMDUL.git
 	branch = mmhpe
+[submodule "third_party/sam-3d-body"]
+	path = third_party/sam-3d-body
+	url = https://github.com/facebookresearch/sam-3d-body
