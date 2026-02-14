@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from misc.utils import load_cfg, merge_args_cfg
 from misc.registry import create_dataset
 from misc.skeleton import SMPLSkeleton
+from rerun_utils.camera import resolve_view_extrinsics, transform_points_to_camera
 from rerun_utils.geometry import rotate_points_180_y
 from rerun_utils.image import process_image_for_display
 from rerun_utils.layout import (
@@ -57,6 +58,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print RGB image stats (shape/dtype/min/max) before rerun logging.",
     )
+    parser.add_argument(
+        "--gt-coordinate-space",
+        default=None,
+        help="Ground-truth 3D coordinate space: `canonical` or `camera`. "
+        "When omitted, uses `gt_coordinate_space` from config or `canonical`.",
+    )
     return parser.parse_args()
 
 
@@ -71,14 +78,17 @@ def _resolve_dataset_cfg(hparams, split: str):
 def _check_checkpoint_paths(checkpoint_root: Path) -> tuple[Path, Path, Path]:
     cfg_path = checkpoint_root / "model_config.yaml"
     ckpt_path = checkpoint_root / "model.ckpt"
-    mhr_path = checkpoint_root / "mhr_model.pt"
+    # Prefer assets layout for mhr_model.pt, keep root-level fallback for compatibility.
+    mhr_path = checkpoint_root / "assets" / "mhr_model.pt"
+    if not mhr_path.exists():
+        mhr_path = checkpoint_root / "mhr_model.pt"
     required = [cfg_path, ckpt_path, mhr_path]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise FileNotFoundError(
             "Missing required SAM-3D-Body file(s): "
             + ", ".join(missing)
-            + ". Expected files under /opt/data/SAM_3dbody_checkpoints/."
+            + ". Expected files under /opt/data/SAM_3dbody_checkpoints/ (mhr_model.pt in assets/ by default)."
         )
     return cfg_path, ckpt_path, mhr_path
 
@@ -240,6 +250,8 @@ def _log_gt_outputs(
     smpl_model,
     faces: np.ndarray | None,
     source_frame_idx: int,
+    gt_coordinate_space: str,
+    view_extrinsic: np.ndarray | None,
 ) -> tuple[bool, bool]:
     gt_kpts_ok = False
     gt_mesh_ok = False
@@ -254,8 +266,21 @@ def _log_gt_outputs(
         gt_keypoints = gt_keypoints_data
         if gt_keypoints.ndim == 3:
             gt_keypoints = _select_temporal_frame(gt_keypoints, source_frame_idx)
+        if gt_coordinate_space == "camera":
+            if view_extrinsic is None:
+                raise ValueError(
+                    "GT camera-coordinate mode requested but no per-view extrinsic is available."
+                )
+            gt_keypoints = transform_points_to_camera(gt_keypoints, view_extrinsic)
         gt_keypoints = rotate_points_180_y(gt_keypoints)
-        log_skeleton_views("ground_truth", gt_keypoints, SMPLSkeleton, color=(0, 255, 100), radius=0.02)
+        log_skeleton_views(
+            "ground_truth",
+            gt_keypoints,
+            SMPLSkeleton,
+            color=(0, 255, 100),
+            radius=0.02,
+            side_transform=_side_view_transform,
+        )
         gt_kpts_ok = True
 
     if smpl_model is None or faces is None:
@@ -328,14 +353,17 @@ def _log_sam3d_outputs(
     if render_mode == "auto" and not can_render_mesh:
         return "overlay"
 
-    vertices_front = rotate_points_180_y(np.asarray(person["pred_vertices"], dtype=np.float32))
+    pred_cam_t = np.asarray(person["pred_cam_t"], dtype=np.float32).reshape(1, 3)
+    vertices_cam = np.asarray(person["pred_vertices"], dtype=np.float32) + pred_cam_t
+    vertices_front = rotate_points_180_y(vertices_cam)
     faces = np.asarray(estimator.faces, dtype=np.int32)
     log_mesh_3d("world/front/prediction/mesh", vertices_front, faces, color=(100, 180, 255), alpha=0.65)
     side_vertices = _side_view_transform(vertices_front)
     log_mesh_3d("world/side/prediction/mesh", side_vertices, faces, color=(100, 180, 255), alpha=0.65)
 
     if "pred_keypoints_3d" in person:
-        keypoints_front = rotate_points_180_y(np.asarray(person["pred_keypoints_3d"], dtype=np.float32))
+        keypoints_cam = np.asarray(person["pred_keypoints_3d"], dtype=np.float32) + pred_cam_t
+        keypoints_front = rotate_points_180_y(keypoints_cam)
         log_skeleton_views(
             "prediction",
             keypoints_front,
@@ -374,6 +402,19 @@ def main() -> None:
     mock_args.save_test_preds = False
     hparams = merge_args_cfg(mock_args, cfg)
     denorm_params = getattr(hparams, "vis_denorm_params", None)
+    gt_coordinate_space_cfg = str(getattr(hparams, "gt_coordinate_space", "canonical"))
+    gt_coordinate_space = (
+        str(args.gt_coordinate_space) if args.gt_coordinate_space is not None else gt_coordinate_space_cfg
+    )
+    gt_coordinate_space = gt_coordinate_space.lower().strip()
+    if gt_coordinate_space not in {"canonical", "camera"}:
+        raise ValueError(
+            f"Invalid GT coordinate space `{gt_coordinate_space}`. "
+            "Use `canonical` or `camera` via `--gt-coordinate-space` "
+            "or config key `gt_coordinate_space`."
+        )
+    # Single mode per run for clarity and deterministic comparisons.
+    assert isinstance(gt_coordinate_space, str)
 
     dataset_cfg, pipeline_cfg = _resolve_dataset_cfg(hparams, args.split)
     dataset, _ = create_dataset(dataset_cfg["name"], dataset_cfg["params"], pipeline_cfg)
@@ -405,7 +446,9 @@ def main() -> None:
         grpc_port=args.grpc_port,
     )
     rr.send_blueprint(blueprint)
-    init_world_axes()
+    # SAM-3D-Body outputs are interpreted in camera-like coordinates (x right, y down, z forward).
+    # Use Y-down view coordinates in rerun to avoid vertical inversion in 3D views.
+    init_world_axes(rr.ViewCoordinates.RIGHT_HAND_Y_DOWN)
 
     sample_id = str(sample.get("sample_id", f"idx_{sample_idx}"))
 
@@ -424,6 +467,11 @@ def main() -> None:
         raise ValueError(f"Inconsistent RGB temporal lengths across views: {seq_lengths}")
     frame_indices = _select_frame_indices(seq_lengths[0], args.frame_index, args.num_frames)
     rr.log("world/info/num_visualized_frames", rr.TextLog(str(len(frame_indices))))
+    rr.log("world/info/gt_coordinate_space", rr.TextLog(gt_coordinate_space))
+
+    view_extrinsics = None
+    if gt_coordinate_space == "camera":
+        view_extrinsics = resolve_view_extrinsics(sample.get("rgb_camera"), num_rgb_views=len(rgb_views))
 
     for local_idx, source_frame_idx in enumerate(frame_indices):
         set_frame_timeline(local_idx, sample_id=sample_id)
@@ -454,6 +502,8 @@ def main() -> None:
                     smpl_model,
                     np.asarray(estimator.faces, dtype=np.int32),
                     source_frame_idx=source_frame_idx,
+                    gt_coordinate_space=gt_coordinate_space,
+                    view_extrinsic=None if view_extrinsics is None else view_extrinsics[view_idx],
                 )
                 rr.log("world/info/gt_keypoints_available", rr.TextLog(str(gt_keypoints_ok)))
                 rr.log("world/info/gt_mesh_available", rr.TextLog(str(gt_mesh_ok)))

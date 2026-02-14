@@ -87,6 +87,15 @@ GT behavior:
 - GT keypoints are logged when `gt_keypoints` exists.
 - GT mesh is logged when GT SMPL fields are sufficient and SMPL model can be loaded.
 - Availability flags are logged under `world/info/gt_keypoints_available` and `world/info/gt_mesh_available`.
+- GT coordinate space is controlled by config key `gt_coordinate_space` or CLI `--gt-coordinate-space`:
+  - `canonical`: log GT in dataset canonical pelvis-centered space
+  - `camera`: transform GT with selected RGB view extrinsic (`X_cam = R * X + t`) before logging
+  - `world/info/gt_coordinate_space` records the selected mode for each run
+
+Coordinate-space assumptions:
+- This script is currently scoped to SAM-3D-Body rerun only.
+- `camera` mode requires `sample["rgb_camera"]` extrinsics from dataset samples.
+- A single GT mode is used per run (no mixed canonical/camera panels in one recording).
 
 ### Multi-frame control
 
@@ -132,6 +141,30 @@ uv run --no-sync python scripts/visualize_sam3d_body_rerun.py \
   --render-mode mesh \
   --no_serve \
   --save_rrd logs/rerun_smoke/sam3d_mesh_nf3.rrd
+```
+
+```bash
+uv run --no-sync python scripts/visualize_sam3d_body_rerun.py \
+  -c configs/demo/humman_sam3d_body_vis.yml \
+  --split test \
+  --sample-idx 0 \
+  --num-frames 3 \
+  --render-mode mesh \
+  --gt-coordinate-space canonical \
+  --no_serve \
+  --save_rrd logs/rerun_smoke/sam3d_mesh_nf3_gt_canonical.rrd
+```
+
+```bash
+uv run --no-sync python scripts/visualize_sam3d_body_rerun.py \
+  -c configs/demo/humman_sam3d_body_vis.yml \
+  --split test \
+  --sample-idx 0 \
+  --num-frames 3 \
+  --render-mode mesh \
+  --gt-coordinate-space camera \
+  --no_serve \
+  --save_rrd logs/rerun_smoke/sam3d_mesh_nf3_gt_camera.rrd
 ```
 
 ## Known Limitations and Debug Notes

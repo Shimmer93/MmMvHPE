@@ -23,11 +23,11 @@ def init_rerun_session(
         rr.serve_web_viewer(web_port=web_port, open_browser=False, connect_to=server_uri)
 
 
-def init_world_axes() -> None:
+def init_world_axes(view_coordinates=rr.ViewCoordinates.RIGHT_HAND_Y_UP) -> None:
     """Log static world/view coordinate systems used by visualization scripts."""
-    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
-    rr.log("world/front", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
-    rr.log("world/side", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
+    rr.log("world", view_coordinates, static=True)
+    rr.log("world/front", view_coordinates, static=True)
+    rr.log("world/side", view_coordinates, static=True)
 
 
 def set_frame_timeline(frame_idx: int, sample_id: str | None = None) -> None:
