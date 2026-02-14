@@ -1,0 +1,70 @@
+train_dataset:
+  name: "HummanPreprocessedDatasetV3"
+  params:
+    data_root: &data_root "/opt/data/humman_cropped"
+    rgb_skeleton_json: &rgb_skeleton_json "/opt/data/humman_cropped/skl_rgb.json"
+    rgb_skeleton_image_size_hw: [224, 224]
+    unit: "m"
+    modality_names: ["rgb"]
+    rgb_cameras: ["kinect_000"]
+    split: "train"
+    split_config: "configs/datasets/humman_split_config.yml"
+    split_to_use: "cross_camera_split"
+    test_mode: false
+    seq_len: 50
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    return_keypoints_sequence: true
+
+val_dataset:
+  name: "HummanPreprocessedDatasetV3"
+  params:
+    data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
+    unit: "m"
+    modality_names: ["rgb"]
+    rgb_cameras: ["kinect_000"]
+    split: "train"
+    split_config: "configs/datasets/humman_split_config.yml"
+    split_to_use: "cross_camera_split"
+    test_mode: false
+    seq_len: 50
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    return_keypoints_sequence: true
+
+test_dataset:
+  name: "HummanPreprocessedDatasetV3"
+  params:
+    data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
+    unit: "m"
+    modality_names: ["rgb"]
+    rgb_cameras: ["kinect_000"]
+    split: "train"
+    split_config: "configs/datasets/humman_split_config.yml"
+    split_to_use: "cross_camera_split"
+    test_mode: false
+    seq_len: 50
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    return_keypoints_sequence: true
+
+# Keep raw uint8 images for SAM-3D-Body visualization.
+train_pipeline: []
+val_pipeline: []
+test_pipeline: []
+
+# GT keypoint space for SAM-3D-Body rerun visualization.
+gt_coordinate_space: "canonical"
