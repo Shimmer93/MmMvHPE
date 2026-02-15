@@ -18,6 +18,7 @@ class RegressionKeypointHeadV5(BaseHead):
         max_modalities=4,
         last_n_layers=-1,
         pose_encoding_type="absT_quaR_FoV",
+        remove_root_rotation=True,
     ):
         super().__init__(losses)
         self.emb_size = emb_size
@@ -28,6 +29,7 @@ class RegressionKeypointHeadV5(BaseHead):
         self.max_modalities = max_modalities
         self.last_n_layers = last_n_layers
         self.pose_encoding_type = pose_encoding_type
+        self.remove_root_rotation = bool(remove_root_rotation)
 
         self.keypoint_gate = nn.Parameter(torch.zeros(emb_size))
 

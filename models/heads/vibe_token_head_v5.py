@@ -10,10 +10,11 @@ from .base_head import BaseHead
 
 
 class Regressor(nn.Module):
-    def __init__(self, smpl_path, smpl_mean_params, emb_size=1024):
+    def __init__(self, smpl_path, smpl_mean_params, emb_size=1024, remove_root_rotation=True):
         super(Regressor, self).__init__()
 
         self.smpl = SMPL(model_path=smpl_path)
+        self.remove_root_rotation = bool(remove_root_rotation)
 
         self.joint_fc1 = nn.Linear(emb_size + 6, emb_size)
         self.joint_fc2 = nn.Linear(emb_size, emb_size)
@@ -73,7 +74,8 @@ class Regressor(nn.Module):
         pred_pose_flat = pred_pose.reshape(batch_size, -1)
         pred_rotmat = rot6d_to_rotmat(pred_pose_flat).view(batch_size, 24, 3, 3)
         pose = rotation_matrix_to_angle_axis(pred_rotmat.reshape(-1, 3, 3)).reshape(-1, 72)
-        pose[:, :3] = 0.0
+        if self.remove_root_rotation and pose.shape[1] >= 3:
+            pose[:, :3] = 0.0
 
         smpl_model = self.smpl.to(device)
         output = smpl_model(
@@ -106,6 +108,7 @@ class VIBETokenHeadV5(BaseHead):
         n_iters=3,
         last_n_layers=-1,
         pose_encoding_type="absT_quaR_FoV",
+        remove_root_rotation=True,
     ):
         super().__init__(losses)
         self.emb_size = emb_size
@@ -116,6 +119,7 @@ class VIBETokenHeadV5(BaseHead):
         self.n_iters = n_iters
         self.last_n_layers = last_n_layers
         self.pose_encoding_type = pose_encoding_type
+        self.remove_root_rotation = bool(remove_root_rotation)
 
         self.token_gate = nn.Parameter(torch.zeros(emb_size))
 
@@ -131,7 +135,12 @@ class VIBETokenHeadV5(BaseHead):
         )
         print("[DEBUG]: smpl_path:", smpl_path)
 
-        self.regressor = Regressor(smpl_path, smpl_mean_params, emb_size=emb_size)
+        self.regressor = Regressor(
+            smpl_path,
+            smpl_mean_params,
+            emb_size=emb_size,
+            remove_root_rotation=self.remove_root_rotation,
+        )
 
     def forward(self, x, return_per_modality=False):
         x = self._select_layers(x)
@@ -161,9 +170,13 @@ class VIBETokenHeadV5(BaseHead):
         per_modality_output = pred_output.get('per_modality')
 
         losses = {}
+        gt_pose = data_batch['gt_smpl_params'][:, :72].contiguous()
+        if self.remove_root_rotation and gt_pose.shape[1] >= 3:
+            gt_pose = gt_pose.clone()
+            gt_pose[:, :3] = 0.0
+
         gt_rotmat = data_batch.get('gt_rotmat', None)
         if gt_rotmat is None:
-            gt_pose = data_batch['gt_smpl_params'][:, :72].contiguous()
             gt_rotmat = batch_rodrigues(gt_pose.view(-1, 3)).view(-1, 24, 3, 3)
             data_batch['gt_rotmat'] = gt_rotmat
 
@@ -172,7 +185,7 @@ class VIBETokenHeadV5(BaseHead):
                 losses[loss_name] = (loss_fn(global_output['pred_keypoints'], data_batch['gt_keypoints']), loss_weight)
             elif 'smplpose' in loss_name.lower():
                 losses[loss_name] = (
-                    loss_fn(global_output['pred_smpl_params'][:, :72], data_batch['gt_smpl_params'][:, :72]),
+                    loss_fn(global_output['pred_smpl_params'][:, :72], gt_pose),
                     loss_weight,
                 )
             elif 'smplshape' in loss_name.lower():

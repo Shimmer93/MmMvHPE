@@ -1,11 +1,14 @@
 # The dataset assumes each sample captures one and only one human subject.
 # The dataset should transform all 3D keypoints, SMPL parameters, and camera extrinsic to a new world coordinate system.
-# The new world coordinate system is defined such that the origin is at the pelvis joint of the human model, and the axes are defined such that the smpl model global orientation is (0, 0, 0).
+# The new world coordinate system is pelvis-centered.
+# If remove_root_rotation=True, the axes remove SMPL global orientation.
+# If remove_root_rotation=False, the axes keep world orientation.
 # each sample contains:
 # sample_id: str # unique identifier for the sample
 # modalities: list # list of available modalities for the sample, e.g., ['rgb', 'depth']
 # gt_keypoints: array of shape (24, 3) # ground truth 3D keypoints, centered at the root joint (pelvis)
-# gt_smpl_params: array of shape (72+10) # ground truth SMPL parameters (pose and shape), the first 3 values of pose are set to zero (fixed root orientation)
+# gt_smpl_params: array of shape (72+10) # ground truth SMPL parameters (pose and shape)
+#               # if remove_root_rotation=True, the first 3 values of pose are set to zero
 # rgb_camera (if 'rgb' in modalities):
 #     intrinsic: array of shape (3, 3) # camera intrinsic matrix
 #     extrinsic: array of shape (3, 4) # camera extrinsic matrix (rotation and translation) (may need to be be integrated with translation from raw smpl file)
@@ -74,6 +77,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         colocated: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
+        remove_root_rotation: bool = True,
         skeleton_only: bool = True,
     ):
         super().__init__(pipeline=pipeline)
@@ -93,6 +97,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.colocated = colocated
         self.convert_depth_to_lidar = convert_depth_to_lidar
         self.apply_to_new_world = apply_to_new_world
+        self.remove_root_rotation = bool(remove_root_rotation)
         # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
         self.skeleton_only = bool(skeleton_only)
 
@@ -403,13 +408,18 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             return np.asarray(gt_transl, dtype=np.float32).reshape(3)
         return np.zeros(3, dtype=np.float32)
 
+    def _new_world_rotation(self, global_orient):
+        if self.remove_root_rotation:
+            return axis_angle_to_matrix_np(global_orient)
+        return np.eye(3, dtype=np.float32)
+
     def _to_new_world(self, global_orient, pelvis, points):
-        R_root = axis_angle_to_matrix_np(global_orient)
-        return (R_root.T @ (points - pelvis).T).T
+        R_new_to_world = self._new_world_rotation(global_orient)
+        return (R_new_to_world.T @ (points - pelvis).T).T
 
 
-    def _update_extrinsic(self, R_wc, T_wc, R_root, pelvis):
-        R_new = R_wc @ R_root
+    def _update_extrinsic(self, R_wc, T_wc, R_new_to_world, pelvis):
+        R_new = R_wc @ R_new_to_world
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
         return R_new, T_new
 
@@ -559,13 +569,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         gt_keypoints = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
 
         pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
-        R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
+        R_new_to_world = self._new_world_rotation(np.asarray(gt_global_orient, dtype=np.float32))
 
         if gt_keypoints is not None and self.apply_to_new_world:
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
-        if pose.shape[0] >= 3:
+        if self.remove_root_rotation and pose.shape[0] >= 3:
             pose[:3] = 0.0
         pose = pose[:72]
         betas = np.asarray(gt_betas, dtype=np.float32)[:10]
@@ -611,7 +621,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 rgb_cameras_out.append(
                     {
                         "intrinsic": K,
@@ -646,7 +656,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
                 depth_raw_params.append((K, R, T))
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 depth_cameras_out.append(
                     {
                         "intrinsic": K,
@@ -678,7 +688,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     lidar_cameras.append(
                         {
                             "intrinsic": K,
-                            "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
+                            "extrinsic": np.hstack((R_new_to_world, pelvis.reshape(3, 1))).astype(np.float32),
                         }
                     )
                 if lidar_cameras:
@@ -704,7 +714,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 lidar_cameras_out.append(
                     {
                         "intrinsic": K,

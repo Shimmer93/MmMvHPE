@@ -20,7 +20,9 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
     When `lidar_skeleton_json` is provided, this class loads 3D keypoints and
     writes them to `lidar_skeleton_key` (default: `gt_keypoints_lidar`).
     The loaded LiDAR keypoints are converted to match dataset coordinate mode:
-    - if `apply_to_new_world=True`, output keypoints are in new-world coordinates
+    - if `apply_to_new_world=True`, output keypoints are in pelvis-centered new-world
+      coordinates (with optional root-rotation removal controlled by
+      `remove_root_rotation`)
     - else output keypoints are in world coordinates
     """
 
@@ -48,6 +50,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         colocated: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
+        remove_root_rotation: bool = True,
         skeleton_only: bool = True,
         rgb_skeleton_json: Optional[str] = None,
         rgb_skeleton_image_size_hw: Sequence[int] = (512, 512),
@@ -78,6 +81,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             colocated=colocated,
             convert_depth_to_lidar=convert_depth_to_lidar,
             apply_to_new_world=apply_to_new_world,
+            remove_root_rotation=remove_root_rotation,
             skeleton_only=skeleton_only,
         )
 
@@ -427,14 +431,32 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         return np.asarray(value, dtype=np.float32).reshape(3)
 
     @staticmethod
-    def _transform_new_world_to_world(points: np.ndarray, global_orient: np.ndarray, pelvis: np.ndarray) -> np.ndarray:
+    def _transform_new_world_to_world(
+        points: np.ndarray,
+        global_orient: np.ndarray,
+        pelvis: np.ndarray,
+        remove_root_rotation: bool = True,
+    ) -> np.ndarray:
+        if not remove_root_rotation:
+            pts = points.reshape(-1, 3)
+            pts = pts + pelvis.reshape(1, 3)
+            return pts.reshape(points.shape).astype(np.float32)
         r_root = axis_angle_to_matrix_np(np.asarray(global_orient, dtype=np.float32).reshape(3))
         pts = points.reshape(-1, 3)
         pts = (r_root @ pts.T).T + pelvis.reshape(1, 3)
         return pts.reshape(points.shape).astype(np.float32)
 
     @staticmethod
-    def _transform_world_to_new_world(points: np.ndarray, global_orient: np.ndarray, pelvis: np.ndarray) -> np.ndarray:
+    def _transform_world_to_new_world(
+        points: np.ndarray,
+        global_orient: np.ndarray,
+        pelvis: np.ndarray,
+        remove_root_rotation: bool = True,
+    ) -> np.ndarray:
+        if not remove_root_rotation:
+            pts = points.reshape(-1, 3)
+            pts = pts - pelvis.reshape(1, 3)
+            return pts.reshape(points.shape).astype(np.float32)
         r_root = axis_angle_to_matrix_np(np.asarray(global_orient, dtype=np.float32).reshape(3))
         pts = points.reshape(-1, 3)
         pts = (r_root.T @ (pts - pelvis.reshape(1, 3)).T).T
@@ -470,9 +492,19 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             pelvis = self._to_numpy_3vec(sample.get("gt_pelvis"))
 
             if self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
-                kpts_lidar = self._transform_new_world_to_world(kpts_lidar, global_orient, pelvis)
+                kpts_lidar = self._transform_new_world_to_world(
+                    kpts_lidar,
+                    global_orient,
+                    pelvis,
+                    remove_root_rotation=self.remove_root_rotation,
+                )
             elif self.lidar_skeleton_coord == "world" and self.apply_to_new_world:
-                kpts_lidar = self._transform_world_to_new_world(kpts_lidar, global_orient, pelvis)
+                kpts_lidar = self._transform_world_to_new_world(
+                    kpts_lidar,
+                    global_orient,
+                    pelvis,
+                    remove_root_rotation=self.remove_root_rotation,
+                )
 
             sample[self.lidar_skeleton_key] = torch.from_numpy(kpts_lidar.astype(np.float32))
         return sample
