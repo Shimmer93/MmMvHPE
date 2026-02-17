@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import sys
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -9,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 
+PC_CENTERED_TARGET_KEY = "gt_keypoints_pc_centered_input_lidar"
 
 def mpjpe(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return torch.norm(pred - target, dim=-1).mean()
@@ -22,6 +24,42 @@ def _format_seconds(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _print_progress(msg: str, *, final: bool, overwrite: bool) -> None:
+    if overwrite and sys.stdout.isatty():
+        print(msg.ljust(160), end="\n" if final else "\r", flush=True)
+        return
+    print(msg, flush=True)
+
+
+def _to_float_tensor(x, device: Optional[torch.device] = None) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x.to(device=device, dtype=torch.float32) if device is not None else x.float()
+    t = torch.as_tensor(x, dtype=torch.float32)
+    return t.to(device=device) if device is not None else t
+
+
+def _get_pc_centered_targets(batch: Dict[str, object]) -> torch.Tensor:
+    targets = batch.get(PC_CENTERED_TARGET_KEY, None)
+    if targets is None:
+        raise KeyError(
+            f"Missing `{PC_CENTERED_TARGET_KEY}` in batch. "
+            "Ensure `PCCenterWithKeypoints(keypoints_key='gt_keypoints')` is enabled."
+        )
+
+    if isinstance(targets, torch.Tensor):
+        return targets.float()
+    if isinstance(targets, np.ndarray):
+        return torch.from_numpy(targets).float()
+    if isinstance(targets, list):
+        rows = []
+        for i, item in enumerate(targets):
+            if item is None:
+                raise KeyError(f"`{PC_CENTERED_TARGET_KEY}` is None at batch index {i}.")
+            rows.append(_to_float_tensor(item))
+        return torch.stack(rows, dim=0)
+    raise TypeError(f"Unsupported `{PC_CENTERED_TARGET_KEY}` type: {type(targets)}")
+
+
 def train_one_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -29,6 +67,7 @@ def train_one_epoch(
     device: torch.device,
     grad_clip: Optional[float] = None,
     log_interval: int = 20,
+    log_overwrite: bool = True,
     epoch_idx: Optional[int] = None,
     num_epochs: Optional[int] = None,
 ) -> Dict[str, float]:
@@ -41,7 +80,7 @@ def train_one_epoch(
     num_steps = len(dataloader)
     for step_idx, batch in enumerate(dataloader, start=1):
         input_lidar = batch["input_lidar"].to(device, non_blocking=True).float()
-        gt_keypoints = batch["gt_keypoints"].to(device, non_blocking=True).float()
+        gt_keypoints = _get_pc_centered_targets(batch).to(device, non_blocking=True).float()
 
         optimizer.zero_grad(set_to_none=True)
         pred_keypoints = model(input_lidar)
@@ -61,16 +100,17 @@ def train_one_epoch(
             avg_mpjpe = total_mpjpe / max(total_samples, 1)
             elapsed = _format_seconds(time.time() - start_time)
             if epoch_idx is not None and num_epochs is not None:
-                print(
+                msg = (
                     f"[Train] Epoch {epoch_idx + 1}/{num_epochs} "
                     f"Step {step_idx}/{num_steps} "
                     f"loss={avg_loss:.6f} mpjpe={avg_mpjpe:.6f} elapsed={elapsed}"
                 )
             else:
-                print(
+                msg = (
                     f"[Train] Step {step_idx}/{num_steps} "
                     f"loss={avg_loss:.6f} mpjpe={avg_mpjpe:.6f} elapsed={elapsed}"
                 )
+            _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
     return {
         "loss": total_loss / max(total_samples, 1),
@@ -85,6 +125,7 @@ def evaluate(
     dataloader: DataLoader,
     device: torch.device,
     log_interval: int = 20,
+    log_overwrite: bool = True,
     epoch_idx: Optional[int] = None,
     num_epochs: Optional[int] = None,
 ) -> Dict[str, float]:
@@ -97,7 +138,7 @@ def evaluate(
     num_steps = len(dataloader)
     for step_idx, batch in enumerate(dataloader, start=1):
         input_lidar = batch["input_lidar"].to(device, non_blocking=True).float()
-        gt_keypoints = batch["gt_keypoints"].to(device, non_blocking=True).float()
+        gt_keypoints = _get_pc_centered_targets(batch).to(device, non_blocking=True).float()
 
         pred_keypoints = model(input_lidar)
         loss = F.mse_loss(pred_keypoints, gt_keypoints)
@@ -112,16 +153,17 @@ def evaluate(
             avg_mpjpe = total_mpjpe / max(total_samples, 1)
             elapsed = _format_seconds(time.time() - start_time)
             if epoch_idx is not None and num_epochs is not None:
-                print(
+                msg = (
                     f"[Val]   Epoch {epoch_idx + 1}/{num_epochs} "
                     f"Step {step_idx}/{num_steps} "
                     f"loss={avg_loss:.6f} mpjpe={avg_mpjpe:.6f} elapsed={elapsed}"
                 )
             else:
-                print(
+                msg = (
                     f"[Val]   Step {step_idx}/{num_steps} "
                     f"loss={avg_loss:.6f} mpjpe={avg_mpjpe:.6f} elapsed={elapsed}"
                 )
+            _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
     return {
         "loss": total_loss / max(total_samples, 1),
@@ -137,6 +179,7 @@ def test_and_save_predictions(
     device: torch.device,
     save_path: str,
     log_interval: int = 20,
+    log_overwrite: bool = True,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.time()
@@ -149,7 +192,7 @@ def test_and_save_predictions(
     num_steps = len(dataloader)
     for batch_idx, batch in enumerate(dataloader):
         input_lidar = batch["input_lidar"].to(device, non_blocking=True).float()
-        gt_keypoints = batch["gt_keypoints"].to(device, non_blocking=True).float()
+        gt_keypoints = _get_pc_centered_targets(batch).to(device, non_blocking=True).float()
         pred_keypoints = model(input_lidar)
 
         batch_size = input_lidar.shape[0]
@@ -169,10 +212,11 @@ def test_and_save_predictions(
         if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
             avg_mpjpe = total_mpjpe / max(total_samples, 1)
             elapsed = _format_seconds(time.time() - start_time)
-            print(
+            msg = (
                 f"[Test]  Step {step_idx}/{num_steps} "
                 f"mpjpe={avg_mpjpe:.6f} elapsed={elapsed}"
             )
+            _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
     pred_arr = np.concatenate(all_preds, axis=0) if all_preds else np.empty((0, 0, 3), dtype=np.float32)
     target_arr = np.concatenate(all_targets, axis=0) if all_targets else np.empty((0, 0, 3), dtype=np.float32)
@@ -244,6 +288,7 @@ def export_predictions_as_mmpose_json(
     checkpoint: str,
     device_str: str,
     log_interval: int = 20,
+    log_overwrite: bool = True,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.time()
@@ -276,10 +321,11 @@ def export_predictions_as_mmpose_json(
 
         if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
             elapsed = _format_seconds(time.time() - start_time)
-            print(
+            msg = (
                 f"[Export] Step {step_idx}/{num_steps} "
                 f"frames={len(predictions)} elapsed={elapsed}"
             )
+            _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
     payload = {
         "input_dir": str(input_dir),

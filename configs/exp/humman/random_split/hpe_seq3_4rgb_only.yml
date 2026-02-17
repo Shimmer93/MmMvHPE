@@ -102,9 +102,9 @@ aggregator:
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
+    aa_order: ['single', 'cross_joint', 'gcn']
     aa_block_size: 1
-    depth: 6
+    depth: 12
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8

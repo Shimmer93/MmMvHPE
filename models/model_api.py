@@ -11,6 +11,7 @@ import wandb
 from misc.registry import create_model, create_metric, create_optimizer, create_scheduler
 from misc.vis import visualize_multimodal_sample
 from misc.utils import torch2numpy, load_state_dict_part
+from misc.camera_batch import collect_gt_camera_encodings
 
 class LitModel(L.LightningModule):
 
@@ -22,29 +23,48 @@ class LitModel(L.LightningModule):
         if not self.camera_only:
             assert self.with_rgb or self.with_depth or self.with_lidar or self.with_mmwave, "At least one modality should be used."
 
+        def _cfg_eval(cfg):
+            return bool(cfg.get('eval', False))
+
         if self.with_rgb and not self.camera_only:
-            self.backbone_rgb = create_model(self.hparams.backbone_rgb['name'], self.hparams.backbone_rgb['params'])
+            self.backbone_rgb = create_model(
+                self.hparams.backbone_rgb['name'],
+                self.hparams.backbone_rgb['params'],
+                eval=_cfg_eval(self.hparams.backbone_rgb),
+            )
             self.has_temporal_rgb = self.hparams.backbone_rgb['has_temporal']
             if hasattr(self.hparams, 'pretrained_rgb_path'):
                 print("Loading pretrained RGB backbone from:", self.hparams.pretrained_rgb_path)
                 state_dict_rgb = torch.load(self.hparams.pretrained_rgb_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_rgb, state_dict_rgb, prefix='backbone_rgb.')
         if self.with_depth and not self.camera_only:
-            self.backbone_depth = create_model(self.hparams.backbone_depth['name'], self.hparams.backbone_depth['params'])
+            self.backbone_depth = create_model(
+                self.hparams.backbone_depth['name'],
+                self.hparams.backbone_depth['params'],
+                eval=_cfg_eval(self.hparams.backbone_depth),
+            )
             self.has_temporal_depth = self.hparams.backbone_depth['has_temporal']
             if hasattr(self.hparams, 'pretrained_depth_path'):
                 print("Loading pretrained Depth backbone from:", self.hparams.pretrained_depth_path)
                 state_dict_depth = torch.load(self.hparams.pretrained_depth_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_depth, state_dict_depth, prefix='backbone_depth.')
         if self.with_lidar and not self.camera_only:
-            self.backbone_lidar = create_model(self.hparams.backbone_lidar['name'], self.hparams.backbone_lidar['params'])
+            self.backbone_lidar = create_model(
+                self.hparams.backbone_lidar['name'],
+                self.hparams.backbone_lidar['params'],
+                eval=_cfg_eval(self.hparams.backbone_lidar),
+            )
             self.has_temporal_lidar = self.hparams.backbone_lidar['has_temporal']
             if hasattr(self.hparams, 'pretrained_lidar_path'):
                 print("Loading pretrained LIDAR backbone from:", self.hparams.pretrained_lidar_path)
                 state_dict_lidar = torch.load(self.hparams.pretrained_lidar_path, map_location=self.device)['state_dict']
                 load_state_dict_part(self.backbone_lidar, state_dict_lidar, prefix='backbone_lidar.')
         if self.with_mmwave and not self.camera_only:
-            self.backbone_mmwave = create_model(self.hparams.backbone_mmwave['name'], self.hparams.backbone_mmwave['params'])
+            self.backbone_mmwave = create_model(
+                self.hparams.backbone_mmwave['name'],
+                self.hparams.backbone_mmwave['params'],
+                eval=_cfg_eval(self.hparams.backbone_mmwave),
+            )
             self.has_temporal_mmwave = self.hparams.backbone_mmwave['has_temporal']
             if hasattr(self.hparams, 'pretrained_mmwave_path'):
                 print("Loading pretrained MMWave backbone from:", self.hparams.pretrained_mmwave_path)
@@ -52,16 +72,32 @@ class LitModel(L.LightningModule):
                 load_state_dict_part(self.backbone_mmwave, state_dict_mmwave, prefix='backbone_mmwave.')
 
         if not self.camera_only:
-            self.aggregator = create_model(self.hparams.aggregator['name'], self.hparams.aggregator['params'])
+            self.aggregator = create_model(
+                self.hparams.aggregator['name'],
+                self.hparams.aggregator['params'],
+                eval=_cfg_eval(self.hparams.aggregator),
+            )
         else:
             self.aggregator = None
 
         if self.with_keypoint_head:
-            self.keypoint_head = create_model(self.hparams.keypoint_head['name'], self.hparams.keypoint_head['params'])
+            self.keypoint_head = create_model(
+                self.hparams.keypoint_head['name'],
+                self.hparams.keypoint_head['params'],
+                eval=_cfg_eval(self.hparams.keypoint_head),
+            )
         if self.with_smpl_head:
-            self.smpl_head = create_model(self.hparams.smpl_head['name'], self.hparams.smpl_head['params'])
+            self.smpl_head = create_model(
+                self.hparams.smpl_head['name'],
+                self.hparams.smpl_head['params'],
+                eval=_cfg_eval(self.hparams.smpl_head),
+            )
         if self.with_camera_head:
-            self.camera_head = create_model(self.hparams.camera_head['name'], self.hparams.camera_head['params'])
+            self.camera_head = create_model(
+                self.hparams.camera_head['name'],
+                self.hparams.camera_head['params'],
+                eval=_cfg_eval(self.hparams.camera_head),
+            )
         
         if hparams.checkpoint_path is not None:
             print("Loading model checkpoint from:", hparams.checkpoint_path)
@@ -326,10 +362,28 @@ class LitModel(L.LightningModule):
     
         if self.hparams.save_test_preds:
             batch_size = len(batch['sample_id'])
+            pose_encoding_dim = int(getattr(getattr(self, "camera_head", None), "pose_encoding_dim", 9))
+            modalities = batch.get("modalities", [])
+            if modalities and isinstance(modalities[0], (list, tuple)):
+                modalities = list(modalities[0])
+            elif isinstance(modalities, (list, tuple)):
+                modalities = list(modalities)
+            else:
+                modalities = []
+            gt_cameras_batch = collect_gt_camera_encodings(
+                data_batch=batch,
+                modalities=modalities,
+                batch_size=batch_size,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+                pose_encoding_dim=pose_encoding_dim,
+            )
             for i in range(batch_size):
                 self.test_preds.append({
                     'sample_id': batch['sample_id'][i],
+                    'camera_modalities': modalities,
                     'pred_cameras': torch2numpy(pred_dict['pred_cameras'][i]) if 'pred_cameras' in pred_dict else None,
+                    'gt_cameras': torch2numpy(gt_cameras_batch[i]) if gt_cameras_batch is not None else None,
                     'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
                     'pred_smpl_params': torch2numpy(pred_dict['pred_smpl_params'][i]) if 'pred_smpl_params' in pred_dict else None,
                     'pred_smpl_keypoints': torch2numpy(pred_dict['pred_smpl_keypoints'][i]) if 'pred_smpl_keypoints' in pred_dict else None,
@@ -415,6 +469,18 @@ class LitModel(L.LightningModule):
             self.trainer.strategy.barrier()
 
         if self.global_rank == 0:
+            def _stack_or_object(values):
+                if len(values) == 0:
+                    return None
+                if all(v is None for v in values):
+                    return None
+                if all(v is not None for v in values):
+                    try:
+                        return np.stack(values)
+                    except Exception:
+                        return np.array(values, dtype=object)
+                return np.array(values, dtype=object)
+
             # gather all preds
             gathered_preds = []
             for rank in range(self.trainer.world_size):
@@ -427,26 +493,31 @@ class LitModel(L.LightningModule):
             # Build final predictions dictionary
             final_preds = {'sample_ids': [item['sample_id'] for item in gathered_preds]}
             
-            # Check and stack each prediction type
-            has_cameras = any(item['pred_cameras'] is not None for item in gathered_preds)
-            has_pred_keypoints = any(item['pred_keypoints'] is not None for item in gathered_preds)
-            has_gt_keypoints = any(item['gt_keypoints'] is not None for item in gathered_preds)
-            has_smpl = any('pred_smpl_params' in item for item in gathered_preds)
-            
-            final_preds['pred_cameras'] = np.stack([item['pred_cameras'] for item in gathered_preds]) if has_cameras else None
-            final_preds['pred_keypoints'] = np.stack([item['pred_keypoints'] for item in gathered_preds]) if has_pred_keypoints else None
-            final_preds['gt_keypoints'] = np.stack([item['gt_keypoints'] for item in gathered_preds]) if has_gt_keypoints else None
-            final_preds['pred_smpl_params'] = np.stack([item['pred_smpl_params'] for item in gathered_preds]) if has_smpl else None
-            final_preds['pred_smpl_keypoints'] = np.stack([item['pred_smpl_keypoints'] for item in gathered_preds]) if has_smpl else None
-            final_preds['gt_smpl_params'] = np.stack([item['gt_smpl_params'] for item in gathered_preds]) if has_smpl else None
+            # Robust stacking for potentially partial/missing fields across ranks/samples.
+            final_preds['pred_cameras'] = _stack_or_object([item.get('pred_cameras') for item in gathered_preds])
+            final_preds['gt_cameras'] = _stack_or_object([item.get('gt_cameras') for item in gathered_preds])
+            final_preds['pred_keypoints'] = _stack_or_object([item.get('pred_keypoints') for item in gathered_preds])
+            final_preds['gt_keypoints'] = _stack_or_object([item.get('gt_keypoints') for item in gathered_preds])
+            final_preds['pred_smpl_params'] = _stack_or_object([item.get('pred_smpl_params') for item in gathered_preds])
+            final_preds['pred_smpl_keypoints'] = _stack_or_object([item.get('pred_smpl_keypoints') for item in gathered_preds])
+            final_preds['gt_smpl_params'] = _stack_or_object([item.get('gt_smpl_params') for item in gathered_preds])
+            camera_modalities_list = [item.get('camera_modalities', None) for item in gathered_preds]
+            if camera_modalities_list and all(m == camera_modalities_list[0] for m in camera_modalities_list):
+                final_preds['camera_modalities'] = camera_modalities_list[0]
+            else:
+                final_preds['camera_modalities_per_sample'] = camera_modalities_list
 
             # sort by sample_ids
             sorted_indices = np.argsort(final_preds['sample_ids'])
             final_preds['sample_ids'] = [final_preds['sample_ids'][i] for i in sorted_indices]
             
-            for key in ['pred_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints', 'gt_smpl_params']:
+            for key in ['pred_cameras', 'gt_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints', 'gt_smpl_params']:
                 if final_preds[key] is not None:
                     final_preds[key] = final_preds[key][sorted_indices]
+            if 'camera_modalities_per_sample' in final_preds:
+                final_preds['camera_modalities_per_sample'] = [
+                    final_preds['camera_modalities_per_sample'][i] for i in sorted_indices
+                ]
 
             save_path = os.path.join('logs', self.hparams.exp_name, self.hparams.version, f'{self.hparams.model_name}_test_predictions.pkl')
             os.makedirs(os.path.dirname(save_path), exist_ok=True)

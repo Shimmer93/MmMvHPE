@@ -298,6 +298,23 @@ class HummanDepthToLidarDataset(BaseDataset):
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
         return R_new, T_new
 
+    @staticmethod
+    def _ensure_non_empty_lidar_seq(lidar_seq: List[np.ndarray], fallback_point: np.ndarray) -> List[np.ndarray]:
+        """Guarantee each frame has at least one 3D point for downstream centering."""
+        non_empty = [pc for pc in lidar_seq if pc is not None and pc.shape[0] > 0]
+        if non_empty:
+            ref = non_empty[0].astype(np.float32, copy=True)
+            out = []
+            for pc in lidar_seq:
+                if pc is None or pc.shape[0] == 0:
+                    out.append(ref.copy())
+                else:
+                    out.append(pc.astype(np.float32, copy=False))
+            return out
+
+        fb = np.asarray(fallback_point, dtype=np.float32).reshape(1, 3)
+        return [fb.copy() for _ in lidar_seq]
+
     def __len__(self) -> int:
         return len(self.data_list)
 
@@ -348,6 +365,9 @@ class HummanDepthToLidarDataset(BaseDataset):
             if self.apply_to_new_world:
                 world_points = self._to_new_world(world_points, r_root, pelvis)
             lidar_seq.append(world_points.astype(np.float32))
+        # Rare all-zero depth frames produce empty point clouds. Ensure non-empty
+        # points so PCCenterWithKeypoints always produces centered supervision.
+        lidar_seq = self._ensure_non_empty_lidar_seq(lidar_seq, fallback_point=gt_keypoints[0, :3])
 
         if self.causal:
             frame_pick = start_frame + self.seq_len - 1

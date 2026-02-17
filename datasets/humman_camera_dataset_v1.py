@@ -133,7 +133,7 @@ class HummanCameraDatasetV1(BaseDataset):
         synthetic_trans_jitter: float = 0.05,
         synthetic_focal_scale: Sequence[float] = (0.8, 1.2),
         image_size_hw: Sequence[int] = (224, 224),
-        output_pc_centered_lidar: bool = False,
+        output_pc_centered_lidar: bool = True,
         lidar_regen_from_depth: bool = True,
         lidar_pose_interpolation: bool = True,
         lidar_pair_alpha_range: Sequence[float] = (0.0, 1.0),
@@ -158,7 +158,13 @@ class HummanCameraDatasetV1(BaseDataset):
         self.synthetic_trans_jitter = float(synthetic_trans_jitter)
         self.synthetic_focal_scale = synthetic_focal_scale
         self.image_size_hw = (int(image_size_hw[0]), int(image_size_hw[1]))
-        self.output_pc_centered_lidar = bool(output_pc_centered_lidar)
+        if not bool(output_pc_centered_lidar):
+            warnings.warn(
+                "`output_pc_centered_lidar=False` is deprecated and ignored. "
+                "HummanCameraDatasetV1 always outputs LiDAR skeletons in the V2+PCCenterWithKeypoints frame.",
+                stacklevel=2,
+            )
+        self.output_pc_centered_lidar = True
         self.lidar_regen_from_depth = bool(lidar_regen_from_depth)
         self.lidar_pose_interpolation = bool(lidar_pose_interpolation)
         self.lidar_pair_alpha_range = (
@@ -768,6 +774,19 @@ class HummanCameraDatasetV1(BaseDataset):
         return (R @ points.T).T + T.reshape(1, 3)
 
     @staticmethod
+    def _compute_pc_center(points: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] == 0:
+            return np.zeros(3, dtype=np.float32)
+        return np.mean(pts[:, :3], axis=0).astype(np.float32)
+
+    @classmethod
+    def _center_keypoints_with_pc(cls, keypoints: np.ndarray, points: np.ndarray):
+        center = cls._compute_pc_center(points)
+        kp = np.asarray(keypoints, dtype=np.float32)
+        return (kp - center.reshape(1, 3)).astype(np.float32), center.astype(np.float32)
+
+    @staticmethod
     def _project_to_image(points, extrinsic, intrinsic):
         cam_points = HummanCameraDatasetV1._transform_to_camera(points, extrinsic)
         cam_z = np.clip(cam_points[:, 2], 1e-6, None)
@@ -864,7 +883,8 @@ class HummanCameraDatasetV1(BaseDataset):
                     kp_3d = np.asarray(regenerated["gt_keypoints_lidar"], dtype=np.float32)
                     input_lidar = np.asarray(regenerated["input_lidar"], dtype=np.float32)
 
-                    keypoint_views.append(kp_3d)
+                    kp_3d_pc_centered, kp_center = self._center_keypoints_with_pc(kp_3d, input_lidar)
+                    keypoint_views.append(kp_3d_pc_centered)
                     lidar_input_views.append([input_lidar])
                     camera_views.append(
                         {
@@ -873,10 +893,8 @@ class HummanCameraDatasetV1(BaseDataset):
                         }
                     )
 
-                    if self.output_pc_centered_lidar:
-                        center = kp_3d.mean(axis=0)
-                        centered_lidar_views.append((kp_3d - center.reshape(1, 3)).astype(np.float32))
-                        centered_lidar_centers.append(center.astype(np.float32))
+                    centered_lidar_views.append(kp_3d_pc_centered.astype(np.float32))
+                    centered_lidar_centers.append(kp_center.astype(np.float32))
 
                     extrinsics = torch.from_numpy(extrinsic).unsqueeze(0).unsqueeze(0)
                     intrinsics = torch.from_numpy(intrinsic).unsqueeze(0).unsqueeze(0)
@@ -911,13 +929,13 @@ class HummanCameraDatasetV1(BaseDataset):
                         keypoint_views.append(kp_2d.astype(np.float32))
                     else:
                         kp_3d = self._transform_to_camera(gt_keypoints, extrinsic).astype(np.float32)
-                        keypoint_views.append(kp_3d)
+                        input_lidar = kp_3d.copy()
+                        kp_3d_pc_centered, kp_center = self._center_keypoints_with_pc(kp_3d, input_lidar)
+                        keypoint_views.append(kp_3d_pc_centered)
                         if modality == "lidar":
-                            lidar_input_views.append([kp_3d.copy()])
-                            if self.output_pc_centered_lidar:
-                                center = kp_3d.mean(axis=0)
-                                centered_lidar_views.append((kp_3d - center.reshape(1, 3)).astype(np.float32))
-                                centered_lidar_centers.append(center.astype(np.float32))
+                            lidar_input_views.append([input_lidar])
+                            centered_lidar_views.append(kp_3d_pc_centered.astype(np.float32))
+                            centered_lidar_centers.append(kp_center.astype(np.float32))
 
                     extrinsics = torch.from_numpy(extrinsic).unsqueeze(0).unsqueeze(0)
                     intrinsics = torch.from_numpy(intrinsic).unsqueeze(0).unsqueeze(0)
@@ -948,7 +966,7 @@ class HummanCameraDatasetV1(BaseDataset):
                 else:
                     sample["input_lidar"] = lidar_input_views
 
-            if modality == "lidar" and self.output_pc_centered_lidar and centered_lidar_views:
+            if modality == "lidar" and centered_lidar_views:
                 if len(centered_lidar_views) == 1:
                     sample["gt_keypoints_pc_centered_input_lidar"] = centered_lidar_views[0]
                     sample["gt_keypoints_pc_center_lidar"] = centered_lidar_centers[0]

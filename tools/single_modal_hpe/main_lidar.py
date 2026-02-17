@@ -13,9 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.single_model_hpe.dataset import HummanDepthToLidarDataset
-from tools.single_model_hpe.model import SimpleLidarHPEModel
-from tools.single_model_hpe.train_eval import (
+from tools.single_modal_hpe.dataset import HummanDepthToLidarDataset
+from tools.single_modal_hpe.model import SimpleLidarHPEModel
+from tools.single_modal_hpe.train_eval import (
     evaluate,
     export_predictions_as_mmpose_json,
     load_checkpoint,
@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--log-interval", type=int, default=20)
+    parser.add_argument(
+        "--log-overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use in-place progress logs instead of printing a new line each update.",
+    )
 
     parser.add_argument("--num-joints", type=int, default=24)
     parser.add_argument("--encoder-dim", type=int, default=512)
@@ -152,6 +158,7 @@ def main() -> None:
             "params": {
                 "center_type": "mean",
                 "keys": ["input_lidar"],
+                # Keep LiDAR supervision in the same frame as V2 + PCCenterWithKeypoints.
                 "keypoints_key": "gt_keypoints",
             },
         },
@@ -242,6 +249,7 @@ def main() -> None:
             device,
             pred_path,
             log_interval=args.log_interval,
+            log_overwrite=args.log_overwrite,
         )
         print(f"Test MPJPE: {test_metrics['mpjpe']:.6f}")
         print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
@@ -276,10 +284,11 @@ def main() -> None:
                 device=device,
                 save_path=export_json_path,
                 input_dir=os.path.join(args.data_root, "depth"),
-                config="tools/single_model_hpe/main_lidar.py",
+                config="tools/single_modal_hpe/main_lidar.py",
                 checkpoint=ckpt,
                 device_str=args.device,
                 log_interval=args.log_interval,
+                log_overwrite=args.log_overwrite,
             )
             print(
                 f"Exported full-dataset JSON: {export_json_path} "
@@ -313,6 +322,7 @@ def main() -> None:
             device=device,
             grad_clip=args.grad_clip,
             log_interval=args.log_interval,
+            log_overwrite=args.log_overwrite,
             epoch_idx=epoch,
             num_epochs=args.epochs,
         )
@@ -321,6 +331,7 @@ def main() -> None:
             dataloader=test_loader,
             device=device,
             log_interval=args.log_interval,
+            log_overwrite=args.log_overwrite,
             epoch_idx=epoch,
             num_epochs=args.epochs,
         )
@@ -353,6 +364,7 @@ def main() -> None:
         device,
         pred_path,
         log_interval=args.log_interval,
+        log_overwrite=args.log_overwrite,
     )
     print(f"Final Test MPJPE: {test_metrics['mpjpe']:.6f}")
     print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
@@ -387,10 +399,11 @@ def main() -> None:
             device=device,
             save_path=export_json_path,
             input_dir=os.path.join(args.data_root, "depth"),
-            config="tools/single_model_hpe/main_lidar.py",
+            config="tools/single_modal_hpe/main_lidar.py",
             checkpoint=best_ckpt_path,
             device_str=args.device,
             log_interval=args.log_interval,
+            log_overwrite=args.log_overwrite,
         )
         print(
             f"Exported full-dataset JSON: {export_json_path} "

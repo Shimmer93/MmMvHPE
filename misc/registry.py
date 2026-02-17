@@ -8,11 +8,14 @@ def import_with_str(module, name):
         importlib.import_module(module)
     return getattr(sys.modules[module], name)
 
-def create_model(model_name, model_params):
+def create_model(model_name, model_params, eval=False):
     if model_params is None:
         model_params = {}
     model_class = import_with_str('models', model_name)
     model = model_class(**model_params)
+    if eval:
+        model.eval()
+        model.requires_grad_(False)
     return model
 
 def create_loss(loss_name, loss_params):

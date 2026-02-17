@@ -6,6 +6,7 @@ import warnings
 
 from .base_head import BaseHead
 from misc.pose_enc import pose_encoding_to_extri_intri
+from misc.camera_batch import get_gt_camera_encoding
 from models.aggregators.layers.gcn import TCN_GCN_unit
 from misc.skeleton import (
     get_adjacency_matrix,
@@ -355,8 +356,47 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
     @staticmethod
     def _to_tensor(x):
+        if x is None:
+            return None
         if isinstance(x, torch.Tensor):
             return x
+        if isinstance(x, np.ndarray):
+            return torch.from_numpy(x).float()
+        if isinstance(x, (list, tuple)):
+            if len(x) == 0:
+                return None
+
+            items = []
+            ref = None
+            for item in x:
+                t = KeypointCameraGCNHeadV5._to_tensor(item)
+                if t is None:
+                    items.append(None)
+                    continue
+                t = t.float()
+                if ref is None:
+                    ref = t
+                items.append(t)
+
+            if ref is None:
+                return None
+
+            ref_shape = ref.shape
+            ref_device = ref.device
+            ref_dtype = ref.dtype
+            stacked = []
+            for t in items:
+                if t is None:
+                    stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                    continue
+                if t.shape != ref_shape:
+                    if t.numel() == ref.numel():
+                        t = t.reshape(ref_shape)
+                    else:
+                        stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                        continue
+                stacked.append(t.to(device=ref_device, dtype=ref_dtype))
+            return torch.stack(stacked, dim=0)
         return torch.as_tensor(x, dtype=torch.float32)
 
     def _maybe_detach(self, tensor):
@@ -506,11 +546,9 @@ class KeypointCameraGCNHeadV5(BaseHead):
         gt_keypoints = data_batch.get("gt_keypoints", None)
         if gt_keypoints is None:
             return losses
-
-        if isinstance(gt_keypoints, np.ndarray):
-            gt_keypoints = torch.from_numpy(gt_keypoints)
-        if not isinstance(gt_keypoints, torch.Tensor):
-            gt_keypoints = torch.as_tensor(gt_keypoints, dtype=torch.float32)
+        gt_keypoints = self._to_tensor(gt_keypoints)
+        if gt_keypoints is None or not isinstance(gt_keypoints, torch.Tensor):
+            return losses
 
         device = pred_camera_enc_list[0].device
         gt_keypoints = gt_keypoints.to(device).float()
@@ -602,93 +640,14 @@ class KeypointCameraGCNHeadV5(BaseHead):
         return extrinsics.squeeze(1), None if intrinsics is None else intrinsics.squeeze(1)
 
     def _get_gt_camera_encoding(self, data_batch, modality, device, dtype, batch_size):
-        gt_camera = data_batch.get(f"gt_camera_{modality}", None)
-        if gt_camera is None:
-            return None
-        return self._prepare_gt_camera_batch(gt_camera, batch_size, device, dtype)
-
-    def _prepare_gt_camera_batch(self, gt_camera, batch_size, device, dtype):
-        if isinstance(gt_camera, (list, tuple)):
-            out = torch.full(
-                (batch_size, self.pose_encoding_dim),
-                float("nan"),
-                device=device,
-                dtype=dtype,
-            )
-            for i, value in enumerate(gt_camera[:batch_size]):
-                parsed = self._parse_single_gt_camera(value, device=device, dtype=dtype)
-                if parsed is not None:
-                    out[i] = parsed
-            return out
-
-        if not isinstance(gt_camera, torch.Tensor):
-            gt_camera = torch.as_tensor(gt_camera, dtype=dtype)
-        gt_camera = gt_camera.to(device=device, dtype=dtype)
-        return self._normalize_gt_camera_shape(gt_camera, batch_size)
-
-    def _parse_single_gt_camera(self, value, device, dtype):
-        if value is None:
-            return None
-        if not isinstance(value, torch.Tensor):
-            value = torch.as_tensor(value, dtype=dtype)
-        value = value.to(device=device, dtype=dtype)
-        value = self._normalize_gt_camera_shape(value, batch_size=1)
-        if value is None:
-            return None
-        return value[0]
-
-    def _normalize_gt_camera_shape(self, gt_camera, batch_size):
-        if not isinstance(gt_camera, torch.Tensor):
-            return None
-
-        if gt_camera.dim() == 4:
-            if gt_camera.shape[-1] != self.pose_encoding_dim:
-                return None
-            # [B, V, S, 9] -> use last time step, then average over views.
-            if gt_camera.shape[0] == batch_size:
-                return gt_camera[:, :, -1, :].mean(dim=1)
-            if gt_camera.shape[0] == 1 and batch_size > 1:
-                gt_camera = gt_camera.expand(batch_size, -1, -1, -1)
-                return gt_camera[:, :, -1, :].mean(dim=1)
-            if batch_size == 1:
-                flat = gt_camera.reshape(-1, gt_camera.shape[-2], gt_camera.shape[-1])
-                return flat[:, -1, :].mean(dim=0, keepdim=True)
-            return None
-
-        if gt_camera.dim() == 3:
-            if gt_camera.shape[-1] != self.pose_encoding_dim:
-                return None
-            if gt_camera.shape[0] == batch_size:
-                gt_camera = gt_camera[:, -1]
-            elif gt_camera.shape[0] == 1:
-                gt_camera = gt_camera[:, -1]
-                if batch_size > 1:
-                    gt_camera = gt_camera.expand(batch_size, -1)
-            elif batch_size == 1:
-                gt_camera = gt_camera[:, -1, :].mean(dim=0, keepdim=True)
-            else:
-                return None
-
-        if gt_camera.dim() == 2:
-            if gt_camera.shape[-1] != self.pose_encoding_dim:
-                return None
-            if gt_camera.shape[0] == batch_size:
-                return gt_camera
-            if gt_camera.shape[0] == 1 and batch_size > 1:
-                return gt_camera.expand(batch_size, -1)
-            if batch_size == 1:
-                return gt_camera[-1:].contiguous()
-            return None
-
-        if gt_camera.dim() == 1:
-            if gt_camera.shape[0] != self.pose_encoding_dim:
-                return None
-            gt_camera = gt_camera.unsqueeze(0)
-            if batch_size > 1:
-                gt_camera = gt_camera.expand(batch_size, -1)
-            return gt_camera
-
-        return None
+        return get_gt_camera_encoding(
+            data_batch=data_batch,
+            modality=modality,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+            pose_encoding_dim=self.pose_encoding_dim,
+        )
 
     def _get_image_size(self, data_batch, modality):
         size_key = f"image_size_hw_{modality}"
