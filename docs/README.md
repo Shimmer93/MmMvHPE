@@ -14,6 +14,7 @@ The goal is practical:
 - `docs/data_pipeline.md`: datasets, transforms, sample format, and split logic.
 - `docs/model_pipeline.md`: model composition, heads, metrics, and extension points.
 - `docs/tools.md`: preprocessing and helper scripts with command-line examples.
+- `docs/eval_fixed_lidar_frame_algorithm.md`: paper-ready algorithm summary for fixed-sensor evaluation and robust multi-sensor fusion.
 
 ## Quickstart
 

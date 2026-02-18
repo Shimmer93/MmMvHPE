@@ -116,6 +116,43 @@ uv run python tools/test_video_normalize_fov.py \
   --target-fov 1.0 1.0 --save-side-by-side
 ```
 
+### `tools/eval_fixed_lidar_frame.py`
+
+Purpose:
+- evaluate MPJPE/PA-MPJPE after projecting canonical keypoints into a fixed sensor frame.
+- supports two projection modes:
+  - `seq_lidar_ref`: legacy fixed per-sequence LiDAR reference camera.
+  - `multi_sensor`: fuse fixed per-sequence cameras from multiple modalities (for example `rgb,lidar`) into a target frame.
+- robust options for `multi_sensor`:
+  - `--fusion-mode weighted|hard_gate`
+  - `--reliability-source cross_sensor|temporal|hybrid`
+
+Examples:
+
+```bash
+uv run python tools/eval_fixed_lidar_frame.py \
+  --pred-file logs/dev_humman/run_x/model_test_predictions.pkl \
+  --projection-mode seq_lidar_ref
+```
+
+```bash
+uv run python tools/eval_fixed_lidar_frame.py \
+  --pred-file logs/dev_humman/run_x/model_test_predictions.pkl \
+  --projection-mode multi_sensor \
+  --target-modality lidar \
+  --fusion-modalities rgb,lidar
+```
+
+```bash
+uv run python tools/eval_fixed_lidar_frame.py \
+  --pred-file logs/dev_humman/run_x/model_test_predictions.pkl \
+  --projection-mode multi_sensor \
+  --target-modality lidar \
+  --fusion-modalities rgb,lidar \
+  --fusion-mode hard_gate \
+  --reliability-source hybrid
+```
+
 ### `tools/fix_pred_to_static_sensors.py`
 
 Purpose:

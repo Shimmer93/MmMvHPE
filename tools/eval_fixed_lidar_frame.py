@@ -4,7 +4,7 @@ import pickle
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -77,13 +77,78 @@ def _get_modalities_for_sample(data, sample_idx: int) -> Optional[Sequence[str]]
     return per_sample[sample_idx]
 
 
-def _get_lidar_modality_index(data, sample_idx: int, fallback_idx: Optional[int]) -> Optional[int]:
+def _get_stream_metadata_for_sample(
+    data,
+    sample_idx: int,
+) -> Tuple[Optional[Sequence[str]], Optional[Sequence[int]]]:
+    global_modalities = data.get("camera_stream_modalities", None)
+    global_sensor_indices = data.get("camera_stream_sensor_indices", None)
+    if global_modalities is not None and global_sensor_indices is not None:
+        return global_modalities, global_sensor_indices
+
+    per_sample_modalities = data.get("camera_stream_modalities_per_sample", None)
+    per_sample_sensor_indices = data.get("camera_stream_sensor_indices_per_sample", None)
+    if per_sample_modalities is None or per_sample_sensor_indices is None:
+        return None, None
+    if sample_idx >= len(per_sample_modalities) or sample_idx >= len(per_sample_sensor_indices):
+        return None, None
+    return per_sample_modalities[sample_idx], per_sample_sensor_indices[sample_idx]
+
+
+def _get_modality_index(
+    data,
+    sample_idx: int,
+    modality: str,
+    fallback_idx: Optional[int],
+) -> Optional[int]:
     modalities = _get_modalities_for_sample(data, sample_idx)
     if modalities is not None:
+        target = str(modality).lower()
         for i, m in enumerate(modalities):
-            if str(m).lower() == "lidar":
+            if str(m).lower() == target:
                 return i
     return fallback_idx
+
+
+def _get_camera_index(
+    data,
+    sample_idx: int,
+    modality: str,
+    fallback_idx: Optional[int],
+    use_stream_index: bool,
+    sensor_idx: Optional[int],
+) -> Optional[int]:
+    if not use_stream_index:
+        return _get_modality_index(data, sample_idx, modality, fallback_idx)
+
+    stream_modalities, stream_sensor_indices = _get_stream_metadata_for_sample(data, sample_idx)
+    if stream_modalities is None or stream_sensor_indices is None:
+        if sensor_idx not in (None, 0):
+            raise ValueError(
+                f"Requested sensor_idx={sensor_idx} for modality `{modality}` but stream metadata is missing."
+            )
+        return _get_modality_index(data, sample_idx, modality, fallback_idx)
+
+    if len(stream_modalities) != len(stream_sensor_indices):
+        raise ValueError(
+            f"Invalid stream metadata lengths: modalities={len(stream_modalities)}, "
+            f"sensor_indices={len(stream_sensor_indices)}."
+        )
+
+    target_modality = str(modality).lower()
+    candidates = [i for i, m in enumerate(stream_modalities) if str(m).lower() == target_modality]
+    if len(candidates) == 0:
+        return None
+    if sensor_idx is None:
+        return int(candidates[0])
+
+    matches = []
+    for i in candidates:
+        if int(stream_sensor_indices[i]) == int(sensor_idx):
+            matches.append(i)
+    if len(matches) == 0:
+        return None
+    return int(matches[0])
 
 
 def _get_sample_keypoints(arr, sample_idx: int) -> Optional[np.ndarray]:
@@ -143,24 +208,37 @@ def _extract_camera_encoding(arr, sample_idx: int, modality_idx: Optional[int]) 
     return None
 
 
+def _is_stream_camera_key(camera_key: str) -> bool:
+    return str(camera_key).endswith("_stream")
+
+
 def _find_first_valid_lidar_camera(
     data,
     camera_key: str,
     num_samples: int,
     fallback_lidar_idx: Optional[int],
+    lidar_sensor_idx: Optional[int],
     show_progress: bool = True,
 ) -> Tuple[np.ndarray, int, int]:
     cameras = data.get(camera_key, None)
     if cameras is None:
         raise ValueError(f"Missing `{camera_key}` in prediction file.")
 
+    use_stream_index = _is_stream_camera_key(camera_key)
     for i in _iter_with_progress(
         range(num_samples),
         desc=f"search {camera_key}",
         total=num_samples,
         enabled=show_progress,
     ):
-        lidar_idx = _get_lidar_modality_index(data, i, fallback_lidar_idx)
+        lidar_idx = _get_camera_index(
+            data=data,
+            sample_idx=i,
+            modality="lidar",
+            fallback_idx=fallback_lidar_idx,
+            use_stream_index=use_stream_index,
+            sensor_idx=lidar_sensor_idx,
+        )
         cam = _extract_camera_encoding(cameras, i, lidar_idx)
         if cam is None:
             continue
@@ -175,17 +253,42 @@ def _build_sequence_reference_cameras(
     sample_ids: Sequence[str],
     num_samples: int,
     fallback_lidar_idx: Optional[int],
+    lidar_sensor_idx: Optional[int],
+    show_progress: bool = True,
+):
+    return _build_sequence_reference_cameras_for_modality(
+        data=data,
+        camera_key=camera_key,
+        sample_ids=sample_ids,
+        num_samples=num_samples,
+        modality="lidar",
+        fallback_modality_idx=fallback_lidar_idx,
+        sensor_idx=lidar_sensor_idx,
+        show_progress=show_progress,
+    )
+
+
+def _build_sequence_reference_cameras_for_modality(
+    data,
+    camera_key: str,
+    sample_ids: Sequence[str],
+    num_samples: int,
+    modality: str,
+    fallback_modality_idx: Optional[int],
+    sensor_idx: Optional[int],
     show_progress: bool = True,
 ):
     cameras = data.get(camera_key, None)
     if cameras is None:
         raise ValueError(f"Missing `{camera_key}` in prediction file.")
 
+    mod = str(modality).lower()
+    use_stream_index = _is_stream_camera_key(camera_key)
     seq_to_camera = {}
     seq_to_meta = {}
     iterator = _iter_with_progress(
         range(num_samples),
-        desc=f"build seq refs {camera_key}",
+        desc=f"build seq refs {camera_key}:{mod}",
         total=num_samples,
         enabled=show_progress,
     )
@@ -194,19 +297,46 @@ def _build_sequence_reference_cameras(
         seq_name = _seq_name_from_sample_id(sid)
         if seq_name in seq_to_camera:
             continue
-        lidar_idx = _get_lidar_modality_index(data, i, fallback_lidar_idx)
-        cam = _extract_camera_encoding(cameras, i, lidar_idx)
+        camera_idx = _get_camera_index(
+            data=data,
+            sample_idx=i,
+            modality=mod,
+            fallback_idx=fallback_modality_idx,
+            use_stream_index=use_stream_index,
+            sensor_idx=sensor_idx,
+        )
+        cam = _extract_camera_encoding(cameras, i, camera_idx)
         if cam is None or not np.isfinite(cam).all():
             continue
         seq_to_camera[seq_name] = cam.astype(np.float32)
-        seq_to_meta[seq_name] = (i, int(0 if lidar_idx is None else lidar_idx))
+        seq_to_meta[seq_name] = (i, int(0 if camera_idx is None else camera_idx))
 
     if len(seq_to_camera) == 0:
-        raise ValueError(f"Could not find any finite LiDAR camera in `{camera_key}`.")
+        raise ValueError(f"Could not find any finite `{mod}` camera in `{camera_key}`.")
     return seq_to_camera, seq_to_meta
 
 
 def _pose_encoding_to_extrinsic(pose_encoding: np.ndarray, pose_encoding_type: str) -> np.ndarray:
+    if pose_encoding_type == "absT_quaR_FoV":
+        pe = np.asarray(pose_encoding, dtype=np.float32).reshape(-1)
+        if pe.shape[0] < 7:
+            raise ValueError(f"Invalid pose encoding shape for {pose_encoding_type}: {pe.shape}")
+        t = pe[:3]
+        q = pe[3:7]
+        qn = float(np.linalg.norm(q))
+        if not np.isfinite(qn) or qn < 1e-12:
+            raise ValueError("Invalid quaternion in pose encoding.")
+        x, y, z, w = (q / qn).tolist()  # XYZW, scalar-last
+        r = np.array(
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ],
+            dtype=np.float32,
+        )
+        return np.concatenate([r, t.reshape(3, 1).astype(np.float32)], axis=1)
+
     pe = torch.as_tensor(pose_encoding, dtype=torch.float32).view(1, 1, -1)
     extrinsics, _ = pose_encoding_to_extri_intri(
         pe,
@@ -221,6 +351,348 @@ def _transform_points(points: np.ndarray, extrinsic: np.ndarray) -> np.ndarray:
     r = extrinsic[:, :3]
     t = extrinsic[:, 3]
     return points @ r.T + t[None, :]
+
+
+def _to_homogeneous(extrinsic: np.ndarray) -> np.ndarray:
+    out = np.eye(4, dtype=np.float32)
+    out[:3, :4] = extrinsic.astype(np.float32)
+    return out
+
+
+def _parse_modalities_list(text: str) -> List[str]:
+    parts = [p.strip().lower() for p in str(text).split(",")]
+    return [p for p in parts if p]
+
+
+def _parse_sensor_index_map(text: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    raw = str(text).strip()
+    if not raw:
+        return out
+    for item in raw.split(","):
+        part = item.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(
+                f"Invalid --sensor-index-by-modality entry `{part}`. Expected format `modality:index`."
+            )
+        mod, idx = part.split(":", 1)
+        mod = mod.strip().lower()
+        idx = idx.strip()
+        if not mod:
+            raise ValueError(f"Invalid modality in --sensor-index-by-modality entry `{part}`.")
+        out[mod] = int(idx)
+    return out
+
+
+def _resolve_camera_key(data: dict, requested_key: str, fallback_keys: Sequence[str]) -> str:
+    if requested_key in data:
+        return requested_key
+    if requested_key not in fallback_keys:
+        raise ValueError(
+            f"Requested camera key `{requested_key}` is not in prediction file keys."
+        )
+    for key in fallback_keys:
+        if key in data:
+            return key
+    raise ValueError(
+        f"None of the camera keys exist in prediction file: requested={requested_key}, "
+        f"fallbacks={list(fallback_keys)}."
+    )
+
+
+def _rotation_angle_deg(r_a: np.ndarray, r_b: np.ndarray) -> float:
+    r = np.asarray(r_a, dtype=np.float64) @ np.asarray(r_b, dtype=np.float64).T
+    trace = float(np.trace(r))
+    cos_theta = np.clip((trace - 1.0) * 0.5, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_theta)))
+
+
+def _stability_to_score(
+    trans_std: float,
+    rot_std_deg: float,
+    trans_tau: float,
+    rot_tau_deg: float,
+) -> float:
+    t_tau = max(float(trans_tau), 1e-8)
+    r_tau = max(float(rot_tau_deg), 1e-8)
+    score = np.exp(-(float(trans_std) / t_tau + float(rot_std_deg) / r_tau))
+    return float(np.clip(score, 1e-8, 1.0))
+
+
+def _build_temporal_reliability_by_sequence(
+    data,
+    camera_key: str,
+    sample_ids: Sequence[str],
+    num_samples: int,
+    modalities: Sequence[str],
+    modality_fallback_indices: Dict[str, Optional[int]],
+    modality_sensor_indices: Dict[str, int],
+    pose_encoding_type: str,
+    trans_tau: float,
+    rot_tau_deg: float,
+    show_progress: bool = True,
+) -> Dict[str, Dict[str, float]]:
+    cameras = data.get(camera_key, None)
+    if cameras is None:
+        return {}
+    use_stream_index = _is_stream_camera_key(camera_key)
+
+    stats_by_mod: Dict[str, Dict[str, dict]] = {str(m).lower(): {} for m in modalities}
+    for i in _iter_with_progress(
+        range(num_samples),
+        desc=f"temporal reliability {camera_key}",
+        total=num_samples,
+        enabled=show_progress,
+    ):
+        sid = sample_ids[i] if i < len(sample_ids) else None
+        seq_name = _seq_name_from_sample_id(sid)
+        for mod in stats_by_mod.keys():
+            m_idx = _get_camera_index(
+                data=data,
+                sample_idx=i,
+                modality=mod,
+                fallback_idx=modality_fallback_indices.get(mod, None),
+                use_stream_index=use_stream_index,
+                sensor_idx=modality_sensor_indices.get(mod, 0),
+            )
+            cam = _extract_camera_encoding(cameras, i, m_idx)
+            if cam is None:
+                continue
+            cam = np.asarray(cam, dtype=np.float32).reshape(-1)
+            if cam.shape[0] < 9 or (not np.isfinite(cam).all()):
+                continue
+            try:
+                extr = _pose_encoding_to_extrinsic(cam, pose_encoding_type)
+            except Exception:
+                continue
+            if not np.isfinite(extr).all():
+                continue
+            r = extr[:, :3].astype(np.float64)
+            t = extr[:, 3].astype(np.float64)
+
+            seq_stats = stats_by_mod[mod].setdefault(
+                seq_name,
+                {
+                    "n": 0,
+                    "t_mean": np.zeros(3, dtype=np.float64),
+                    "t_m2": np.zeros(3, dtype=np.float64),
+                    "r0": None,
+                    "a_mean": 0.0,
+                    "a_m2": 0.0,
+                },
+            )
+            seq_stats["n"] += 1
+            n = int(seq_stats["n"])
+
+            # Translation Welford update.
+            delta_t = t - seq_stats["t_mean"]
+            seq_stats["t_mean"] += delta_t / n
+            delta_t2 = t - seq_stats["t_mean"]
+            seq_stats["t_m2"] += delta_t * delta_t2
+
+            # Rotation-to-first-angle Welford update.
+            if seq_stats["r0"] is None:
+                seq_stats["r0"] = r.copy()
+                angle = 0.0
+            else:
+                angle = _rotation_angle_deg(r, seq_stats["r0"])
+            delta_a = angle - seq_stats["a_mean"]
+            seq_stats["a_mean"] += delta_a / n
+            delta_a2 = angle - seq_stats["a_mean"]
+            seq_stats["a_m2"] += delta_a * delta_a2
+
+    out: Dict[str, Dict[str, float]] = {str(m).lower(): {} for m in modalities}
+    for mod, per_seq in stats_by_mod.items():
+        for seq_name, st in per_seq.items():
+            n = int(st["n"])
+            if n <= 1:
+                out[mod][seq_name] = 1.0
+                continue
+            t_var = st["t_m2"] / max(n - 1, 1)
+            t_std = float(np.mean(np.sqrt(np.maximum(t_var, 0.0))))
+            a_var = float(st["a_m2"]) / max(n - 1, 1)
+            a_std = float(np.sqrt(max(a_var, 0.0)))
+            out[mod][seq_name] = _stability_to_score(
+                trans_std=t_std,
+                rot_std_deg=a_std,
+                trans_tau=trans_tau,
+                rot_tau_deg=rot_tau_deg,
+            )
+    return out
+
+
+def _cross_sensor_scores(
+    points_by_modality: Dict[str, np.ndarray],
+    target_modality: str,
+    tau: float,
+) -> Dict[str, float]:
+    mods = list(points_by_modality.keys())
+    if len(mods) <= 1:
+        return {m: 1.0 for m in mods}
+
+    target = str(target_modality).lower()
+    if target in points_by_modality:
+        anchor = points_by_modality[target]
+        tau_safe = max(float(tau), 1e-8)
+        scores: Dict[str, float] = {target: 1.0}
+        for mod in mods:
+            if mod == target:
+                continue
+            err = float(np.linalg.norm(points_by_modality[mod] - anchor, axis=-1).mean())
+            scores[mod] = float(np.clip(np.exp(-err / tau_safe), 1e-8, 1.0))
+        return scores
+
+    stacked = np.stack([points_by_modality[m] for m in mods], axis=0)  # [M, J, 3]
+    consensus = np.median(stacked, axis=0)
+    tau_safe = max(float(tau), 1e-8)
+    scores: Dict[str, float] = {}
+    for idx, mod in enumerate(mods):
+        err = float(np.linalg.norm(stacked[idx] - consensus, axis=-1).mean())
+        scores[mod] = float(np.clip(np.exp(-err / tau_safe), 1e-8, 1.0))
+    return scores
+
+
+def _combine_reliability(
+    mods: Sequence[str],
+    source: str,
+    cross_scores: Dict[str, float],
+    temporal_scores: Dict[str, float],
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    src = str(source).lower()
+    for mod in mods:
+        s_cross = float(cross_scores.get(mod, 1.0))
+        s_temp = float(temporal_scores.get(mod, 1.0))
+        if src == "cross_sensor":
+            s = s_cross
+        elif src == "temporal":
+            s = s_temp
+        elif src == "hybrid":
+            s = s_cross * s_temp
+        else:
+            s = s_cross
+        out[mod] = float(np.clip(s, 1e-8, 1.0))
+    return out
+
+
+def _select_modalities_by_fusion_mode(
+    mods: Sequence[str],
+    scores: Dict[str, float],
+    fusion_mode: str,
+    hard_gate_ratio: float,
+) -> List[str]:
+    if len(mods) == 0:
+        return []
+    mode = str(fusion_mode).lower()
+    if mode != "hard_gate":
+        return list(mods)
+    max_w = max(float(scores.get(m, 0.0)) for m in mods)
+    thresh = max_w * float(hard_gate_ratio)
+    kept = [m for m in mods if float(scores.get(m, 0.0)) >= thresh]
+    if len(kept) == 0:
+        kept = [max(mods, key=lambda m: float(scores.get(m, 0.0)))]
+    return kept
+
+
+def _fuse_points(
+    points_by_modality: Dict[str, np.ndarray],
+    modalities: Sequence[str],
+    scores: Dict[str, float],
+    fusion_mode: str,
+) -> np.ndarray:
+    mode = str(fusion_mode).lower()
+    if len(modalities) == 1:
+        return points_by_modality[modalities[0]].astype(np.float32)
+    if mode == "mean":
+        arr = np.stack([points_by_modality[m] for m in modalities], axis=0)
+        return arr.mean(axis=0).astype(np.float32)
+
+    w = np.array([max(float(scores.get(m, 0.0)), 1e-8) for m in modalities], dtype=np.float64)
+    w_sum = float(np.sum(w))
+    if not np.isfinite(w_sum) or w_sum <= 0:
+        w = np.ones_like(w) / float(len(w))
+    else:
+        w = w / w_sum
+    arr = np.stack([points_by_modality[m] for m in modalities], axis=0).astype(np.float64)
+    fused = np.sum(arr * w[:, None, None], axis=0)
+    return fused.astype(np.float32)
+
+
+def _project_multisensor_to_target_frame_seqfixed(
+    seq_name: str,
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+    target_modality: str,
+    fusion_modalities: Sequence[str],
+    pred_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]],
+    gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]],
+    temporal_reliability_by_modality: Dict[str, Dict[str, float]],
+    reliability_source: str,
+    fusion_mode: str,
+    cross_sensor_tau: float,
+    hard_gate_ratio: float,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int, Dict[str, float]]:
+    target_modality = str(target_modality).lower()
+    target_gt_extr = gt_seq_extr_by_modality.get(target_modality, {}).get(seq_name, None)
+    if target_gt_extr is None:
+        return None, None, 0, {}
+
+    h_target_gt = _to_homogeneous(target_gt_extr)
+    points_by_modality: Dict[str, np.ndarray] = {}
+    for mod in fusion_modalities:
+        mod = str(mod).lower()
+        pred_mod_extr = pred_seq_extr_by_modality.get(mod, {}).get(seq_name, None)
+        gt_mod_extr = gt_seq_extr_by_modality.get(mod, {}).get(seq_name, None)
+        if pred_mod_extr is None or gt_mod_extr is None:
+            continue
+
+        h_pred_m = _to_homogeneous(pred_mod_extr)
+        h_gt_m = _to_homogeneous(gt_mod_extr)
+        try:
+            h_m_to_target = h_target_gt @ np.linalg.inv(h_gt_m)
+        except np.linalg.LinAlgError:
+            continue
+        h_pred_target_from_m = h_m_to_target @ h_pred_m
+        if not np.isfinite(h_pred_target_from_m).all():
+            continue
+        points_by_modality[mod] = _transform_points(pred_points, h_pred_target_from_m[:3, :4]).astype(np.float32)
+
+    if len(points_by_modality) == 0:
+        return None, None, 0, {}
+
+    mods = list(points_by_modality.keys())
+    cross_scores = _cross_sensor_scores(
+        points_by_modality,
+        target_modality=target_modality,
+        tau=cross_sensor_tau,
+    )
+    temp_scores = {
+        mod: float(temporal_reliability_by_modality.get(mod, {}).get(seq_name, 1.0))
+        for mod in mods
+    }
+    reliability_scores = _combine_reliability(
+        mods=mods,
+        source=reliability_source,
+        cross_scores=cross_scores,
+        temporal_scores=temp_scores,
+    )
+    kept_modalities = _select_modalities_by_fusion_mode(
+        mods=mods,
+        scores=reliability_scores,
+        fusion_mode=fusion_mode,
+        hard_gate_ratio=hard_gate_ratio,
+    )
+    pred_proj = _fuse_points(
+        points_by_modality=points_by_modality,
+        modalities=kept_modalities,
+        scores=reliability_scores,
+        fusion_mode=fusion_mode,
+    ).astype(np.float32)
+
+    gt_proj = _transform_points(gt_points, target_gt_extr).astype(np.float32)
+    return pred_proj, gt_proj, len(kept_modalities), reliability_scores
 
 
 def _format_mm(x_meters: float) -> str:
@@ -269,14 +741,87 @@ def main():
     parser.add_argument("--pred-file", type=str, required=True, help="Path to *_test_predictions.pkl")
     parser.add_argument("--pred-keypoints-key", type=str, default="pred_keypoints")
     parser.add_argument("--gt-keypoints-key", type=str, default="gt_keypoints")
-    parser.add_argument("--pred-cameras-key", type=str, default="pred_cameras")
-    parser.add_argument("--gt-cameras-key", type=str, default="gt_cameras")
+    parser.add_argument("--pred-cameras-key", type=str, default="pred_cameras_stream")
+    parser.add_argument("--gt-cameras-key", type=str, default="gt_cameras_stream")
     parser.add_argument("--pose-encoding-type", type=str, default="absT_quaR_FoV")
     parser.add_argument(
         "--lidar-modality-index",
         type=int,
         default=None,
         help="Fallback LiDAR modality index if camera modality names are unavailable.",
+    )
+    parser.add_argument(
+        "--rgb-modality-index",
+        type=int,
+        default=None,
+        help="Fallback RGB modality index if camera modality names are unavailable.",
+    )
+    parser.add_argument(
+        "--sensor-index-by-modality",
+        type=str,
+        default="",
+        help="Comma-separated `modality:sensor_idx` (e.g., `lidar:0,rgb:1`) for stream camera keys.",
+    )
+    parser.add_argument(
+        "--projection-mode",
+        type=str,
+        default="seq_lidar_ref",
+        choices=["seq_lidar_ref", "multi_sensor"],
+        help=(
+            "Projection strategy. "
+            "`seq_lidar_ref`: keep old fixed per-sequence LiDAR-camera projection. "
+            "`multi_sensor`: fuse fixed per-sequence cameras from multiple modalities into a target frame."
+        ),
+    )
+    parser.add_argument(
+        "--target-modality",
+        type=str,
+        default="lidar",
+        help="Target sensor frame for `multi_sensor` projection mode (e.g., lidar, rgb).",
+    )
+    parser.add_argument(
+        "--fusion-modalities",
+        type=str,
+        default="rgb,lidar",
+        help="Comma-separated modalities to fuse in `multi_sensor` mode (e.g., rgb,lidar).",
+    )
+    parser.add_argument(
+        "--fusion-mode",
+        type=str,
+        default="mean",
+        choices=["mean", "weighted", "hard_gate"],
+        help="How to fuse modalities in `multi_sensor` mode.",
+    )
+    parser.add_argument(
+        "--reliability-source",
+        type=str,
+        default="cross_sensor",
+        choices=["cross_sensor", "temporal", "hybrid"],
+        help="Reliability scoring source for robust multi-sensor fusion.",
+    )
+    parser.add_argument(
+        "--cross-sensor-tau",
+        type=float,
+        default=0.05,
+        help="Meters. Smaller values penalize cross-sensor disagreement more strongly.",
+    )
+    parser.add_argument(
+        "--temporal-trans-tau",
+        type=float,
+        default=0.05,
+        help="Meters. Translation stability scale for temporal reliability.",
+    )
+    parser.add_argument(
+        "--temporal-rot-tau-deg",
+        type=float,
+        default=5.0,
+        help="Degrees. Rotation stability scale for temporal reliability.",
+    )
+    parser.add_argument(
+        "--hard-gate-ratio",
+        type=float,
+        default=0.8,
+        help="Keep modalities with reliability >= hard_gate_ratio * best_reliability.",
     )
     parser.add_argument("--pelvis-index", type=int, default=0, help="Pelvis joint index for centering.")
     parser.add_argument(
@@ -299,9 +844,21 @@ def main():
     )
     args = parser.parse_args()
     show_progress = not args.no_progress
+    args.hard_gate_ratio = float(np.clip(float(args.hard_gate_ratio), 0.0, 1.0))
 
     with open(args.pred_file, "rb") as f:
         data = pickle.load(f)
+
+    pred_camera_key = _resolve_camera_key(
+        data=data,
+        requested_key=args.pred_cameras_key,
+        fallback_keys=["pred_cameras_stream", "pred_cameras"],
+    )
+    gt_camera_key = _resolve_camera_key(
+        data=data,
+        requested_key=args.gt_cameras_key,
+        fallback_keys=["gt_cameras_stream", "gt_cameras"],
+    )
 
     pred_all = data.get(args.pred_keypoints_key, None)
     gt_all = data.get(args.gt_keypoints_key, None)
@@ -315,69 +872,297 @@ def main():
         sample_ids = [f"sample_{i}" for i in range(len(pred_all))]
     num_samples = len(sample_ids)
 
-    pred_seq_cam_enc, pred_seq_meta = _build_sequence_reference_cameras(
-        data=data,
-        camera_key=args.pred_cameras_key,
-        sample_ids=sample_ids,
-        num_samples=num_samples,
-        fallback_lidar_idx=args.lidar_modality_index,
-        show_progress=show_progress,
-    )
-    gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras(
-        data=data,
-        camera_key=args.gt_cameras_key,
-        sample_ids=sample_ids,
-        num_samples=num_samples,
-        fallback_lidar_idx=args.lidar_modality_index,
-        show_progress=show_progress,
-    )
-
-    pred_seq_extr = {
-        seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
-        for seq, cam_enc in pred_seq_cam_enc.items()
-    }
-    gt_seq_extr = {
-        seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
-        for seq, cam_enc in gt_seq_cam_enc.items()
-    }
-
     pred_new = []
     gt_new = []
     kept_seq_names = []
     kept_frame_indices = []
     kept = 0
-    dropped_no_seq_ref = 0
-    for i in _iter_with_progress(
-        range(num_samples),
-        desc="transform keypoints",
-        total=num_samples,
-        enabled=show_progress,
-    ):
-        seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
-        pred_extr = pred_seq_extr.get(seq_name, None)
-        gt_extr = gt_seq_extr.get(seq_name, None)
-        if pred_extr is None or gt_extr is None:
-            dropped_no_seq_ref += 1
-            continue
-        pred_kps = _get_sample_keypoints(pred_all, i)
-        gt_kps = _get_sample_keypoints(gt_all, i)
-        if pred_kps is None or gt_kps is None:
-            continue
-        pred_kps = _to_numpy_maybe(pred_kps)
-        gt_kps = _to_numpy_maybe(gt_kps)
-        if pred_kps is None or gt_kps is None:
-            continue
-        if pred_kps.shape != gt_kps.shape:
-            continue
-        if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
-            continue
-        if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
-            continue
-        pred_new.append(_transform_points(pred_kps.astype(np.float32), pred_extr))
-        gt_new.append(_transform_points(gt_kps.astype(np.float32), gt_extr))
-        kept_seq_names.append(seq_name)
-        kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
-        kept += 1
+    projection_mode = str(args.projection_mode).lower()
+    target_modality = str(args.target_modality).lower()
+    fusion_modalities = _parse_modalities_list(args.fusion_modalities)
+    modality_sensor_indices = _parse_sensor_index_map(args.sensor_index_by_modality)
+    if "lidar" not in modality_sensor_indices:
+        modality_sensor_indices["lidar"] = 0
+    if "rgb" not in modality_sensor_indices:
+        modality_sensor_indices["rgb"] = 0
+    modality_fallback_indices: Dict[str, Optional[int]] = {
+        "lidar": args.lidar_modality_index,
+        "rgb": args.rgb_modality_index,
+    }
+    projection_info: List[str] = []
+    projection_info.append(f"[INFO] Camera keys: pred={pred_camera_key}, gt={gt_camera_key}")
+
+    if projection_mode == "seq_lidar_ref":
+        pred_seq_cam_enc, pred_seq_meta = _build_sequence_reference_cameras(
+            data=data,
+            camera_key=pred_camera_key,
+            sample_ids=sample_ids,
+            num_samples=num_samples,
+            fallback_lidar_idx=args.lidar_modality_index,
+            lidar_sensor_idx=modality_sensor_indices.get("lidar", 0),
+            show_progress=show_progress,
+        )
+        gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras(
+            data=data,
+            camera_key=gt_camera_key,
+            sample_ids=sample_ids,
+            num_samples=num_samples,
+            fallback_lidar_idx=args.lidar_modality_index,
+            lidar_sensor_idx=modality_sensor_indices.get("lidar", 0),
+            show_progress=show_progress,
+        )
+
+        pred_seq_extr = {
+            seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+            for seq, cam_enc in pred_seq_cam_enc.items()
+        }
+        gt_seq_extr = {
+            seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+            for seq, cam_enc in gt_seq_cam_enc.items()
+        }
+
+        dropped_no_seq_ref = 0
+        for i in _iter_with_progress(
+            range(num_samples),
+            desc="transform keypoints",
+            total=num_samples,
+            enabled=show_progress,
+        ):
+            seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+            pred_extr = pred_seq_extr.get(seq_name, None)
+            gt_extr = gt_seq_extr.get(seq_name, None)
+            if pred_extr is None or gt_extr is None:
+                dropped_no_seq_ref += 1
+                continue
+            pred_kps = _get_sample_keypoints(pred_all, i)
+            gt_kps = _get_sample_keypoints(gt_all, i)
+            if pred_kps is None or gt_kps is None:
+                continue
+            pred_kps = _to_numpy_maybe(pred_kps)
+            gt_kps = _to_numpy_maybe(gt_kps)
+            if pred_kps is None or gt_kps is None:
+                continue
+            if pred_kps.shape != gt_kps.shape:
+                continue
+            if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
+                continue
+            if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
+                continue
+            pred_new.append(_transform_points(pred_kps.astype(np.float32), pred_extr))
+            gt_new.append(_transform_points(gt_kps.astype(np.float32), gt_extr))
+            kept_seq_names.append(seq_name)
+            kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
+            kept += 1
+
+        projection_info.append(f"[INFO] Sequence reference cameras (pred): {len(pred_seq_extr)}")
+        projection_info.append(f"[INFO] Sequence reference cameras (gt):   {len(gt_seq_extr)}")
+        example_seq = sorted(set(pred_seq_meta.keys()) & set(gt_seq_meta.keys()))
+        if len(example_seq) > 0:
+            seq0 = example_seq[0]
+            p_idx, p_m = pred_seq_meta[seq0]
+            g_idx, g_m = gt_seq_meta[seq0]
+            projection_info.append(
+                f"[INFO] Example seq `{seq0}` refs: "
+                f"pred(sample_idx={p_idx}, camera_idx={p_m}), "
+                f"gt(sample_idx={g_idx}, camera_idx={g_m})"
+            )
+        if dropped_no_seq_ref > 0:
+            projection_info.append(f"[INFO] Dropped samples without per-sequence refs: {dropped_no_seq_ref}")
+    else:
+        if len(fusion_modalities) == 0:
+            raise ValueError("`--fusion-modalities` must contain at least one modality for `multi_sensor` mode.")
+        required_modalities = sorted(set(fusion_modalities + [target_modality]))
+        pred_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
+        gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
+        seq_meta_by_modality: Dict[str, Tuple[Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]] = {}
+
+        for mod in required_modalities:
+            fb_idx = modality_fallback_indices.get(mod, None)
+            pred_seq_cam_enc = None
+            pred_seq_meta = {}
+            gt_seq_cam_enc = None
+            gt_seq_meta = {}
+            try:
+                pred_seq_cam_enc, pred_seq_meta = _build_sequence_reference_cameras_for_modality(
+                    data=data,
+                    camera_key=pred_camera_key,
+                    sample_ids=sample_ids,
+                    num_samples=num_samples,
+                    modality=mod,
+                    fallback_modality_idx=fb_idx,
+                    sensor_idx=modality_sensor_indices.get(mod, 0),
+                    show_progress=show_progress,
+                )
+            except ValueError:
+                pred_seq_cam_enc = None
+            try:
+                gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
+                    data=data,
+                    camera_key=gt_camera_key,
+                    sample_ids=sample_ids,
+                    num_samples=num_samples,
+                    modality=mod,
+                    fallback_modality_idx=fb_idx,
+                    sensor_idx=modality_sensor_indices.get(mod, 0),
+                    show_progress=show_progress,
+                )
+            except ValueError:
+                gt_seq_cam_enc = None
+
+            if pred_seq_cam_enc is not None:
+                pred_seq_extr_by_modality[mod] = {
+                    seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                    for seq, cam_enc in pred_seq_cam_enc.items()
+                }
+            if gt_seq_cam_enc is not None:
+                gt_seq_extr_by_modality[mod] = {
+                    seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                    for seq, cam_enc in gt_seq_cam_enc.items()
+                }
+            seq_meta_by_modality[mod] = (pred_seq_meta, gt_seq_meta)
+
+        if target_modality not in gt_seq_extr_by_modality:
+            raise ValueError(
+                f"`multi_sensor` requires GT sequence refs for target modality `{target_modality}` "
+                f"from key `{gt_camera_key}`."
+            )
+
+        active_fusion_modalities = [
+            mod
+            for mod in fusion_modalities
+            if (mod in pred_seq_extr_by_modality and mod in gt_seq_extr_by_modality)
+        ]
+        if len(active_fusion_modalities) == 0:
+            raise ValueError(
+                "No fusion modalities have both pred+gt sequence references. "
+                f"Requested={fusion_modalities}"
+            )
+
+        temporal_reliability_by_modality: Dict[str, Dict[str, float]] = {}
+        reliability_source = str(args.reliability_source).lower()
+        fusion_mode = str(args.fusion_mode).lower()
+        if reliability_source in {"temporal", "hybrid"}:
+            temporal_reliability_by_modality = _build_temporal_reliability_by_sequence(
+                data=data,
+                camera_key=pred_camera_key,
+                sample_ids=sample_ids,
+                num_samples=num_samples,
+                modalities=active_fusion_modalities,
+                modality_fallback_indices=modality_fallback_indices,
+                modality_sensor_indices=modality_sensor_indices,
+                pose_encoding_type=args.pose_encoding_type,
+                trans_tau=float(args.temporal_trans_tau),
+                rot_tau_deg=float(args.temporal_rot_tau_deg),
+                show_progress=show_progress,
+            )
+
+        projection_info.append(
+            f"[INFO] Multi-sensor projection (seq-fixed): target={target_modality}, "
+            f"requested_fusion={fusion_modalities}, active_fusion={active_fusion_modalities}"
+        )
+        projection_info.append(
+            f"[INFO] Fusion mode: {fusion_mode}, reliability: {reliability_source}"
+        )
+        if fusion_mode == "hard_gate":
+            projection_info.append(f"[INFO] Hard gate ratio: {args.hard_gate_ratio:.3f}")
+        for mod in required_modalities:
+            pred_count = len(pred_seq_extr_by_modality.get(mod, {}))
+            gt_count = len(gt_seq_extr_by_modality.get(mod, {}))
+            projection_info.append(
+                f"[INFO] Sequence refs `{mod}`: pred={pred_count}, gt={gt_count}"
+            )
+            pred_meta, gt_meta = seq_meta_by_modality.get(mod, ({}, {}))
+            example_seq = sorted(set(pred_meta.keys()) & set(gt_meta.keys()))
+            if len(example_seq) > 0:
+                seq0 = example_seq[0]
+                p_idx, p_m = pred_meta[seq0]
+                g_idx, g_m = gt_meta[seq0]
+                projection_info.append(
+                    f"[INFO] Example seq `{seq0}` refs `{mod}`: "
+                    f"pred(sample_idx={p_idx}, camera_idx={p_m}), "
+                    f"gt(sample_idx={g_idx}, camera_idx={g_m})"
+                )
+        if reliability_source in {"temporal", "hybrid"}:
+            for mod in active_fusion_modalities:
+                vals = list(temporal_reliability_by_modality.get(mod, {}).values())
+                if len(vals) == 0:
+                    continue
+                projection_info.append(
+                    f"[INFO] Temporal reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                    f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
+                )
+
+        used_modality_counts = []
+        rel_values_by_modality: Dict[str, List[float]] = {mod: [] for mod in active_fusion_modalities}
+        dropped_no_camera_projection = 0
+        for i in _iter_with_progress(
+            range(num_samples),
+            desc="transform keypoints",
+            total=num_samples,
+            enabled=show_progress,
+        ):
+            pred_kps = _get_sample_keypoints(pred_all, i)
+            gt_kps = _get_sample_keypoints(gt_all, i)
+            if pred_kps is None or gt_kps is None:
+                continue
+            pred_kps = _to_numpy_maybe(pred_kps)
+            gt_kps = _to_numpy_maybe(gt_kps)
+            if pred_kps is None or gt_kps is None:
+                continue
+            if pred_kps.shape != gt_kps.shape:
+                continue
+            if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
+                continue
+            if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
+                continue
+
+            seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+            pred_proj, gt_proj, used_mods, reliability_scores = _project_multisensor_to_target_frame_seqfixed(
+                seq_name=seq_name,
+                pred_points=pred_kps.astype(np.float32),
+                gt_points=gt_kps.astype(np.float32),
+                target_modality=target_modality,
+                fusion_modalities=active_fusion_modalities,
+                pred_seq_extr_by_modality=pred_seq_extr_by_modality,
+                gt_seq_extr_by_modality=gt_seq_extr_by_modality,
+                temporal_reliability_by_modality=temporal_reliability_by_modality,
+                reliability_source=reliability_source,
+                fusion_mode=fusion_mode,
+                cross_sensor_tau=float(args.cross_sensor_tau),
+                hard_gate_ratio=float(args.hard_gate_ratio),
+            )
+            if pred_proj is None or gt_proj is None:
+                dropped_no_camera_projection += 1
+                continue
+
+            pred_new.append(pred_proj)
+            gt_new.append(gt_proj)
+            used_modality_counts.append(int(used_mods))
+            for mod, val in reliability_scores.items():
+                if mod in rel_values_by_modality:
+                    rel_values_by_modality[mod].append(float(val))
+            kept_seq_names.append(seq_name)
+            kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
+            kept += 1
+
+        if len(used_modality_counts) > 0:
+            projection_info.append(
+                f"[INFO] Modalities used per sample: mean={np.mean(used_modality_counts):.2f}, "
+                f"min={np.min(used_modality_counts)}, max={np.max(used_modality_counts)}"
+            )
+        for mod in active_fusion_modalities:
+            vals = rel_values_by_modality.get(mod, [])
+            if len(vals) == 0:
+                continue
+            projection_info.append(
+                f"[INFO] Reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
+            )
+        if dropped_no_camera_projection > 0:
+            projection_info.append(
+                f"[INFO] Dropped samples without valid multi-sensor camera projection: "
+                f"{dropped_no_camera_projection}"
+            )
 
     if kept == 0:
         raise RuntimeError("No valid samples found for evaluation.")
@@ -410,20 +1195,9 @@ def main():
     mpjpe_centered = float(mpjpe_func(pred_centered, gt_centered, reduce=True))
 
     print(f"[INFO] Loaded: {args.pred_file}")
-    print(f"[INFO] Sequence reference cameras (pred): {len(pred_seq_extr)}")
-    print(f"[INFO] Sequence reference cameras (gt):   {len(gt_seq_extr)}")
-    example_seq = sorted(set(pred_seq_meta.keys()) & set(gt_seq_meta.keys()))
-    if len(example_seq) > 0:
-        seq0 = example_seq[0]
-        p_idx, p_m = pred_seq_meta[seq0]
-        g_idx, g_m = gt_seq_meta[seq0]
-        print(
-            f"[INFO] Example seq `{seq0}` refs: "
-            f"pred(sample_idx={p_idx}, modality_idx={p_m}), "
-            f"gt(sample_idx={g_idx}, modality_idx={g_m})"
-        )
-    if dropped_no_seq_ref > 0:
-        print(f"[INFO] Dropped samples without per-sequence refs: {dropped_no_seq_ref}")
+    print(f"[INFO] Projection mode: {projection_mode}")
+    for line in projection_info:
+        print(line)
     print(f"[INFO] Smoothing: window={args.smooth_window}, target={args.smooth_on}")
     print(f"[INFO] Valid samples: {kept}/{num_samples}")
     print(f"[RESULT] MPJPE (fixed-sensor frame): {_format_mm(mpjpe_new)}")

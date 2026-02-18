@@ -45,3 +45,8 @@ Only commit the changes when the user explicitly asks so.
 - Train the HPE model (Encoders + Aggregator + Keypoint Head + SMPL Head (Optional) )
 - Train the Camera Head for PC
 - Train the Camera Head for RGB
+
+# 7. Engineering Principle
+- Fail fast on abnormal inputs. Raise explicit errors when assumptions are violated.
+- Keep code simple and strict for the intended pipeline.
+- Do not add broad fallback logic just to handle unlikely or invalid input formats.

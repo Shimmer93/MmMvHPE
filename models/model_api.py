@@ -253,10 +253,7 @@ class LitModel(L.LightningModule):
         log_dict = {}
 
         if self.camera_only and self.with_camera_head:
-            try:
-                losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict={})
-            except TypeError:
-                losses_camera = self.camera_head.loss(feats_agg, batch)
+            losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict={})
             loss_dict.update(losses_camera)
         else:
             if self.with_keypoint_head:
@@ -274,10 +271,7 @@ class LitModel(L.LightningModule):
                         preds_keypoint = self.keypoint_head.predict(feats_agg)
                         pred_dict["pred_keypoints"] = preds_keypoint
                         self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
-                try:
-                    losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
-                except TypeError:
-                    losses_camera = self.camera_head.loss(feats_agg, batch)
+                losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
                 loss_dict.update(losses_camera)
 
         loss = 0
@@ -297,7 +291,7 @@ class LitModel(L.LightningModule):
         pred_dict = {}
         if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-            pred_dict['pred_cameras'] = preds_camera
+            self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
                 preds_keypoint = self.keypoint_head.predict(feats_agg)
@@ -313,7 +307,7 @@ class LitModel(L.LightningModule):
             self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
             if self.with_camera_head:
                 preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-                pred_dict['pred_cameras'] = preds_camera
+                self._attach_camera_predictions(pred_dict, preds_camera, batch)
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -331,7 +325,7 @@ class LitModel(L.LightningModule):
         pred_dict = {}
         if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-            pred_dict['pred_cameras'] = preds_camera
+            self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
                 preds_keypoint = self.keypoint_head.predict(feats_agg)
@@ -347,7 +341,7 @@ class LitModel(L.LightningModule):
             self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
             if self.with_camera_head:
                 preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-                pred_dict['pred_cameras'] = preds_camera
+                self._attach_camera_predictions(pred_dict, preds_camera, batch)
 
         log_dict = {}
         for _, metric in self.metrics.items():
@@ -363,13 +357,7 @@ class LitModel(L.LightningModule):
         if self.hparams.save_test_preds:
             batch_size = len(batch['sample_id'])
             pose_encoding_dim = int(getattr(getattr(self, "camera_head", None), "pose_encoding_dim", 9))
-            modalities = batch.get("modalities", [])
-            if modalities and isinstance(modalities[0], (list, tuple)):
-                modalities = list(modalities[0])
-            elif isinstance(modalities, (list, tuple)):
-                modalities = list(modalities)
-            else:
-                modalities = []
+            modalities = self._normalize_modalities(batch.get("modalities", []))
             gt_cameras_batch = collect_gt_camera_encodings(
                 data_batch=batch,
                 modalities=modalities,
@@ -378,12 +366,36 @@ class LitModel(L.LightningModule):
                 dtype=torch.float32,
                 pose_encoding_dim=pose_encoding_dim,
             )
+            stream_specs = []
+            pred_cameras_stream = None
+            gt_cameras_stream = None
+            if 'pred_cameras_stream' in pred_dict or 'pred_cameras' in pred_dict:
+                pred_source = pred_dict.get('pred_cameras_stream', pred_dict.get('pred_cameras'))
+                pred_cameras_stream = self._select_camera_tensor(pred_source)
+            if isinstance(pred_cameras_stream, torch.Tensor):
+                if pred_cameras_stream.dim() != 3:
+                    raise ValueError(
+                        f"Expected stream cameras as [B,S,D], got {tuple(pred_cameras_stream.shape)}."
+                    )
+                stream_specs = self._build_stream_specs(batch, target_streams=pred_cameras_stream.shape[1])
+                gt_cameras_stream = self._collect_gt_cameras_stream(
+                    batch=batch,
+                    stream_specs=stream_specs,
+                    batch_size=batch_size,
+                    pose_encoding_dim=pose_encoding_dim,
+                    device=torch.device("cpu"),
+                    dtype=torch.float32,
+                )
             for i in range(batch_size):
                 self.test_preds.append({
                     'sample_id': batch['sample_id'][i],
                     'camera_modalities': modalities,
+                    'camera_stream_modalities': [m for m, _ in stream_specs] if stream_specs else None,
+                    'camera_stream_sensor_indices': [s for _, s in stream_specs] if stream_specs else None,
                     'pred_cameras': torch2numpy(pred_dict['pred_cameras'][i]) if 'pred_cameras' in pred_dict else None,
                     'gt_cameras': torch2numpy(gt_cameras_batch[i]) if gt_cameras_batch is not None else None,
+                    'pred_cameras_stream': torch2numpy(pred_cameras_stream[i]) if pred_cameras_stream is not None else None,
+                    'gt_cameras_stream': torch2numpy(gt_cameras_stream[i]) if gt_cameras_stream is not None else None,
                     'pred_keypoints': torch2numpy(pred_dict['pred_keypoints'][i]) if 'pred_keypoints' in pred_dict else None,
                     'pred_smpl_params': torch2numpy(pred_dict['pred_smpl_params'][i]) if 'pred_smpl_params' in pred_dict else None,
                     'pred_smpl_keypoints': torch2numpy(pred_dict['pred_smpl_keypoints'][i]) if 'pred_smpl_keypoints' in pred_dict else None,
@@ -398,7 +410,7 @@ class LitModel(L.LightningModule):
         pred_dict = {}
         if self.camera_only and self.with_camera_head:
             preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-            pred_dict['pred_cameras'] = preds_camera
+            self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
                 preds_keypoint = self.keypoint_head.predict(feats_agg)
@@ -414,45 +426,257 @@ class LitModel(L.LightningModule):
             self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
             if self.with_camera_head:
                 preds_camera = self._predict_camera(feats_agg, batch, pred_dict)
-                pred_dict['pred_cameras'] = preds_camera
+                self._attach_camera_predictions(pred_dict, preds_camera, batch)
 
         return pred_dict
 
     def _predict_camera(self, feats_agg, batch, pred_dict):
-        try:
-            return self.camera_head.predict(feats_agg, data_batch=batch, pred_dict=pred_dict)
-        except TypeError:
-            try:
-                return self.camera_head.predict(feats_agg, batch, pred_dict)
-            except TypeError:
-                try:
-                    return self.camera_head.predict(feats_agg, batch)
-                except TypeError:
-                    return self.camera_head.predict(feats_agg)
+        return self.camera_head.predict(feats_agg, data_batch=batch, pred_dict=pred_dict)
+
+    @staticmethod
+    def _normalize_modalities(modalities):
+        if modalities and isinstance(modalities[0], (list, tuple)):
+            modalities = list(modalities[0])
+        elif isinstance(modalities, (list, tuple)):
+            modalities = list(modalities)
+        else:
+            raise ValueError(f"Expected `modalities` as list/tuple, got {type(modalities).__name__}.")
+        if len(modalities) == 0:
+            raise ValueError("`modalities` is empty.")
+        return [str(m).lower() for m in modalities]
+
+    @staticmethod
+    def _infer_batch_size(data_batch):
+        if not isinstance(data_batch, dict):
+            return None
+        gt_global = data_batch.get("gt_keypoints", None)
+        if isinstance(gt_global, torch.Tensor):
+            if gt_global.dim() >= 3:
+                return int(gt_global.shape[0])
+            return 1
+        sample_ids = data_batch.get("sample_id", None)
+        if isinstance(sample_ids, (list, tuple)):
+            return len(sample_ids)
+        return None
+
+    def _infer_sensor_count(self, batch, modality):
+        if not isinstance(batch, dict):
+            raise ValueError("Batch must be a dict.")
+        selected = batch.get("selected_cameras", None)
+        if isinstance(selected, (list, tuple)):
+            if len(selected) == 0:
+                raise ValueError("`selected_cameras` list is empty.")
+            selected = selected[0]
+        if not isinstance(selected, dict):
+            raise ValueError(
+                "Expected `selected_cameras` to be a dict (or list containing one dict) in batch."
+            )
+
+        cams = selected.get(modality, None)
+        if not isinstance(cams, (list, tuple)) or len(cams) == 0:
+            raise ValueError(
+                f"`selected_cameras[{modality}]` must be a non-empty list/tuple, got {type(cams).__name__}."
+            )
+        return len(cams)
+
+    def _build_stream_specs(self, batch, target_streams=None):
+        modalities = self._normalize_modalities(batch.get("modalities", []))
+        specs = []
+        for modality in modalities:
+            n_sensors = self._infer_sensor_count(batch, modality)
+            for sensor_idx in range(max(1, int(n_sensors))):
+                specs.append((modality, sensor_idx))
+
+        if target_streams is not None:
+            target_streams = int(max(0, target_streams))
+            if len(specs) != target_streams:
+                raise ValueError(
+                    f"Stream count mismatch: inferred {len(specs)} from batch metadata, "
+                    f"but target_streams={target_streams}."
+                )
+        return specs
+
+    @staticmethod
+    def _select_camera_tensor(pred_cameras):
+        if isinstance(pred_cameras, list):
+            if len(pred_cameras) == 0:
+                raise ValueError("pred_cameras list is empty.")
+            tensor_items = [x for x in pred_cameras if isinstance(x, torch.Tensor)]
+            if len(tensor_items) != len(pred_cameras):
+                raise ValueError("pred_cameras list contains non-tensor items.")
+            return tensor_items[-1]
+        if isinstance(pred_cameras, torch.Tensor):
+            return pred_cameras
+        raise ValueError(
+            f"Expected pred_cameras as Tensor or list[Tensor], got {type(pred_cameras).__name__}."
+        )
+
+    def _reduce_stream_cameras_for_metrics(self, pred_cameras, batch):
+        if isinstance(pred_cameras, list):
+            return [self._reduce_stream_cameras_for_metrics(x, batch) for x in pred_cameras]
+        if not isinstance(pred_cameras, torch.Tensor):
+            raise ValueError(
+                f"Expected pred_cameras tensor in reducer, got {type(pred_cameras).__name__}."
+            )
+        if pred_cameras.dim() != 3:
+            raise ValueError(
+                f"Expected pred_cameras with shape [B,S,D], got {tuple(pred_cameras.shape)}."
+            )
+
+        modalities = self._normalize_modalities(batch.get("modalities", []))
+
+        stream_specs = self._build_stream_specs(batch, target_streams=pred_cameras.shape[1])
+
+        out = torch.full(
+            (pred_cameras.shape[0], len(modalities), pred_cameras.shape[-1]),
+            float("nan"),
+            device=pred_cameras.device,
+            dtype=pred_cameras.dtype,
+        )
+        for m_idx, modality in enumerate(modalities):
+            idxs = [i for i, (mod, _) in enumerate(stream_specs) if mod == modality]
+            if len(idxs) == 0:
+                raise ValueError(f"No sensor streams found for modality `{modality}`.")
+            out[:, m_idx] = pred_cameras[:, idxs, :].mean(dim=1)
+        return out
+
+    def _attach_camera_predictions(self, pred_dict, preds_camera, batch):
+        pred_dict["pred_cameras_stream"] = preds_camera
+        pred_dict["pred_cameras"] = self._reduce_stream_cameras_for_metrics(preds_camera, batch)
+
+    @staticmethod
+    def _select_gt_camera_sensor(gt_camera, batch_size, sensor_idx, pose_encoding_dim, device, dtype):
+        if gt_camera is None:
+            raise ValueError("gt_camera is None.")
+        if not isinstance(gt_camera, torch.Tensor):
+            gt_camera = torch.as_tensor(gt_camera, dtype=dtype)
+        gt_camera = gt_camera.to(device=device, dtype=dtype)
+        if gt_camera.shape[-1] != pose_encoding_dim:
+            raise ValueError(
+                f"Expected last dim {pose_encoding_dim}, got shape {tuple(gt_camera.shape)}."
+            )
+
+        if gt_camera.dim() == 4:  # [B, V, S, D]
+            if gt_camera.shape[0] != batch_size:
+                raise ValueError(
+                    f"Expected gt_camera batch {batch_size}, got {gt_camera.shape[0]} for shape {tuple(gt_camera.shape)}."
+                )
+            if sensor_idx >= gt_camera.shape[1]:
+                raise ValueError(
+                    f"sensor_idx={sensor_idx} out of range for V={gt_camera.shape[1]}."
+                )
+            return gt_camera[:, sensor_idx, -1, :]
+
+        if gt_camera.dim() == 3:  # [B, S, D]
+            if gt_camera.shape[0] != batch_size:
+                raise ValueError(
+                    f"Expected gt_camera shape [B,S,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
+                )
+            if sensor_idx != 0:
+                raise ValueError(
+                    f"Single-sensor gt_camera received sensor_idx={sensor_idx}."
+                )
+            return gt_camera[:, -1, :]
+
+        if gt_camera.dim() == 2:  # [B, D]
+            if gt_camera.shape[0] != batch_size:
+                raise ValueError(
+                    f"Expected gt_camera shape [B,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
+                )
+            if sensor_idx != 0:
+                raise ValueError(
+                    f"Single-sensor gt_camera received sensor_idx={sensor_idx}."
+                )
+            return gt_camera
+
+        raise ValueError(
+            f"Unsupported gt_camera shape {tuple(gt_camera.shape)}; expected [B,V,S,D], [B,S,D], or [B,D]."
+        )
+
+    def _collect_gt_cameras_stream(
+        self,
+        batch,
+        stream_specs,
+        batch_size,
+        pose_encoding_dim,
+        device,
+        dtype,
+    ):
+        if len(stream_specs) == 0:
+            raise ValueError("stream_specs is empty.")
+        out = torch.full(
+            (batch_size, len(stream_specs), pose_encoding_dim),
+            float("nan"),
+            device=device,
+            dtype=dtype,
+        )
+        for s_idx, (modality, sensor_idx) in enumerate(stream_specs):
+            gt = self._select_gt_camera_sensor(
+                batch.get(f"gt_camera_{modality}", None),
+                batch_size=batch_size,
+                sensor_idx=sensor_idx,
+                pose_encoding_dim=pose_encoding_dim,
+                device=device,
+                dtype=dtype,
+            )
+            out[:, s_idx] = gt
+        return out
 
     def _attach_keypoint_modalities(self, pred_dict, feats_agg, batch):
         if not self.with_keypoint_head:
             return
-        modalities = batch.get("modalities", [])
-        if modalities and isinstance(modalities[0], (list, tuple)):
-            modalities = modalities[0]
+        modalities = self._normalize_modalities(batch.get("modalities", []))
         try:
-            outputs = self.keypoint_head.forward(feats_agg, modalities=modalities)
+            outputs = self.keypoint_head.forward(feats_agg, modalities=modalities, data_batch=batch)
         except TypeError:
-            return
+            try:
+                outputs = self.keypoint_head.forward(feats_agg, modalities=modalities)
+            except TypeError:
+                return
         if not isinstance(outputs, dict):
             return
         per_modality = outputs.get("per_modality")
         if per_modality is None:
             return
-        for i, modality in enumerate(modalities[: len(per_modality)]):
-            mod = modality.lower()
-            if mod in {"rgb", "depth"}:
-                pred_dict[f"pred_keypoints_2d_{mod}"] = per_modality[i]
+
+        if isinstance(per_modality, torch.Tensor):
+            if per_modality.dim() >= 4:
+                per_stream = [per_modality[:, i] for i in range(per_modality.shape[1])]
             else:
-                pred_dict[f"pred_keypoints_3d_{mod}"] = per_modality[i]
+                per_stream = [per_modality[i] for i in range(per_modality.shape[0])]
+        elif isinstance(per_modality, (list, tuple)):
+            per_stream = list(per_modality)
+        else:
+            return
+
+        stream_modalities = outputs.get("stream_modalities", None)
+        stream_sensor_indices = outputs.get("stream_sensor_indices", None)
+        if not isinstance(stream_modalities, (list, tuple)) or not isinstance(stream_sensor_indices, (list, tuple)):
+            stream_specs = self._build_stream_specs(batch, target_streams=len(per_stream))
+            stream_modalities = [m for m, _ in stream_specs]
+            stream_sensor_indices = [s for _, s in stream_specs]
+
+        if not (len(per_stream) == len(stream_modalities) == len(stream_sensor_indices)):
+            raise ValueError(
+                "Per-stream keypoint outputs and stream metadata have inconsistent lengths: "
+                f"{len(per_stream)} vs {len(stream_modalities)} vs {len(stream_sensor_indices)}."
+            )
+        for i in range(len(per_stream)):
+            mod = str(stream_modalities[i]).lower()
+            sensor_idx = int(stream_sensor_indices[i])
+            pred = per_stream[i]
+            if mod in {"rgb", "depth"}:
+                pred_dict[f"pred_keypoints_2d_{mod}_s{sensor_idx}"] = pred
+                if sensor_idx == 0 and f"pred_keypoints_2d_{mod}" not in pred_dict:
+                    pred_dict[f"pred_keypoints_2d_{mod}"] = pred
+            else:
+                pred_dict[f"pred_keypoints_3d_{mod}_s{sensor_idx}"] = pred
+                if sensor_idx == 0 and f"pred_keypoints_3d_{mod}" not in pred_dict:
+                    pred_dict[f"pred_keypoints_3d_{mod}"] = pred
                 if mod == "lidar":
-                    pred_dict["pred_keypoints_pc_centered_input_lidar"] = per_modality[i]
+                    pred_dict[f"pred_keypoints_pc_centered_input_lidar_s{sensor_idx}"] = pred
+                    if sensor_idx == 0 and "pred_keypoints_pc_centered_input_lidar" not in pred_dict:
+                        pred_dict["pred_keypoints_pc_centered_input_lidar"] = pred
 
     def on_test_epoch_end(self):
         if not self.hparams.save_test_preds:
@@ -496,6 +720,8 @@ class LitModel(L.LightningModule):
             # Robust stacking for potentially partial/missing fields across ranks/samples.
             final_preds['pred_cameras'] = _stack_or_object([item.get('pred_cameras') for item in gathered_preds])
             final_preds['gt_cameras'] = _stack_or_object([item.get('gt_cameras') for item in gathered_preds])
+            final_preds['pred_cameras_stream'] = _stack_or_object([item.get('pred_cameras_stream') for item in gathered_preds])
+            final_preds['gt_cameras_stream'] = _stack_or_object([item.get('gt_cameras_stream') for item in gathered_preds])
             final_preds['pred_keypoints'] = _stack_or_object([item.get('pred_keypoints') for item in gathered_preds])
             final_preds['gt_keypoints'] = _stack_or_object([item.get('gt_keypoints') for item in gathered_preds])
             final_preds['pred_smpl_params'] = _stack_or_object([item.get('pred_smpl_params') for item in gathered_preds])
@@ -506,17 +732,45 @@ class LitModel(L.LightningModule):
                 final_preds['camera_modalities'] = camera_modalities_list[0]
             else:
                 final_preds['camera_modalities_per_sample'] = camera_modalities_list
+            camera_stream_modalities_list = [item.get('camera_stream_modalities', None) for item in gathered_preds]
+            if camera_stream_modalities_list and all(m == camera_stream_modalities_list[0] for m in camera_stream_modalities_list):
+                final_preds['camera_stream_modalities'] = camera_stream_modalities_list[0]
+            else:
+                final_preds['camera_stream_modalities_per_sample'] = camera_stream_modalities_list
+            camera_stream_sensor_indices_list = [item.get('camera_stream_sensor_indices', None) for item in gathered_preds]
+            if camera_stream_sensor_indices_list and all(m == camera_stream_sensor_indices_list[0] for m in camera_stream_sensor_indices_list):
+                final_preds['camera_stream_sensor_indices'] = camera_stream_sensor_indices_list[0]
+            else:
+                final_preds['camera_stream_sensor_indices_per_sample'] = camera_stream_sensor_indices_list
 
             # sort by sample_ids
             sorted_indices = np.argsort(final_preds['sample_ids'])
             final_preds['sample_ids'] = [final_preds['sample_ids'][i] for i in sorted_indices]
             
-            for key in ['pred_cameras', 'gt_cameras', 'pred_keypoints', 'gt_keypoints', 'pred_smpl_params', 'pred_smpl_keypoints', 'gt_smpl_params']:
+            for key in [
+                'pred_cameras',
+                'gt_cameras',
+                'pred_cameras_stream',
+                'gt_cameras_stream',
+                'pred_keypoints',
+                'gt_keypoints',
+                'pred_smpl_params',
+                'pred_smpl_keypoints',
+                'gt_smpl_params',
+            ]:
                 if final_preds[key] is not None:
                     final_preds[key] = final_preds[key][sorted_indices]
             if 'camera_modalities_per_sample' in final_preds:
                 final_preds['camera_modalities_per_sample'] = [
                     final_preds['camera_modalities_per_sample'][i] for i in sorted_indices
+                ]
+            if 'camera_stream_modalities_per_sample' in final_preds:
+                final_preds['camera_stream_modalities_per_sample'] = [
+                    final_preds['camera_stream_modalities_per_sample'][i] for i in sorted_indices
+                ]
+            if 'camera_stream_sensor_indices_per_sample' in final_preds:
+                final_preds['camera_stream_sensor_indices_per_sample'] = [
+                    final_preds['camera_stream_sensor_indices_per_sample'][i] for i in sorted_indices
                 ]
 
             save_path = os.path.join('logs', self.hparams.exp_name, self.hparams.version, f'{self.hparams.model_name}_test_predictions.pkl')
