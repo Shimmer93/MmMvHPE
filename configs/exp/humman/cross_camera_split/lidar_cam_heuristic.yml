@@ -6,78 +6,77 @@ sync_batchnorm: false
 clip_grad: null
 precision: 16
 epochs: &epochs 20
+monitor: 'val_cam_pose_auc_30_rgb'
+monitor_mode: 'max'
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: &data_root '/opt/data/humman_cropped'
+    rgb_skeleton_json: &rgb_skeleton_json '/opt/data/humman_cropped/skl_rgb.json'
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 1
-    depth_cameras_per_sample: 1
-    lidar_cameras_per_sample: 1
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: false
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
     colocated: false
 val_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 1
-    depth_cameras_per_sample: 1
-    lidar_cameras_per_sample: 1
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
     colocated: false
 test_dataset:
-  name: 'HummanPreprocessedDatasetV2'
+  name: 'HummanPreprocessedDatasetV3'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 1
-    depth_cameras_per_sample: 1
-    lidar_cameras_per_sample: 1
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
-    use_all_pairs: false
+    use_all_pairs: true
     colocated: false
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0002
+  lr: &lr 0.0001
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -86,20 +85,23 @@ sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
   warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00002
-  eta_min: 0.00002
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
 # --------------------------------------
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
+pretrained_camera_head_path: /home/zpengac/mmhpe/MmMvHPE/logs/exp_humman/cross_camera_lidar_cam_final4/HummanVIBEToken-epoch=10-val_cam_pose_auc_30_rgb=0.6125.ckpt
 backbone_rgb:
   name: 'TimmWrapper'
+  eval: true
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
+  eval: true
   params:
     radius: 0.1
     nsamples: 16
@@ -120,6 +122,7 @@ backbone_lidar:
   has_temporal: true
 aggregator:
   name: 'TransformerAggregatorV4'
+  eval: true
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
@@ -139,6 +142,7 @@ aggregator:
     init_values: 0.01
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
+  eval: true
   params:
     emb_size: 1024
     num_joints: 24
@@ -147,14 +151,10 @@ keypoint_head:
     max_modalities: 4
     last_n_layers: 4
     pose_encoding_type: "absT_quaR_FoV"
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-        weight: 1.0
-        alias: 'KeypointMSELoss'
+    losses: []
 smpl_head:
   name: 'VIBETokenHeadV5'
+  eval: true
   params:
     emb_size: 1024
     smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
@@ -165,25 +165,33 @@ smpl_head:
     max_modalities: 4
     last_n_layers: 4
     pose_encoding_type: "absT_quaR_FoV"
-    losses:
-      - name: 'KeypointLoss'
-        params:
-          loss_type: 'MSE'
-          root_joint_idx: 0
-        weight: 1.0
-        alias: 'SMPLKeypointMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLPoseMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLShapeMSELoss'
-      - name: 'MSELoss'
-        params: null
-        weight: 0.01
-        alias: 'SMPLRotMatMSELoss'
+    losses: []
+camera_head:
+  name: 'HeuristicCameraHead'
+  params:
+    pose_encoding_type: "absT_quaR_FoV"
+    pred_keypoints_2d_key_templates:
+      - "pred_keypoints_2d_{modality}"
+    pred_keypoints_3d_key_templates:
+      - "pred_keypoints_pc_centered_input_{modality}"
+      - "pred_keypoints_3d_{modality}"
+    keypoints_2d_key_templates:
+      - "keypoints_2d_{modality}"
+      - "gt_keypoints_2d_{modality}"
+    keypoints_3d_key_templates:
+      - "keypoints_3d_{modality}"
+      - "gt_keypoints_{modality}"
+      - "gt_keypoints_pc_centered_input_{modality}"
+    intrinsics_key_templates:
+      - "intrinsics_{modality}"
+      - "camera_intrinsics_{modality}"
+      - "K_{modality}"
+    keypoints_2d_normalized: true
+    default_image_size: [224, 224]
+    estimate_lidar_scale: false
+    min_points_pnp: 6
+    min_points_3d: 3
+    losses: []
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
@@ -206,10 +214,71 @@ metrics:
       use_smpl: false
       affix: no_smpl
     alias: 'PAMPJPE_no_smpl'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'rgb'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_rgb'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'lidar'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_lidar'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'rgb'
+    alias: 'CameraTransL2_rgb'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'lidar'
+    alias: 'CameraTransL2_lidar'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'rgb'
+    alias: 'CameraRotAngle_rgb'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'lidar'
+    alias: 'CameraRotAngle_lidar'
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
+  # - name: ReplaceBySyntheticCamera
+  #   params:
+  #     synthetic_prob: 0.5
+  #     rot_jitter_deg: 10.0
+  #     trans_jitter: 0.1
+  #     focal_scale: [0.99, 1.01]
+  #     modalities: ['rgb', 'lidar']
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  # - name: SyncKeypointsWithCameraEncoding
+  #   params:
+  #     pose_encoding_type: "absT_quaR_FoV"
+  - name: PCCenterWithKeypoints
+    params:
+      center_type: 'mean'
+      keys: ['input_lidar']
+      keypoints_key: 'gt_keypoints'
+  - name: AddKeypointNoise
+    params:
+      noise_std_3d: 0.05
+      noise_std_2d: 0.01
+      apply_to_global: true
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+val_pipeline: &val_pipeline
   - name: CameraParamToPoseEncoding
     params:
       pose_encoding_type: "absT_quaR_FoV"
@@ -229,8 +298,7 @@ train_pipeline: &train_pipeline
       keys: ['input_lidar']
   - name: ToTensor
     params: null
-val_pipeline: *train_pipeline
-test_pipeline: *train_pipeline
+test_pipeline: *val_pipeline
 vis_skl_format: 'smpl'
 vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]

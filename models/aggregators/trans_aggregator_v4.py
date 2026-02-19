@@ -31,7 +31,7 @@ class TransformerAggregatorV4(nn.Module):
         qk_norm: bool = True,
         init_values: float = 0.01,
         use_grad_ckpt: bool = False,
-        gcn_norm_type: str = "gn",
+        gcn_norm_type: str = "ln",
         gcn_num_groups: int = 32,
     ):
         super().__init__()
@@ -251,7 +251,7 @@ class TransformerAggregatorV4(nn.Module):
                 if tokens is None:
                     continue
                 B, T, N, C = tokens.shape
-                tokens_reshaped = tokens.reshape(B * T, N, C)
+                tokens_reshaped = tokens.reshape(B, T * N, C)
 
                 if self.use_grad_ckpt and self.training:
                     tokens_reshaped = checkpoint(self.single_blocks[idx], tokens_reshaped, pos, use_reentrant=False)
@@ -282,8 +282,8 @@ class TransformerAggregatorV4(nn.Module):
                     continue
                 B, T, N, C = tokens.shape
                 pose_tokens = tokens[:, :, pose_start:pose_end, :]
-                queries = pose_tokens.reshape(B * T, num_pose, C)
-                context = tokens.reshape(B * T, N, C)
+                queries = pose_tokens.reshape(B, T * num_pose, C)
+                context = tokens.reshape(B, T * N, C)
 
                 if self.use_grad_ckpt and self.training:
                     queries = checkpoint(
@@ -322,7 +322,7 @@ class TransformerAggregatorV4(nn.Module):
             if patch_slices:
                 merged_patches = torch.cat(patch_slices, dim=2)
                 B, T, N, C = merged_patches.shape
-                merged_patches = merged_patches.reshape(B * T, N, C)
+                merged_patches = merged_patches.reshape(B, T * N, C)
 
                 if self.use_grad_ckpt and self.training:
                     merged_patches = checkpoint(
@@ -366,8 +366,8 @@ class TransformerAggregatorV4(nn.Module):
                 if tokens is None:
                     continue
                 B, T, _, C = tokens.shape
-                camera_tokens = tokens[:, :, :1, :].reshape(B * T, 1, C)
-                joint_tokens = tokens[:, :, joint_start:joint_end, :].reshape(B * T, self.num_joints, C)
+                camera_tokens = tokens[:, :, :1, :].reshape(B, T, C)
+                joint_tokens = tokens[:, :, joint_start:joint_end, :].reshape(B, T * self.num_joints, C)
 
                 if self.use_grad_ckpt and self.training:
                     updated_camera = checkpoint(

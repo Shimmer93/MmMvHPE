@@ -636,22 +636,22 @@ def _project_multisensor_to_target_frame_seqfixed(
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int, Dict[str, float]]:
     target_modality = str(target_modality).lower()
     target_gt_extr = gt_seq_extr_by_modality.get(target_modality, {}).get(seq_name, None)
-    if target_gt_extr is None:
+    target_pred_extr = pred_seq_extr_by_modality.get(target_modality, {}).get(seq_name, None)
+    if target_gt_extr is None or target_pred_extr is None:
         return None, None, 0, {}
 
     h_target_gt = _to_homogeneous(target_gt_extr)
+    h_target_pred = _to_homogeneous(target_pred_extr)
     points_by_modality: Dict[str, np.ndarray] = {}
     for mod in fusion_modalities:
         mod = str(mod).lower()
         pred_mod_extr = pred_seq_extr_by_modality.get(mod, {}).get(seq_name, None)
-        gt_mod_extr = gt_seq_extr_by_modality.get(mod, {}).get(seq_name, None)
-        if pred_mod_extr is None or gt_mod_extr is None:
+        if pred_mod_extr is None:
             continue
 
         h_pred_m = _to_homogeneous(pred_mod_extr)
-        h_gt_m = _to_homogeneous(gt_mod_extr)
         try:
-            h_m_to_target = h_target_gt @ np.linalg.inv(h_gt_m)
+            h_m_to_target = h_target_pred @ np.linalg.inv(h_pred_m)
         except np.linalg.LinAlgError:
             continue
         h_pred_target_from_m = h_m_to_target @ h_pred_m
@@ -995,19 +995,20 @@ def main():
                 )
             except ValueError:
                 pred_seq_cam_enc = None
-            try:
-                gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
-                    data=data,
-                    camera_key=gt_camera_key,
-                    sample_ids=sample_ids,
-                    num_samples=num_samples,
-                    modality=mod,
-                    fallback_modality_idx=fb_idx,
-                    sensor_idx=modality_sensor_indices.get(mod, 0),
-                    show_progress=show_progress,
-                )
-            except ValueError:
-                gt_seq_cam_enc = None
+            if mod == target_modality:
+                try:
+                    gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
+                        data=data,
+                        camera_key=gt_camera_key,
+                        sample_ids=sample_ids,
+                        num_samples=num_samples,
+                        modality=mod,
+                        fallback_modality_idx=fb_idx,
+                        sensor_idx=modality_sensor_indices.get(mod, 0),
+                        show_progress=show_progress,
+                    )
+                except ValueError:
+                    gt_seq_cam_enc = None
 
             if pred_seq_cam_enc is not None:
                 pred_seq_extr_by_modality[mod] = {
@@ -1030,11 +1031,11 @@ def main():
         active_fusion_modalities = [
             mod
             for mod in fusion_modalities
-            if (mod in pred_seq_extr_by_modality and mod in gt_seq_extr_by_modality)
+            if mod in pred_seq_extr_by_modality
         ]
         if len(active_fusion_modalities) == 0:
             raise ValueError(
-                "No fusion modalities have both pred+gt sequence references. "
+                "No fusion modalities have predicted sequence references. "
                 f"Requested={fusion_modalities}"
             )
 

@@ -18,14 +18,31 @@ For sample `i`:
 - Ground-truth canonical joints: `G_i in R^(J x 3)`
 - Sample ID with sequence identity: `s_i` (e.g., `pXXXXXX_aXXXXXX_...`)
 
-For modality `m`:
-- Predicted camera pose encoding: `c_pred(i,m)`
-- Ground-truth camera pose encoding: `c_gt(i,m)`
+For modality `m` and sensor index `s`:
+- Predicted camera pose encoding: `c_pred(i,m,s)`
+- Ground-truth camera pose encoding: `c_gt(i,m,s)`
 - Pose encoding type: `absT_quaR_FoV = [T_x,T_y,T_z,q_x,q_y,q_z,q_w,fov_h,fov_w]`
+
+Camera source fields in prediction files:
+- preferred: `pred_cameras_stream`, `gt_cameras_stream` with
+  `camera_stream_modalities` + `camera_stream_sensor_indices` metadata
+- compatible fallback: `pred_cameras`, `gt_cameras`
 
 Decoded extrinsics are `E = [R|t] in R^(3x4)` with camera transform:
 
 `x_cam = R x_world + t`
+
+### 2.1 Plain-Language Symbol Guide
+
+- `P_i`, `G_i`: 3D skeleton points (predicted vs GT) for one sample.
+- `E = [R|t]`: camera transform in `3x4` form.
+  - `R` rotates points.
+  - `t` shifts points.
+- `H`: the same camera transform as `E`, but written in `4x4` form for easy chaining:
+  - `H = [[R, t], [0, 0, 0, 1]]`
+- `inv(H)`: reverse transform (undoes `H`).
+- `A * B` (for transforms): apply `B` first, then `A`.
+- `T(X; E)`: apply camera transform `E` to all 3D points in `X`.
 
 ## 3. Camera Decoding
 
@@ -40,10 +57,13 @@ This avoids unnecessary Torch overhead and is numerically stable for batch-size-
 
 Sensors are assumed fixed per sequence. Therefore, for each sequence `s` and modality `m`, a single reference camera is chosen:
 - the first finite camera encoding found in that sequence.
+- when using stream cameras, this is done for the requested sensor index `s` (configured by `--sensor-index-by-modality`).
 
 This is done independently for prediction and GT:
 - `E_pred(s,m)`
 - `E_gt(s,m)`
+
+For `multi_sensor`, only the target-modality GT reference is required (`E_gt(s,tgt)`).
 
 If a modality is absent or invalid for a sequence, that `(s,m)` reference is unavailable.
 
@@ -69,12 +89,14 @@ For each sample in sequence `s` and modality `m in M_fuse` with valid refs:
 
 1. Build homogeneous transforms:
 - `H_pred(s,m)` from `E_pred(s,m)`
-- `H_gt(s,m)` from `E_gt(s,m)`
+- `H_pred(s,tgt)` from `E_pred(s,tgt)`
 - `H_gt(s,tgt)` from `E_gt(s,tgt)`
 
-2. Map modality `m` to target frame using GT cross-sensor geometry:
+Here, each `H` is just a camera pose matrix in `4x4` form, used to compose transforms cleanly.
 
-`H_(m->tgt)(s) = H_gt(s,tgt) * inv(H_gt(s,m))`
+2. Map modality `m` to target frame using predicted cross-sensor geometry:
+
+`H_(m->tgt)(s) = H_pred(s,tgt) * inv(H_pred(s,m))`
 
 3. Transport predicted camera to target frame:
 
@@ -89,6 +111,10 @@ GT projection is done once in target frame:
 `G_i' = T(G_i ; E_gt(s,tgt))`
 
 Then fuse `{P_i^(m)}` according to Section 6 to obtain `P_i'`.
+
+Note:
+- prediction projection in `multi_sensor` does not use GT cross-sensor geometry.
+- GT is only used for target-frame GT projection (`E_gt(s,tgt)`).
 
 ## 6. Reliability and Robust Fusion
 
@@ -208,7 +234,8 @@ Baseline:
 ```bash
 uv run python tools/eval_fixed_lidar_frame.py \
   --pred-file <predictions.pkl> \
-  --projection-mode seq_lidar_ref
+  --projection-mode seq_lidar_ref \
+  --sensor-index-by-modality lidar:0
 ```
 
 Robust multi-sensor (recommended when RGB camera quality is unstable):
@@ -219,6 +246,7 @@ uv run python tools/eval_fixed_lidar_frame.py \
   --projection-mode multi_sensor \
   --target-modality lidar \
   --fusion-modalities rgb,lidar \
+  --sensor-index-by-modality lidar:0,rgb:0 \
   --fusion-mode hard_gate \
   --reliability-source hybrid \
   --hard-gate-ratio 0.8

@@ -42,7 +42,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
         gcn_kernel_size: int = 5,
         gcn_dilations: tuple = (1, 2),
         gcn_depth: int = 2,
-        gcn_norm_type: str = "gn",
+        gcn_norm_type: str = "ln",
         gcn_num_groups: int = 32,
         input_2d_skeleton_format: str = "coco",
         input_3d_skeleton_format: str = "smpl",

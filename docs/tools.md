@@ -120,19 +120,24 @@ uv run python tools/test_video_normalize_fov.py \
 
 Purpose:
 - evaluate MPJPE/PA-MPJPE after projecting canonical keypoints into a fixed sensor frame.
+- default camera inputs are stream-level keys: `pred_cameras_stream` and `gt_cameras_stream`.
+- supports older prediction files with `pred_cameras` / `gt_cameras` as fallback.
 - supports two projection modes:
   - `seq_lidar_ref`: legacy fixed per-sequence LiDAR reference camera.
   - `multi_sensor`: fuse fixed per-sequence cameras from multiple modalities (for example `rgb,lidar`) into a target frame.
+  - in `multi_sensor`, prediction-side cross-sensor mapping uses predicted cameras only; GT is used only to place GT keypoints in the target frame.
 - robust options for `multi_sensor`:
   - `--fusion-mode weighted|hard_gate`
   - `--reliability-source cross_sensor|temporal|hybrid`
+- for stream-level predictions, choose sensor IDs via `--sensor-index-by-modality` (for example `lidar:0,rgb:1`).
 
 Examples:
 
 ```bash
 uv run python tools/eval_fixed_lidar_frame.py \
   --pred-file logs/dev_humman/run_x/model_test_predictions.pkl \
-  --projection-mode seq_lidar_ref
+  --projection-mode seq_lidar_ref \
+  --sensor-index-by-modality lidar:0
 ```
 
 ```bash
@@ -140,7 +145,8 @@ uv run python tools/eval_fixed_lidar_frame.py \
   --pred-file logs/dev_humman/run_x/model_test_predictions.pkl \
   --projection-mode multi_sensor \
   --target-modality lidar \
-  --fusion-modalities rgb,lidar
+  --fusion-modalities rgb,lidar \
+  --sensor-index-by-modality lidar:0,rgb:0
 ```
 
 ```bash
