@@ -427,6 +427,7 @@ def _build_temporal_reliability_by_sequence(
     sample_ids: Sequence[str],
     num_samples: int,
     modalities: Sequence[str],
+    target_modality: str,
     modality_fallback_indices: Dict[str, Optional[int]],
     modality_sensor_indices: Dict[str, int],
     pose_encoding_type: str,
@@ -438,6 +439,7 @@ def _build_temporal_reliability_by_sequence(
     if cameras is None:
         return {}
     use_stream_index = _is_stream_camera_key(camera_key)
+    target_mod = str(target_modality).lower()
 
     stats_by_mod: Dict[str, Dict[str, dict]] = {str(m).lower(): {} for m in modalities}
     for i in _iter_with_progress(
@@ -448,6 +450,28 @@ def _build_temporal_reliability_by_sequence(
     ):
         sid = sample_ids[i] if i < len(sample_ids) else None
         seq_name = _seq_name_from_sample_id(sid)
+        target_idx = _get_camera_index(
+            data=data,
+            sample_idx=i,
+            modality=target_mod,
+            fallback_idx=modality_fallback_indices.get(target_mod, None),
+            use_stream_index=use_stream_index,
+            sensor_idx=modality_sensor_indices.get(target_mod, 0),
+        )
+        target_cam = _extract_camera_encoding(cameras, i, target_idx)
+        if target_cam is None:
+            continue
+        target_cam = np.asarray(target_cam, dtype=np.float32).reshape(-1)
+        if target_cam.shape[0] < 9 or (not np.isfinite(target_cam).all()):
+            continue
+        try:
+            target_extr = _pose_encoding_to_extrinsic(target_cam, pose_encoding_type)
+        except Exception:
+            continue
+        if not np.isfinite(target_extr).all():
+            continue
+        h_target = _to_homogeneous(target_extr)
+
         for mod in stats_by_mod.keys():
             m_idx = _get_camera_index(
                 data=data,
@@ -469,8 +493,16 @@ def _build_temporal_reliability_by_sequence(
                 continue
             if not np.isfinite(extr).all():
                 continue
-            r = extr[:, :3].astype(np.float64)
-            t = extr[:, 3].astype(np.float64)
+            h_mod = _to_homogeneous(extr)
+            try:
+                h_rel = h_target @ np.linalg.inv(h_mod)
+            except np.linalg.LinAlgError:
+                continue
+            if not np.isfinite(h_rel).all():
+                continue
+
+            r = h_rel[:3, :3].astype(np.float64)
+            t = h_rel[:3, 3].astype(np.float64)
 
             seq_stats = stats_by_mod[mod].setdefault(
                 seq_name,
@@ -1049,6 +1081,7 @@ def main():
                 sample_ids=sample_ids,
                 num_samples=num_samples,
                 modalities=active_fusion_modalities,
+                target_modality=target_modality,
                 modality_fallback_indices=modality_fallback_indices,
                 modality_sensor_indices=modality_sensor_indices,
                 pose_encoding_type=args.pose_encoding_type,

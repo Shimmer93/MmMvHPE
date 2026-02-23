@@ -129,6 +129,7 @@ Purpose:
 - robust options for `multi_sensor`:
   - `--fusion-mode weighted|hard_gate`
   - `--reliability-source cross_sensor|temporal|hybrid`
+  - `temporal` reliability uses time stability of predicted relative transform `modality -> target`.
 - for stream-level predictions, choose sensor IDs via `--sensor-index-by-modality` (for example `lidar:0,rgb:1`).
 
 Examples:

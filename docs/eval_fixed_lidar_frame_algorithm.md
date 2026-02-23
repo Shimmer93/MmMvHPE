@@ -122,6 +122,19 @@ The robust pipeline has two parts:
 - reliability scoring per modality
 - fusion policy
 
+Parameter meaning (important):
+- `tau_cross` (`--cross-sensor-tau`, meters): distance scale for cross-sensor disagreement.
+  - if `e_m = tau_cross`, then `r_cross = exp(-1) ~= 0.37`.
+  - smaller `tau_cross` means stricter penalty for disagreement.
+- `tau_t` (`--temporal-trans-tau`, meters): translation-jitter scale of the relative transform
+  `m -> tgt` over time in temporal reliability.
+  - if `sigma_t = tau_t` (and rotation term is 0), translation contributes `exp(-1)` to reliability.
+  - smaller `tau_t` means stricter penalty for translation instability.
+- `tau_r` (`--temporal-rot-tau-deg`, degrees): rotation-jitter scale of the relative transform
+  `m -> tgt` over time in temporal reliability.
+  - if `sigma_r = tau_r` (and translation term is 0), rotation contributes `exp(-1)` to reliability.
+  - smaller `tau_r` means stricter penalty for rotation instability.
+
 ## 6.1 Reliability sources
 
 ### A) `cross_sensor`
@@ -140,9 +153,19 @@ If target is unavailable (rare), fallback is consensus-median disagreement.
 
 ### B) `temporal`
 
-Computed once per sequence and modality from predicted cameras in that sequence:
-- translation stability: std of `t` (mean across xyz axes)
-- rotation stability: std of angular distance to first sequence rotation
+Computed once per sequence and modality from predicted **relative transform** `m -> tgt`:
+
+1. For each frame `k` in sequence `s`:
+
+`H_rel(s,m,k) = H_pred(s,tgt,k) * inv(H_pred(s,m,k))`
+
+2. Extract relative translation and rotation:
+- `t_rel(s,m,k)` from `H_rel`
+- `R_rel(s,m,k)` from `H_rel`
+
+3. Compute temporal jitter statistics:
+- `sigma_t`: std of `t_rel` over time (mean across xyz axes)
+- `sigma_r`: std of rotation angle between `R_rel(s,m,k)` and first-frame `R_rel(s,m,0)` (degrees)
 
 Score:
 
