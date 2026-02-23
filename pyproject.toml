@@ -105,7 +105,7 @@ pcdet = ["torch"]
 chumpy = ["pip"]
 xtcocotools = ["numpy"]
 mmcv = [
-    { requirement = "torch", match-runtime = true },
+    "torch",
     { requirement = "setuptools<81", match-runtime = false },
 ]
 
