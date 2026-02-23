@@ -1,18 +1,4 @@
-# rerun-visualization-pipeline Specification
-
-## Purpose
-TBD - created by archiving change rerun-sam3d-body-visualization. Update Purpose after archive.
-## Requirements
-### Requirement: Config-Driven Input Modality/View Layout
-The visualization pipeline SHALL build input panels and rerun entity paths from dataset configuration values instead of fixed modality/view assumptions. It SHALL read `modality_names` and per-modality camera definitions from config, supporting both explicit count keys (for example `rgb_cameras_per_sample`) and camera lists (for example `rgb_cameras`) with validation for consistency.
-
-#### Scenario: Camera list drives modality view count
-- **WHEN** a dataset config defines `modality_names: ["rgb"]` and `rgb_cameras: ["cam0", "cam1", "cam2"]`
-- **THEN** rerun input entities SHALL be created for `world/inputs/rgb/view_0..2`
-
-#### Scenario: Inconsistent camera configuration fails fast
-- **WHEN** a dataset config defines both `rgb_cameras_per_sample` and `rgb_cameras` with different counts
-- **THEN** layout construction SHALL fail with an explicit error that names the inconsistent keys
+## MODIFIED Requirements
 
 ### Requirement: Shared Visualization Core for Multiple Inference Backends
 The system SHALL provide a shared visualization core for sample loading, model execution, timeline stepping, and rerun logging that can be reused by multiple inference adapters. The shared core SHALL separate (1) config-driven model input construction from (2) CLI-driven visualization frame selection so that scripts remain comparable while preserving model input contracts.
@@ -30,13 +16,12 @@ The system SHALL provide a shared visualization core for sample loading, model e
 - **THEN** the shared core SHALL step across consecutive sample windows for timeline generation without changing how each sample is fed to the model
 
 ### Requirement: Standardized Rerun Logging Namespaces
-The visualization pipeline SHALL log inputs, outputs, and metadata in standardized namespaces shared across scripts to support side-by-side comparison and tooling. It SHALL support both `world` and `sensor` coordinate modes for 3D visualization scripts and SHALL expose mode context in metadata.
+The visualization pipeline SHALL log inputs, outputs, and metadata in standardized namespaces shared across scripts to support side-by-side comparison and tooling.
 
 #### Scenario: Metadata and render-mode info are logged consistently
 - **WHEN** a visualization script emits per-sample metadata (sample ID, render mode, GT availability)
 - **THEN** metadata SHALL be logged under `world/info/*` while visual entities remain under `world/inputs/*`, `world/front/*`, and `world/side/*`
 
-#### Scenario: Coordinate mode metadata is logged for 3D inference scripts
-- **WHEN** a script runs in `world` or `sensor` coordinate mode
-- **THEN** it SHALL log coordinate-mode metadata under `world/info/*` for downstream interpretation of `.rrd` outputs
-
+#### Scenario: Temporal selection metadata is logged consistently
+- **WHEN** a visualization step is written to rerun
+- **THEN** the script SHALL log `world/info/source_frame_index` and temporal run summary metadata under `world/info/*`

@@ -73,6 +73,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         max_samples: Optional[int] = None,
         colocated: bool = False,
         return_keypoints_sequence: bool = False,
+        return_smpl_sequence: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
         skeleton_only: bool = True,
@@ -93,6 +94,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.max_samples = max_samples
         self.colocated = colocated
         self.return_keypoints_sequence = return_keypoints_sequence
+        self.return_smpl_sequence = return_smpl_sequence
         self.convert_depth_to_lidar = convert_depth_to_lidar
         self.apply_to_new_world = apply_to_new_world
         # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
@@ -603,6 +605,23 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 kp = self._to_new_world(gt_global_orient, pelvis, kp)
                 seq_keypoints.append(kp.astype(np.float32))
             sample["gt_keypoints_seq"] = np.stack(seq_keypoints, axis=0)
+
+        if self.return_smpl_sequence:
+            seq_smpl = []
+            num_smpl_frames = smpl_params["global_orient"].shape[0]
+            for i in range(self.seq_len):
+                idx = data_info["start_frame"] + i
+                idx = min(idx, num_smpl_frames - 1)
+                seq_global_orient = smpl_params["global_orient"][idx]
+                seq_body_pose = smpl_params["body_pose"][idx]
+                seq_betas = smpl_params["betas"][idx]
+                seq_pose = self._flatten_pose(seq_global_orient, seq_body_pose)
+                if seq_pose.shape[0] >= 3:
+                    seq_pose[:3] = 0.0
+                seq_pose = seq_pose[:72]
+                seq_betas = np.asarray(seq_betas, dtype=np.float32)[:10]
+                seq_smpl.append(np.concatenate([seq_pose, seq_betas], axis=0).astype(np.float32))
+            sample["gt_smpl_params_seq"] = np.stack(seq_smpl, axis=0)
 
         if "rgb" in self.modality_names:
             rgb_frames_views = []

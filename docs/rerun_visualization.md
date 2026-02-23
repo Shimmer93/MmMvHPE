@@ -22,6 +22,7 @@ Both scripts now use shared helpers under `scripts/rerun_utils/` and standardize
 - `scripts/rerun_utils/geometry.py`: coordinate transforms used by viewers
 - `scripts/rerun_utils/image.py`: image conversion for display
 - `scripts/rerun_utils/smpl.py`: SMPL conversion and skeleton utilities
+- `scripts/rerun_utils/temporal.py`: shared frame/window sampling policy for rerun timelines
 
 ## MMHPE Visualization Script
 
@@ -44,6 +45,47 @@ uv run --no-sync python scripts/visualize_inference_rerun.py \
 Notes:
 - `--num_samples 0` is useful to validate config/checkpoint/rerun wiring without iterating dataset samples.
 - For full sample rendering, ensure the selected split has valid sample tensors for the pipeline.
+
+Coordinate modes for `visualize_inference_rerun.py`:
+- `--coord-space world` (default): existing world-style visualization behavior.
+- `--coord-space sensor`: logs GT/pred 3D entities in selected sensor frame.
+  - Requires both `--reference-sensor` and `--reference-view`.
+  - Supported labels: `rgb`, `depth`, `lidar` (`lidar` maps to depth-derived point-cloud camera metadata in HuMMan).
+  - Logs metadata under `world/info/coord_space`, `world/info/reference_sensor`, `world/info/reference_view`.
+
+Temporal sampling rules for `visualize_inference_rerun.py`:
+- Model input windows are always built from config/dataset contract (`seq_len`, split, pipeline).
+- CLI frame args only control rerun timeline sampling.
+- `seq_len > 1`: `--num-frames` samples frames from one sample window.
+- `seq_len = 1`: `--num-frames` advances across consecutive samples/windows starting from `--sample-idx`.
+
+Sensor-mode examples:
+
+```bash
+uv run --no-sync python scripts/visualize_inference_rerun.py \
+  -c configs/demo/humman_smpl_v5_kcam_gcn_mix_synth_v3.yml \
+  --checkpoint /opt/data/HummanVIBEToken-epoch=10-val_cam_pose_auc_30_rgb=0.5683.ckpt \
+  --split test \
+  --num_samples 1 \
+  --coord-space sensor \
+  --reference-sensor rgb \
+  --reference-view 0 \
+  --no_serve \
+  --save_rrd logs/rerun_smoke/mmmvhpe_sensor_rgb_view0.rrd
+```
+
+```bash
+uv run --no-sync python scripts/visualize_inference_rerun.py \
+  -c configs/demo/humman_smpl_v5_kcam_gcn_mix_synth_v3.yml \
+  --checkpoint /opt/data/HummanVIBEToken-epoch=10-val_cam_pose_auc_30_rgb=0.5683.ckpt \
+  --split test \
+  --num_samples 1 \
+  --coord-space sensor \
+  --reference-sensor lidar \
+  --reference-view 0 \
+  --no_serve \
+  --save_rrd logs/rerun_smoke/mmmvhpe_sensor_lidar_view0.rrd
+```
 
 ## SAM-3D-Body Visualization Script
 
@@ -71,7 +113,7 @@ Under checkpoint root (default `/opt/data/SAM_3dbody_checkpoints/`):
 
 - `model_config.yaml`
 - `model.ckpt`
-- `mhr_model.pt`
+- `assets/mhr_model.pt` (preferred) or `mhr_model.pt` at root (fallback)
 
 If any file is missing, the script fails fast with an explicit path message.
 
@@ -99,10 +141,13 @@ Coordinate-space assumptions:
 
 ### Multi-frame control
 
-- `--num-frames` controls how many frames from one sample window are visualized (default: `1`).
+- Model input is still defined by dataset config (`seq_len`) and is not overridden by CLI frame args.
+- `--num-frames` controls timeline length.
 - `--frame-index >= 0` is treated as a start anchor; the script uses contiguous frames `[frame_index, frame_index + num_frames - 1]` clipped to valid bounds.
 - `--frame-index = -1` uses a center-anchored contiguous window.
-- Each visualized source frame is logged as one rerun timeline step, and the source index is written to `world/info/source_frame_index`.
+- `seq_len > 1`: timeline steps stay inside one sample window.
+- `seq_len = 1`: timeline steps advance across consecutive samples/windows from `--sample-idx`.
+- Each timeline step logs `world/info/source_frame_index` and `world/info/source_sample_index`.
 
 ### Example commands
 

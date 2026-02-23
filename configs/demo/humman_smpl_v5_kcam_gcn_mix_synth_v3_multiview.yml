@@ -20,7 +20,7 @@ train_dataset:
     unit: 'm'
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_000']
-    depth_cameras: ['kinect_000']
+    depth_cameras: ['kinect_002']
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -32,7 +32,6 @@ train_dataset:
     use_all_pairs: false
     colocated: false
     return_keypoints_sequence: true
-    return_smpl_sequence: true
 val_dataset:
   name: 'HummanPreprocessedDatasetV3'
   params:
@@ -54,7 +53,6 @@ val_dataset:
     use_all_pairs: false
     colocated: false
     return_keypoints_sequence: true
-    return_smpl_sequence: true
 test_dataset:
   name: 'HummanPreprocessedDatasetV3'
   params:
@@ -72,14 +70,13 @@ test_dataset:
     depth_cameras_per_sample: 1
     lidar_cameras_per_sample: 1
     test_mode: true
-    seq_len: 1
+    seq_len:  1
     seq_step: 1
     pad_seq: true
     causal: true
     use_all_pairs: false
     colocated: false
     return_keypoints_sequence: true
-    return_smpl_sequence: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------

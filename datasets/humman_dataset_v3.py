@@ -44,6 +44,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         apply_to_new_world: bool = True,
         skeleton_only: bool = True,
         return_keypoints_sequence: bool = False,
+        return_smpl_sequence: bool = False,
         rgb_skeleton_json: Optional[str] = None,
         rgb_skeleton_image_size_hw: Sequence[int] = (512, 512),
     ):
@@ -72,6 +73,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             apply_to_new_world=apply_to_new_world,
             skeleton_only=skeleton_only,
             return_keypoints_sequence=return_keypoints_sequence,
+            return_smpl_sequence=return_smpl_sequence,
         )
 
         self.rgb_skeleton_json = rgb_skeleton_json

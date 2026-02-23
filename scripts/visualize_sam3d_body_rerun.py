@@ -17,7 +17,7 @@ from misc.utils import load_cfg, merge_args_cfg
 from misc.registry import create_dataset
 from misc.skeleton import SMPLSkeleton
 from rerun_utils.camera import resolve_view_extrinsics, transform_points_to_camera
-from rerun_utils.geometry import rotate_points_180_y
+from rerun_utils.geometry import align_keypoints_to_joints_scale, rotate_points_180_y
 from rerun_utils.image import process_image_for_display
 from rerun_utils.layout import (
     build_input_layout_from_config,
@@ -27,6 +27,7 @@ from rerun_utils.layout import (
 from rerun_utils.logging3d import log_mesh_3d, log_skeleton_views
 from rerun_utils.session import init_rerun_session, init_world_axes, set_frame_timeline
 from rerun_utils.smpl import load_smpl_model, smpl_params_to_mesh, split_smpl_params
+from rerun_utils.temporal import select_sample_frame_steps
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-index", type=int, default=-1, help="-1 means center frame")
     parser.add_argument("--num-frames", type=int, default=1, help="Number of frames to visualize from sample window")
     parser.add_argument("--device", default="cuda", help="Inference device")
+    parser.add_argument(
+        "--smpl-model",
+        default=None,
+        help="Optional SMPL model path for GT mesh logging. Defaults to config `smpl_model_path` "
+        "or `weights/smpl/SMPL_NEUTRAL.pkl` when available.",
+    )
     parser.add_argument(
         "--checkpoint-root",
         default="/opt/data/SAM_3dbody_checkpoints",
@@ -130,23 +137,6 @@ def _extract_rgb_sequence(image_data, denorm_params: dict | None) -> np.ndarray:
     if arr.ndim == 4:
         return np.stack([_coerce_rgb_for_rerun(arr[i]) for i in range(arr.shape[0])], axis=0)
     raise ValueError(f"Expected RGB sequence with 3/4 dims, got {arr.shape}")
-
-
-def _select_frame_indices(num_total: int, frame_index: int, num_frames: int) -> list[int]:
-    if num_total <= 0:
-        return []
-    if num_frames <= 0:
-        raise ValueError(f"`num_frames` must be >= 1, got {num_frames}.")
-
-    if frame_index >= 0:
-        start = max(0, min(frame_index, num_total - 1))
-    else:
-        center = num_total // 2
-        start = center - (num_frames // 2)
-        start = max(0, min(start, max(0, num_total - num_frames)))
-
-    end = min(start + num_frames, num_total)
-    return list(range(start, end))
 
 
 def _log_image_stats(tag: str, image: np.ndarray) -> None:
@@ -255,6 +245,7 @@ def _log_gt_outputs(
 ) -> tuple[bool, bool]:
     gt_kpts_ok = False
     gt_mesh_ok = False
+    gt_joints_front = None
 
     gt_keypoints_data = None
     if "gt_keypoints_seq" in sample:
@@ -262,33 +253,11 @@ def _log_gt_outputs(
     elif "gt_keypoints" in sample:
         gt_keypoints_data = _to_numpy(sample["gt_keypoints"]).astype(np.float32)
 
-    if gt_keypoints_data is not None:
-        gt_keypoints = gt_keypoints_data
-        if gt_keypoints.ndim == 3:
-            gt_keypoints = _select_temporal_frame(gt_keypoints, source_frame_idx)
-        if gt_coordinate_space == "camera":
-            if view_extrinsic is None:
-                raise ValueError(
-                    "GT camera-coordinate mode requested but no per-view extrinsic is available."
-                )
-            gt_keypoints = transform_points_to_camera(gt_keypoints, view_extrinsic)
-        gt_keypoints = rotate_points_180_y(gt_keypoints)
-        log_skeleton_views(
-            "ground_truth",
-            gt_keypoints,
-            SMPLSkeleton,
-            color=(0, 255, 100),
-            radius=0.02,
-            side_transform=_side_view_transform,
-        )
-        gt_kpts_ok = True
-
-    if smpl_model is None or faces is None:
-        return gt_kpts_ok, gt_mesh_ok
+    has_smpl_model = smpl_model is not None
 
     gt_smpl_params = None
-    if "gt_smpl_params" in sample:
-        gt_params = _to_numpy(sample["gt_smpl_params"]).astype(np.float32)
+    if "gt_smpl_params_seq" in sample or "gt_smpl_params" in sample:
+        gt_params = _to_numpy(sample.get("gt_smpl_params_seq", sample.get("gt_smpl_params"))).astype(np.float32)
         if gt_params.ndim >= 2:
             gt_params = _select_temporal_frame(gt_params, source_frame_idx)
         gt_smpl_params = split_smpl_params(gt_params)
@@ -312,21 +281,54 @@ def _log_gt_outputs(
             "transl": gt_transl,
         }
 
-    if gt_smpl_params is not None:
+    if has_smpl_model and gt_smpl_params is not None:
         try:
-            gt_vertices, _, _ = smpl_params_to_mesh(smpl_model, gt_smpl_params, device="cpu")
-            gt_vertices = rotate_points_180_y(gt_vertices[0])
-            log_mesh_3d("world/front/ground_truth/mesh", gt_vertices, faces, color=(100, 255, 150), alpha=0.55)
+            gt_vertices, gt_joints, gt_faces = smpl_params_to_mesh(smpl_model, gt_smpl_params, device="cpu")
+            gt_vertices = gt_vertices[0]
+            gt_joints = gt_joints[0]
+            if gt_coordinate_space == "camera":
+                if view_extrinsic is None:
+                    raise ValueError(
+                        "GT camera-coordinate mode requested but no per-view extrinsic is available for GT mesh."
+                    )
+                gt_vertices = transform_points_to_camera(gt_vertices, view_extrinsic)
+                gt_joints = transform_points_to_camera(gt_joints, view_extrinsic)
+            gt_vertices = rotate_points_180_y(gt_vertices)
+            gt_joints_front = rotate_points_180_y(gt_joints)
+            log_mesh_3d("world/front/ground_truth/mesh", gt_vertices, gt_faces, color=(100, 255, 150), alpha=0.55)
             log_mesh_3d(
                 "world/side/ground_truth/mesh",
                 _side_view_transform(gt_vertices),
-                faces,
+                gt_faces,
                 color=(100, 255, 150),
                 alpha=0.55,
             )
             gt_mesh_ok = True
         except Exception as exc:  # noqa: BLE001
             rr.log("world/info/gt_mesh_error", rr.TextLog(str(exc)))
+
+    if gt_keypoints_data is not None:
+        gt_keypoints = gt_keypoints_data
+        if gt_keypoints.ndim == 3:
+            gt_keypoints = _select_temporal_frame(gt_keypoints, source_frame_idx)
+        if gt_coordinate_space == "camera":
+            if view_extrinsic is None:
+                raise ValueError(
+                    "GT camera-coordinate mode requested but no per-view extrinsic is available."
+                )
+            gt_keypoints = transform_points_to_camera(gt_keypoints, view_extrinsic)
+        gt_keypoints = rotate_points_180_y(gt_keypoints)
+        if gt_joints_front is not None and gt_keypoints.shape[0] == gt_joints_front.shape[0]:
+            gt_keypoints = align_keypoints_to_joints_scale(gt_keypoints, gt_joints_front)
+        log_skeleton_views(
+            "ground_truth",
+            gt_keypoints,
+            SMPLSkeleton,
+            color=(0, 255, 100),
+            radius=0.02,
+            side_transform=_side_view_transform,
+        )
+        gt_kpts_ok = True
 
     return gt_kpts_ok, gt_mesh_ok
 
@@ -421,7 +423,7 @@ def main() -> None:
     if len(dataset) == 0:
         raise RuntimeError(f"Dataset split `{args.split}` is empty.")
     sample_idx = max(0, min(args.sample_idx, len(dataset) - 1))
-    sample = dataset[sample_idx]
+    anchor_sample = dataset[sample_idx]
 
     input_layout = build_input_layout_from_config(dataset_cfg["params"])
     blueprint = create_rerun_blueprint(input_layout)
@@ -431,12 +433,18 @@ def main() -> None:
     sam_edges, sam_edge_colors = _sam3d_skeleton()
 
     smpl_model = None
-    smpl_model_path = getattr(hparams, "smpl_model_path", None)
+    smpl_model_path = args.smpl_model or getattr(hparams, "smpl_model_path", None)
+    if smpl_model_path is None:
+        default_smpl = REPO_ROOT / "weights" / "smpl" / "SMPL_NEUTRAL.pkl"
+        if default_smpl.exists():
+            smpl_model_path = str(default_smpl)
     if smpl_model_path:
         try:
             smpl_model = load_smpl_model(smpl_model_path, device="cpu")
         except Exception as exc:  # noqa: BLE001
-            print(f"[SAM3D-RERUN] WARN: failed to load SMPL model for GT mesh logging: {exc}")
+            print(f"[SAM3D-RERUN] WARN: failed to load SMPL model for GT mesh logging ({smpl_model_path}): {exc}")
+    else:
+        print("[SAM3D-RERUN] WARN: no SMPL model path found; GT mesh logging is disabled.")
 
     init_rerun_session(
         recording_name=args.recording_name,
@@ -450,44 +458,76 @@ def main() -> None:
     # Use Y-down view coordinates in rerun to avoid vertical inversion in 3D views.
     init_world_axes(rr.ViewCoordinates.RIGHT_HAND_Y_DOWN)
 
-    sample_id = str(sample.get("sample_id", f"idx_{sample_idx}"))
-
-    if "input_rgb" not in sample:
+    if "input_rgb" not in anchor_sample:
         raise ValueError("Selected sample does not contain `input_rgb`; SAM-3D-Body requires RGB input.")
 
-    rgb_views = split_sample_views(
-        sample["input_rgb"],
+    anchor_rgb_views = split_sample_views(
+        anchor_sample["input_rgb"],
         expected_views=expected_views.get("rgb"),
         modality="rgb",
     )
-    center_view_idx = len(rgb_views) // 2
-    rgb_sequences = [_extract_rgb_sequence(view, denorm_params=denorm_params) for view in rgb_views]
-    seq_lengths = [seq.shape[0] for seq in rgb_sequences]
+    anchor_rgb_sequences = [_extract_rgb_sequence(view, denorm_params=denorm_params) for view in anchor_rgb_views]
+    center_view_idx = len(anchor_rgb_views) // 2
+    seq_lengths = [seq.shape[0] for seq in anchor_rgb_sequences]
     if len(set(seq_lengths)) != 1:
         raise ValueError(f"Inconsistent RGB temporal lengths across views: {seq_lengths}")
-    frame_indices = _select_frame_indices(seq_lengths[0], args.frame_index, args.num_frames)
-    rr.log("world/info/num_visualized_frames", rr.TextLog(str(len(frame_indices))))
+    anchor_temporal_len = seq_lengths[0]
+    steps = select_sample_frame_steps(
+        dataset_size=len(dataset),
+        sample_idx=sample_idx,
+        temporal_len=anchor_temporal_len,
+        frame_index=args.frame_index,
+        num_frames=args.num_frames,
+    )
+    if len(steps) == 0:
+        raise RuntimeError("No visualization steps were generated from the provided frame arguments.")
+    rr.log("world/info/num_visualized_frames", rr.TextLog(str(len(steps))))
     rr.log("world/info/gt_coordinate_space", rr.TextLog(gt_coordinate_space))
 
-    view_extrinsics = None
-    if gt_coordinate_space == "camera":
-        view_extrinsics = resolve_view_extrinsics(sample.get("rgb_camera"), num_rgb_views=len(rgb_views))
+    cached_step_idx = None
+    cached_sample = None
+    cached_rgb_sequences = None
+    cached_view_extrinsics = None
 
-    for local_idx, source_frame_idx in enumerate(frame_indices):
+    for local_idx, (step_sample_idx, source_frame_idx) in enumerate(steps):
+        if cached_step_idx != step_sample_idx:
+            cached_sample = dataset[step_sample_idx]
+            if "input_rgb" not in cached_sample:
+                raise ValueError(
+                    f"Sample idx {step_sample_idx} does not contain `input_rgb`; SAM-3D-Body requires RGB input."
+                )
+            rgb_views = split_sample_views(
+                cached_sample["input_rgb"],
+                expected_views=expected_views.get("rgb"),
+                modality="rgb",
+            )
+            cached_rgb_sequences = [_extract_rgb_sequence(view, denorm_params=denorm_params) for view in rgb_views]
+            if gt_coordinate_space == "camera":
+                cached_view_extrinsics = resolve_view_extrinsics(
+                    cached_sample.get("rgb_camera"),
+                    num_rgb_views=len(rgb_views),
+                )
+            else:
+                cached_view_extrinsics = None
+            cached_step_idx = step_sample_idx
+
+        sample_id = str(cached_sample.get("sample_id", f"idx_{step_sample_idx}"))
         set_frame_timeline(local_idx, sample_id=sample_id)
         rr.log("world/info/source_frame_index", rr.TextLog(str(source_frame_idx)))
+        rr.log("world/info/source_sample_index", rr.TextLog(str(step_sample_idx)))
 
-        for view_idx, rgb_seq in enumerate(rgb_sequences):
-            rgb_image = rgb_seq[source_frame_idx]
+        for view_idx, rgb_seq in enumerate(cached_rgb_sequences):
+            safe_idx = max(0, min(source_frame_idx, rgb_seq.shape[0] - 1))
+            rgb_image = rgb_seq[safe_idx]
             if args.debug_image_stats:
-                _log_image_stats(f"frame_{source_frame_idx}/rgb/view_{view_idx}", rgb_image)
+                _log_image_stats(f"sample_{step_sample_idx}/frame_{safe_idx}/rgb/view_{view_idx}", rgb_image)
             rr.log(f"world/inputs/rgb/view_{view_idx}/image", rr.Image(rgb_image))
 
             if view_idx == center_view_idx:
                 outputs = estimator.process_one_image(rgb_image)
                 overlay = _draw_overlay(rgb_image, outputs, skeleton_edges=sam_edges)
                 if args.debug_image_stats:
-                    _log_image_stats(f"frame_{source_frame_idx}/rgb/view_{view_idx}/overlay", overlay)
+                    _log_image_stats(f"sample_{step_sample_idx}/frame_{safe_idx}/rgb/view_{view_idx}/overlay", overlay)
                 rr.log(f"world/inputs/rgb/view_{view_idx}/overlay", rr.Image(overlay))
                 actual_mode = _log_sam3d_outputs(
                     outputs,
@@ -498,17 +538,17 @@ def main() -> None:
                 )
                 rr.log("world/info/render_mode", rr.TextLog(actual_mode))
                 gt_keypoints_ok, gt_mesh_ok = _log_gt_outputs(
-                    sample,
+                    cached_sample,
                     smpl_model,
                     np.asarray(estimator.faces, dtype=np.int32),
-                    source_frame_idx=source_frame_idx,
+                    source_frame_idx=safe_idx,
                     gt_coordinate_space=gt_coordinate_space,
-                    view_extrinsic=None if view_extrinsics is None else view_extrinsics[view_idx],
+                    view_extrinsic=None if cached_view_extrinsics is None else cached_view_extrinsics[view_idx],
                 )
                 rr.log("world/info/gt_keypoints_available", rr.TextLog(str(gt_keypoints_ok)))
                 rr.log("world/info/gt_mesh_available", rr.TextLog(str(gt_mesh_ok)))
 
-    print(f"[SAM3D-RERUN] split={args.split} sample_idx={sample_idx} sample_id={sample_id}")
+    print(f"[SAM3D-RERUN] split={args.split} sample_idx={sample_idx} steps={len(steps)}")
     if args.save_rrd:
         print(f"[SAM3D-RERUN] saved: {args.save_rrd}")
     if not args.no_serve:

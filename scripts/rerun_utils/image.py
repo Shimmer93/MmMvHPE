@@ -19,6 +19,10 @@ def process_image_for_display(
     if image.ndim == 4 and not keep_temporal:
         image = image[-1]
 
+    # Convert temporal-first channel-first tensors to temporal-last RGB.
+    if image.ndim == 4 and image.shape[1] in (1, 3):
+        image = image.transpose(0, 2, 3, 1)
+
     if image.ndim == 3 and image.shape[0] in (1, 3):
         image = image.transpose(1, 2, 0)
 
