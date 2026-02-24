@@ -14,17 +14,15 @@ train_dataset:
   params:
     data_root: &data_root '/opt/data/humman_cropped'
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
     depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'random_split'
     test_mode: false
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -35,17 +33,15 @@ val_dataset:
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
     depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'random_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -56,17 +52,15 @@ test_dataset:
   params:
     data_root: *data_root
     unit: 'm'
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
     depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    rgb_cameras_per_sample: 2
     depth_cameras_per_sample: 2
-    lidar_cameras_per_sample: 2
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'random_split'
     test_mode: true
-    seq_len: 3
+    seq_len: 1
     seq_step: 1
     pad_seq: true
     causal: true
@@ -77,7 +71,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0003
+  lr: &lr 0.0001
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -86,18 +80,12 @@ sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
   warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00003
-  eta_min: 0.00003
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
 # --------------------------------------
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-backbone_rgb:
-  name: 'TimmWrapper'
-  params:
-    model_name: 'vit_small_patch16_dinov3'
-    pretrained: true
-  has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
   params:
@@ -218,10 +206,6 @@ train_pipeline: &train_pipeline
       center_type: 'mean'
       keys: ['input_lidar']
       keypoints_key: 'gt_keypoints'
-  - name: VideoNormalize
-    params:
-      norm_mode: 'imagenet'
-      keys: ['input_rgb']
   - name: PCPad
     params:
       num_points: 1024
