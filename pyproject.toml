@@ -54,6 +54,7 @@ dependencies = [
     "smplpytorch>=0.0.8",
     "smplx>=0.1.28",
     "spconv-cu124>=2.3.8",
+    "socksio>=1.0.0",
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.4",
     "timm>=1.0.22",

@@ -1336,6 +1336,7 @@ dependencies = [
     { name = "segment-anything", marker = "sys_platform == 'linux'" },
     { name = "smplpytorch", marker = "sys_platform == 'linux'" },
     { name = "smplx", marker = "sys_platform == 'linux'" },
+    { name = "socksio", marker = "sys_platform == 'linux'" },
     { name = "spconv-cu124", marker = "sys_platform == 'linux'" },
     { name = "tensorboard", marker = "sys_platform == 'linux'" },
     { name = "tensorboardx", marker = "sys_platform == 'linux'" },
@@ -1404,6 +1405,7 @@ requires-dist = [
     { name = "segment-anything", git = "https://github.com/facebookresearch/segment-anything.git" },
     { name = "smplpytorch", specifier = ">=0.0.8" },
     { name = "smplx", specifier = ">=0.1.28" },
+    { name = "socksio", specifier = ">=1.0.0" },
     { name = "spconv-cu124", specifier = ">=2.3.8" },
     { name = "tensorboard", specifier = ">=2.20.0" },
     { name = "tensorboardx", specifier = ">=2.6.4" },
@@ -2653,6 +2655,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/69/eb/51da17b291fb1221317a1ff65a301fb2cf9c6c0dd87a0caec4cbcd06c1da/smplx-0.1.28.tar.gz", hash = "sha256:c3a1e2c3069cdf7a4b34fd250c2484c8bb1a4fd9c14490da9359af5fbc64fbe6", size = 28500, upload-time = "2021-05-26T12:14:10.194Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/33/bd37416aec828e7465652d9e2525fe52de0a29a581f1519cc51a74485091/smplx-0.1.28-py3-none-any.whl", hash = "sha256:e8ff3d278a015c097dc86d44a38475da4ac170042943c84c08eee433629406a7", size = 29903, upload-time = "2021-05-26T12:14:08.641Z" },
+]
+
+[[package]]
+name = "socksio"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/5c/48a7d9495be3d1c651198fd99dbb6ce190e2274d0f28b9051307bdec6b85/socksio-1.0.0.tar.gz", hash = "sha256:f88beb3da5b5c38b9890469de67d0cb0f9d494b78b106ca1845f96c10b91c4ac", size = 19055, upload-time = "2020-04-17T15:50:34.664Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/c3/6eeb6034408dac0fa653d126c9204ade96b819c936e136c5e8a6897eee9c/socksio-1.0.0-py3-none-any.whl", hash = "sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3", size = 12763, upload-time = "2020-04-17T15:50:31.878Z" },
 ]
 
 [[package]]
