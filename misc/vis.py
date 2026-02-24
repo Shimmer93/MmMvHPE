@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import torch
 from matplotlib.collections import PolyCollection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -400,16 +401,22 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     """
     # Lazy load SMPL model if needed
     smpl_model = None
-    print("[DEBUG]: The smpl_model_path of visualize_multimodal_sample is:", smpl_model_path)
     # needs_smpl = ('pred_smpl' in pred_dict or 
     #               ('gt_smpl' in batch and 'gt_vertices' not in batch))
     needs_smpl = ('pred_smpl_params' in pred_dict) or ('gt_smpl_params' in batch)
     
     if needs_smpl:
-        from models.smpl import SMPL
-        smpl_model = SMPL(model_path=smpl_model_path)
-        smpl_model = smpl_model.to(device)
-        smpl_model.eval()
+        if smpl_model_path is None:
+            smpl_model_path = 'weights/smpl/SMPL_NEUTRAL.pkl'
+        if os.path.exists(smpl_model_path):
+            from models.smpl import SMPL
+            smpl_model = SMPL(model_path=smpl_model_path)
+            smpl_model = smpl_model.to(device)
+            smpl_model.eval()
+        else:
+            print(
+                f"[WARN] Skipping SMPL mesh visualization because SMPL model was not found at: {smpl_model_path}"
+            )
     
     # Plot the following subplots:
     # Row 1: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
