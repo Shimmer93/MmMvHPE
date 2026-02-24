@@ -485,6 +485,160 @@ class PCCenterWithKeypoints():
                     )
 
         return results
+
+
+class PCPCAAlign():
+    """Align point clouds to principal axes and track the rotation in affine."""
+
+    def __init__(
+        self,
+        keys: List[str] = ['input_lidar'],
+        rotate_centered_keypoints: bool = True,
+        centered_keypoints_prefix: str = 'gt_keypoints_pc_centered_',
+        min_points: int = 32,
+    ):
+        self.keys = keys
+        self.rotate_centered_keypoints = bool(rotate_centered_keypoints)
+        self.centered_keypoints_prefix = centered_keypoints_prefix
+        self.min_points = int(min_points)
+
+    @staticmethod
+    def _flatten_pc_sequence(pc_seq, key_name: str):
+        if not isinstance(pc_seq, (list, tuple)):
+            raise ValueError(f"`{key_name}` must be list/tuple before ToTensor, got {type(pc_seq).__name__}.")
+        if len(pc_seq) == 0:
+            return []
+
+        flat = []
+        is_multi_view = isinstance(pc_seq[0], (list, tuple))
+        if is_multi_view:
+            for view_idx, view_seq in enumerate(pc_seq):
+                if not isinstance(view_seq, (list, tuple)):
+                    raise ValueError(f"`{key_name}` view {view_idx} must be list/tuple.")
+                for frame_idx, pc in enumerate(view_seq):
+                    if not isinstance(pc, np.ndarray):
+                        raise ValueError(
+                            f"`{key_name}` view {view_idx} frame {frame_idx} must be np.ndarray, "
+                            f"got {type(pc).__name__}."
+                        )
+                    if pc.ndim != 2 or pc.shape[1] < 3:
+                        raise ValueError(
+                            f"`{key_name}` view {view_idx} frame {frame_idx} must be (N, C>=3), got {pc.shape}."
+                        )
+                    if pc.shape[0] > 0:
+                        flat.append(pc[:, :3])
+        else:
+            for frame_idx, pc in enumerate(pc_seq):
+                if not isinstance(pc, np.ndarray):
+                    raise ValueError(f"`{key_name}` frame {frame_idx} must be np.ndarray, got {type(pc).__name__}.")
+                if pc.ndim != 2 or pc.shape[1] < 3:
+                    raise ValueError(f"`{key_name}` frame {frame_idx} must be (N, C>=3), got {pc.shape}.")
+                if pc.shape[0] > 0:
+                    flat.append(pc[:, :3])
+        return flat
+
+    @staticmethod
+    def _rotate_pc_sequence(pc_seq, rotation):
+        is_multi_view = (
+            isinstance(pc_seq, (list, tuple))
+            and len(pc_seq) > 0
+            and isinstance(pc_seq[0], (list, tuple))
+        )
+        if is_multi_view:
+            rotated = []
+            for view_seq in pc_seq:
+                out_view = []
+                for pc in view_seq:
+                    pc_out = pc.copy()
+                    pc_out[:, :3] = pc_out[:, :3].dot(rotation.T)
+                    out_view.append(pc_out)
+                rotated.append(out_view)
+            return rotated
+
+        rotated = []
+        for pc in pc_seq:
+            pc_out = pc.copy()
+            pc_out[:, :3] = pc_out[:, :3].dot(rotation.T)
+            rotated.append(pc_out)
+        return rotated
+
+    @staticmethod
+    def _resolve_rotation(points_xyz):
+        if points_xyz.shape[0] < 3:
+            return None
+        centered = points_xyz - points_xyz.mean(axis=0, keepdims=True)
+        cov = centered.T @ centered
+        if not np.all(np.isfinite(cov)):
+            return None
+
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        order = np.argsort(eigvals)[::-1]
+        eigvecs = eigvecs[:, order]
+
+        for i in range(3):
+            axis = eigvecs[:, i]
+            dominant = int(np.argmax(np.abs(axis)))
+            if axis[dominant] < 0:
+                eigvecs[:, i] = -axis
+
+        if np.linalg.det(eigvecs) < 0:
+            eigvecs[:, 2] *= -1.0
+
+        rotation = eigvecs.T.astype(np.float32)
+        if not np.all(np.isfinite(rotation)):
+            return None
+        return rotation
+
+    @staticmethod
+    def _rotate_keypoints_data(keypoints, rotation, key_name):
+        if isinstance(keypoints, np.ndarray):
+            if keypoints.shape[-1] != 3:
+                raise ValueError(f"`{key_name}` must end with xyz=3, got {keypoints.shape}.")
+            out = keypoints.copy()
+            xyz = out[..., :3].reshape(-1, 3)
+            out[..., :3] = xyz.dot(rotation.T).reshape(out[..., :3].shape)
+            return out
+
+        if isinstance(keypoints, torch.Tensor):
+            if keypoints.shape[-1] != 3:
+                raise ValueError(f"`{key_name}` must end with xyz=3, got {tuple(keypoints.shape)}.")
+            out = keypoints.clone()
+            rot = torch.as_tensor(rotation, dtype=out.dtype, device=out.device)
+            xyz = out[..., :3].reshape(-1, 3)
+            out[..., :3] = (xyz @ rot.t()).reshape(out[..., :3].shape)
+            return out
+
+        raise ValueError(f"`{key_name}` must be np.ndarray or torch.Tensor, got {type(keypoints).__name__}.")
+
+    def __call__(self, results):
+        for key in self.keys:
+            if key not in results:
+                continue
+
+            pc_seq = results[key]
+            flat_xyz = self._flatten_pc_sequence(pc_seq, key)
+            if not flat_xyz:
+                continue
+            points_xyz = np.concatenate(flat_xyz, axis=0).astype(np.float32)
+            if points_xyz.shape[0] < self.min_points:
+                continue
+
+            rotation = self._resolve_rotation(points_xyz)
+            if rotation is None:
+                continue
+
+            results[key] = self._rotate_pc_sequence(pc_seq, rotation)
+            affine_key = f'{key}_affine'
+            if affine_key not in results:
+                results[affine_key] = initialize_affine_matrix()
+            results[affine_key][:3, :3] = rotation.dot(results[affine_key][:3, :3])
+
+            if self.rotate_centered_keypoints:
+                kp_key = f'{self.centered_keypoints_prefix}{key}'
+                if kp_key in results and results[kp_key] is not None:
+                    results[kp_key] = self._rotate_keypoints_data(results[kp_key], rotation, kp_key)
+
+        return results
     
 class PCRemoveOutliers():
     def __init__(self, 

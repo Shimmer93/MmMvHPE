@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from .base_head import BaseHead
 from misc.pose_enc import pose_encoding_to_extri_intri
+from misc.camera_batch import get_gt_camera_encoding
 
 
 class KeypointCameraHeadV5(BaseHead):
@@ -74,15 +75,15 @@ class KeypointCameraHeadV5(BaseHead):
 
         losses = {}
         for m_idx, modality in enumerate(modalities):
-            gt_key = f"gt_camera_{modality.lower()}"
-            gt_camera = data_batch.get(gt_key)
+            gt_camera = self._get_gt_camera_encoding(
+                data_batch,
+                modality.lower(),
+                pred_encodings.device,
+                pred_encodings.dtype,
+                pred_encodings.shape[0],
+            )
             if gt_camera is None:
                 continue
-            gt_camera = self._to_tensor(gt_camera).to(pred_encodings.device)
-            if gt_camera.dim() == 3:
-                gt_camera = gt_camera[:, -1]
-            if gt_camera.dim() == 2:
-                gt_camera = gt_camera.unsqueeze(0) if gt_camera.shape[0] != pred_encodings.shape[0] else gt_camera
 
             pred = pred_encodings[:, m_idx]
             valid = torch.isfinite(pred).all(dim=-1)
@@ -321,7 +322,13 @@ class KeypointCameraHeadV5(BaseHead):
             modality = modality.lower()
             if modality in {"rgb", "depth"} and self.proj_loss_weight_rgb > 0:
                 image_size = self._get_image_size(data_batch, modality)
-                gt_camera = self._get_gt_camera_encoding(data_batch, modality, device)
+                gt_camera = self._get_gt_camera_encoding(
+                    data_batch,
+                    modality,
+                    device,
+                    pred_camera_enc.dtype,
+                    pred_camera_enc.shape[0],
+                )
                 if gt_camera is None:
                     continue
                 pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc, None)
@@ -338,7 +345,13 @@ class KeypointCameraHeadV5(BaseHead):
                 losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_rgb)
             elif modality in {"lidar", "mmwave"} and self.proj_loss_weight_lidar > 0:
                 pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc, None)
-                gt_camera = self._get_gt_camera_encoding(data_batch, modality, device)
+                gt_camera = self._get_gt_camera_encoding(
+                    data_batch,
+                    modality,
+                    device,
+                    pred_camera_enc.dtype,
+                    pred_camera_enc.shape[0],
+                )
                 if gt_camera is None:
                     continue
                 gt_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(gt_camera, None)
@@ -359,18 +372,15 @@ class KeypointCameraHeadV5(BaseHead):
         )
         return extrinsics.squeeze(1), None if intrinsics is None else intrinsics.squeeze(1)
 
-    def _get_gt_camera_encoding(self, data_batch, modality, device):
-        gt_camera = data_batch.get(f"gt_camera_{modality}", None)
-        if gt_camera is None:
-            return None
-        if not isinstance(gt_camera, torch.Tensor):
-            gt_camera = torch.as_tensor(gt_camera, dtype=torch.float32)
-        gt_camera = gt_camera.to(device).float()
-        if gt_camera.dim() == 2:
-            gt_camera = gt_camera.unsqueeze(0)
-        if gt_camera.dim() == 3:
-            gt_camera = gt_camera[:, -1]
-        return gt_camera
+    def _get_gt_camera_encoding(self, data_batch, modality, device, dtype, batch_size):
+        return get_gt_camera_encoding(
+            data_batch=data_batch,
+            modality=modality,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+            pose_encoding_dim=self.pose_encoding_dim,
+        )
 
 
     def _get_image_size(self, data_batch, modality):

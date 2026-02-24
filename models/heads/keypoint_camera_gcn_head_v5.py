@@ -42,6 +42,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
         gcn_kernel_size: int = 5,
         gcn_dilations: tuple = (1, 2),
         gcn_depth: int = 2,
+        gcn_norm_type: str = "ln",
+        gcn_num_groups: int = 32,
         input_2d_skeleton_format: str = "coco",
         input_3d_skeleton_format: str = "smpl",
         train_branch: str = "both",
@@ -62,6 +64,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
         self.detach_inputs = detach_inputs
         self.num_iterations = int(max(1, num_iterations))
         self.gcn_depth = int(max(1, gcn_depth))
+        self.gcn_norm_type = str(gcn_norm_type).lower()
+        self.gcn_num_groups = int(max(1, gcn_num_groups))
         self.input_2d_skeleton_format = str(input_2d_skeleton_format).lower()
         self.input_3d_skeleton_format = str(input_3d_skeleton_format).lower()
         self.train_branch = str(train_branch).lower()
@@ -89,6 +93,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             gcn_depth=self.gcn_depth,
             gcn_kernel_size=gcn_kernel_size,
             gcn_dilations=gcn_dilations,
+            norm_type=self.gcn_norm_type,
+            num_groups=self.gcn_num_groups,
         )
         self.gcn_3d = self._build_gcn_stack(
             in_channels=self.gcn_in_channels,
@@ -97,6 +103,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             gcn_depth=self.gcn_depth,
             gcn_kernel_size=gcn_kernel_size,
             gcn_dilations=gcn_dilations,
+            norm_type=self.gcn_norm_type,
+            num_groups=self.gcn_num_groups,
         )
 
         if use_modality_embedding:
@@ -125,11 +133,16 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return {}
 
         modalities = self._get_modalities(data_batch)
-        if not modalities:
+        stream_modalities, stream_sensor_indices = self._build_stream_specs(
+            modalities=modalities,
+            data_batch=data_batch,
+            target_streams=pred_encodings.shape[1],
+        )
+        if not stream_modalities:
             return {}
 
         losses = {}
-        for m_idx, modality in enumerate(modalities):
+        for m_idx, (modality, sensor_idx) in enumerate(zip(stream_modalities, stream_sensor_indices)):
             if not self._is_branch_enabled(modality):
                 continue
             gt_camera = self._get_gt_camera_encoding(
@@ -138,6 +151,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 pred_encodings.device,
                 pred_encodings.dtype,
                 pred_encodings.shape[0],
+                sensor_idx=sensor_idx,
             )
             if gt_camera is None:
                 continue
@@ -153,11 +167,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 loss_output = loss_fn(pred, gt)
                 if isinstance(loss_output, dict):
                     for k, v in loss_output.items():
-                        losses[f"{loss_name}_{modality}_{k}"] = (v, loss_weight)
+                        losses[f"{loss_name}_{modality}_s{sensor_idx}_{k}"] = (v, loss_weight)
                 else:
-                    losses[f"{loss_name}_{modality}"] = (loss_output, loss_weight)
+                    losses[f"{loss_name}_{modality}_s{sensor_idx}"] = (loss_output, loss_weight)
         per_modality_preds = [pred_encodings[:, i, ...] for i in range(pred_encodings.shape[1])]
-        proj_losses = self._projection_losses(per_modality_preds, modalities, data_batch)
+        stream_specs = list(zip(stream_modalities, stream_sensor_indices))
+        proj_losses = self._projection_losses(per_modality_preds, stream_specs, data_batch)
         losses.update(proj_losses)
         return losses
 
@@ -190,10 +205,17 @@ class KeypointCameraGCNHeadV5(BaseHead):
             raise ValueError(
                 f"global_kps must have last dimension 3 (x, y, z), got shape={tuple(global_kps.shape)}"
             )
-        num_modalities = len(modalities)
+        num_streams_from_x = self._infer_stream_count_from_x(x)
+        stream_modalities, stream_sensor_indices = self._build_stream_specs(
+            modalities=modalities,
+            data_batch=data_batch,
+            target_streams=num_streams_from_x,
+        )
+        if not stream_modalities:
+            return None
 
         pred_encodings = torch.full(
-            (batch_size, num_modalities, self.pose_encoding_dim),
+            (batch_size, len(stream_modalities), self.pose_encoding_dim),
             float("nan"),
             device=device,
             dtype=dtype,
@@ -203,16 +225,21 @@ class KeypointCameraGCNHeadV5(BaseHead):
             num_iterations = self.num_iterations
         num_iterations = int(max(1, num_iterations))
 
-        for m_idx, modality in enumerate(modalities):
+        for m_idx, (modality, sensor_idx) in enumerate(zip(stream_modalities, stream_sensor_indices)):
             modality_l = modality.lower()
             if modality_l in {"rgb", "depth"}:
-                kps = self._get_keypoints_2d(data_batch, pred_dict, modality_l, device, dtype)
+                kps = self._get_keypoints_2d(
+                    data_batch, pred_dict, modality_l, device, dtype, sensor_idx=sensor_idx
+                )
             else:
-                kps = self._get_keypoints_3d(data_batch, pred_dict, modality_l, device, dtype)
+                kps = self._get_keypoints_3d(
+                    data_batch, pred_dict, modality_l, device, dtype, sensor_idx=sensor_idx
+                )
             if kps is None:
                 continue
 
             kps = self._maybe_detach(kps)
+            kps = self._select_sensor_view(kps, sensor_idx=sensor_idx, batch_size=batch_size)
             kps = self._ensure_bstjc(kps, batch_size)
             if kps is None:
                 continue
@@ -256,7 +283,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 mlp = self.mlp_3d
                 pooled = self.post_gcn_norm_3d(gcn_out.mean(dim=-1).mean(dim=-1))
             if self.use_modality_embedding and self.modality_embed is not None:
-                mod_id = torch.full((batch_size,), m_idx, device=device, dtype=torch.long)
+                mod_id = torch.full(
+                    (batch_size,),
+                    self._modality_to_id(modality_l),
+                    device=device,
+                    dtype=torch.long,
+                )
                 pooled = torch.cat([pooled, self.modality_embed(mod_id)], dim=-1)
 
             pred = None
@@ -288,7 +320,17 @@ class KeypointCameraGCNHeadV5(BaseHead):
             in_dim = out_dim
         return nn.Sequential(*layers)
 
-    def _build_gcn_stack(self, in_channels, out_channels, A, gcn_depth, gcn_kernel_size, gcn_dilations):
+    def _build_gcn_stack(
+        self,
+        in_channels,
+        out_channels,
+        A,
+        gcn_depth,
+        gcn_kernel_size,
+        gcn_dilations,
+        norm_type="gn",
+        num_groups=32,
+    ):
         layers = []
         for idx in range(gcn_depth):
             layers.append(
@@ -299,6 +341,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
                     residual=idx != 0,
                     kernel_size=gcn_kernel_size,
                     dilations=list(gcn_dilations),
+                    norm_type=norm_type,
+                    num_groups=num_groups,
                 )
             )
         return nn.Sequential(*layers)
@@ -309,6 +353,144 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if modalities and isinstance(modalities[0], (list, tuple)):
             modalities = modalities[0]
         return modalities
+
+    @staticmethod
+    def _normalize_modalities(modalities):
+        if modalities is None:
+            return []
+        if isinstance(modalities, (list, tuple)) and len(modalities) > 0 and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        if not isinstance(modalities, (list, tuple)):
+            return []
+        return [str(m).lower() for m in modalities]
+
+    @staticmethod
+    def _modality_to_id(modality: str) -> int:
+        modality = str(modality).lower()
+        if modality == "rgb":
+            return 0
+        if modality == "depth":
+            return 1
+        if modality == "lidar":
+            return 2
+        if modality == "mmwave":
+            return 3
+        return 0
+
+    def _infer_stream_count_from_x(self, x):
+        if isinstance(x, list):
+            if len(x) == 0:
+                return 0
+            x = x[-1]
+        if isinstance(x, torch.Tensor):
+            if x.dim() >= 5:
+                return int(x.shape[2])
+            if x.dim() == 4:
+                return int(x.shape[1])
+        return 0
+
+    def _build_stream_specs(self, modalities, data_batch, target_streams=None):
+        modalities = self._normalize_modalities(modalities)
+        specs = []
+        for modality in modalities:
+            n_sensors = self._infer_sensor_count(data_batch, modality)
+            for sensor_idx in range(max(1, int(n_sensors))):
+                specs.append((modality, sensor_idx))
+
+        if target_streams is not None:
+            target_streams = int(max(0, target_streams))
+            if len(specs) > target_streams:
+                specs = specs[:target_streams]
+            elif len(specs) < target_streams:
+                base_modalities = modalities if modalities else ["rgb"]
+                counts = {}
+                for m, s in specs:
+                    counts[m] = max(counts.get(m, 0), s + 1)
+                cursor = 0
+                while len(specs) < target_streams:
+                    m = base_modalities[cursor % len(base_modalities)]
+                    s = counts.get(m, 0)
+                    specs.append((m, s))
+                    counts[m] = s + 1
+                    cursor += 1
+
+        return [m for m, _ in specs], [s for _, s in specs]
+
+    def _infer_sensor_count(self, data_batch, modality):
+        if not isinstance(data_batch, dict):
+            return 1
+
+        selected = data_batch.get("selected_cameras", None)
+        if isinstance(selected, (list, tuple)) and len(selected) > 0:
+            selected = selected[0]
+        if isinstance(selected, dict):
+            cams = selected.get(modality, None)
+            if isinstance(cams, (list, tuple)) and len(cams) > 0:
+                return len(cams)
+
+        gt_camera = data_batch.get(f"gt_camera_{modality}", None)
+        if isinstance(gt_camera, torch.Tensor):
+            batch_size = self._infer_batch_size(data_batch)
+            if gt_camera.dim() >= 4:
+                return int(gt_camera.shape[1])
+            if gt_camera.dim() == 3 and (batch_size is None or gt_camera.shape[0] != batch_size):
+                return int(gt_camera.shape[0])
+            if gt_camera.dim() == 2 and gt_camera.shape[1] == self.pose_encoding_dim and (
+                batch_size is None or gt_camera.shape[0] != batch_size
+            ):
+                return int(gt_camera.shape[0])
+
+        inp = data_batch.get(f"input_{modality}", None)
+        if isinstance(inp, torch.Tensor):
+            if modality in {"rgb", "depth"} and inp.dim() >= 6:
+                return int(inp.shape[1])
+            if modality in {"lidar", "mmwave"} and inp.dim() >= 5:
+                return int(inp.shape[1])
+        return 1
+
+    @staticmethod
+    def _infer_batch_size(data_batch):
+        if not isinstance(data_batch, dict):
+            return None
+        gt_global = data_batch.get("gt_keypoints", None)
+        if isinstance(gt_global, torch.Tensor):
+            if gt_global.dim() >= 3:
+                return int(gt_global.shape[0])
+            return 1
+        sample_ids = data_batch.get("sample_id", None)
+        if isinstance(sample_ids, (list, tuple)):
+            return len(sample_ids)
+        return None
+
+    @staticmethod
+    def _select_sensor_view(tensor, sensor_idx, batch_size):
+        if not isinstance(tensor, torch.Tensor):
+            return tensor
+        if tensor.dim() == 5:
+            if tensor.shape[0] == batch_size:
+                view_idx = min(sensor_idx, tensor.shape[1] - 1)
+                return tensor[:, view_idx]
+            if batch_size == 1:
+                view_idx = min(sensor_idx, tensor.shape[0] - 1)
+                return tensor[view_idx].unsqueeze(0)
+            return None
+        if tensor.dim() == 4:
+            if tensor.shape[0] == batch_size:
+                return tensor
+            if batch_size == 1:
+                view_idx = min(sensor_idx, tensor.shape[0] - 1)
+                return tensor[view_idx : view_idx + 1]
+            return None
+        if tensor.dim() == 3:
+            if tensor.shape[0] == batch_size:
+                return tensor
+            if batch_size == 1:
+                view_idx = min(sensor_idx, tensor.shape[0] - 1)
+                return tensor[view_idx : view_idx + 1]
+            return None
+        if tensor.dim() == 2:
+            return tensor.unsqueeze(0)
+        return tensor
 
     def _get_global_keypoints(self, data_batch, pred_dict):
         pred = None
@@ -321,10 +503,12 @@ class KeypointCameraGCNHeadV5(BaseHead):
         keypoints = self._to_tensor(keypoints)
         return keypoints
 
-    def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype):
+    def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype, sensor_idx=0):
         pred = None
         if pred_dict is not None:
-            pred = pred_dict.get(f"pred_keypoints_2d_{modality}")
+            pred = pred_dict.get(f"pred_keypoints_2d_{modality}_s{sensor_idx}")
+            if pred is None:
+                pred = pred_dict.get(f"pred_keypoints_2d_{modality}")
         gt = data_batch.get(f"gt_keypoints_2d_{modality}")
         if modality == "rgb":
             # Prefer dataset-provided RGB 2D skeletons (e.g., JSON-loaded),
@@ -337,11 +521,15 @@ class KeypointCameraGCNHeadV5(BaseHead):
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
         return keypoints
 
-    def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype):
+    def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype, sensor_idx=0):
         pred = None
         if pred_dict is not None:
             if modality == "lidar":
-                pred = pred_dict.get("pred_keypoints_pc_centered_input_lidar")
+                pred = pred_dict.get(f"pred_keypoints_pc_centered_input_lidar_s{sensor_idx}")
+                if pred is None:
+                    pred = pred_dict.get("pred_keypoints_pc_centered_input_lidar")
+            if pred is None:
+                pred = pred_dict.get(f"pred_keypoints_3d_{modality}_s{sensor_idx}")
             if pred is None:
                 pred = pred_dict.get(f"pred_keypoints_3d_{modality}")
         gt = data_batch.get(f"gt_keypoints_{modality}")
@@ -355,8 +543,47 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
     @staticmethod
     def _to_tensor(x):
+        if x is None:
+            return None
         if isinstance(x, torch.Tensor):
             return x
+        if isinstance(x, np.ndarray):
+            return torch.from_numpy(x).float()
+        if isinstance(x, (list, tuple)):
+            if len(x) == 0:
+                return None
+
+            items = []
+            ref = None
+            for item in x:
+                t = KeypointCameraGCNHeadV5._to_tensor(item)
+                if t is None:
+                    items.append(None)
+                    continue
+                t = t.float()
+                if ref is None:
+                    ref = t
+                items.append(t)
+
+            if ref is None:
+                return None
+
+            ref_shape = ref.shape
+            ref_device = ref.device
+            ref_dtype = ref.dtype
+            stacked = []
+            for t in items:
+                if t is None:
+                    stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                    continue
+                if t.shape != ref_shape:
+                    if t.numel() == ref.numel():
+                        t = t.reshape(ref_shape)
+                    else:
+                        stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                        continue
+                stacked.append(t.to(device=ref_device, dtype=ref_dtype))
+            return torch.stack(stacked, dim=0)
         return torch.as_tensor(x, dtype=torch.float32)
 
     def _maybe_detach(self, tensor):
@@ -501,23 +728,23 @@ class KeypointCameraGCNHeadV5(BaseHead):
             converted = torch.cat([converted, pad], dim=-2)
         return converted
 
-    def _projection_losses(self, pred_camera_enc_list, modalities, data_batch):
+    def _projection_losses(self, pred_camera_enc_list, stream_specs, data_batch):
         losses = {}
+        if len(pred_camera_enc_list) == 0:
+            return losses
         gt_keypoints = data_batch.get("gt_keypoints", None)
         if gt_keypoints is None:
             return losses
-
-        if isinstance(gt_keypoints, np.ndarray):
-            gt_keypoints = torch.from_numpy(gt_keypoints)
-        if not isinstance(gt_keypoints, torch.Tensor):
-            gt_keypoints = torch.as_tensor(gt_keypoints, dtype=torch.float32)
+        gt_keypoints = self._to_tensor(gt_keypoints)
+        if gt_keypoints is None or not isinstance(gt_keypoints, torch.Tensor):
+            return losses
 
         device = pred_camera_enc_list[0].device
         gt_keypoints = gt_keypoints.to(device).float()
         if gt_keypoints.dim() == 2:
             gt_keypoints = gt_keypoints.unsqueeze(0)
 
-        for pred_camera_enc, modality in zip(pred_camera_enc_list, modalities):
+        for pred_camera_enc, (modality, sensor_idx) in zip(pred_camera_enc_list, stream_specs):
             if not self._is_branch_enabled(modality):
                 continue
             modality = modality.lower()
@@ -528,6 +755,7 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 device,
                 pred_camera_enc.dtype,
                 batch_size,
+                sensor_idx=sensor_idx,
             )
             if gt_camera is None:
                 continue
@@ -571,14 +799,14 @@ class KeypointCameraGCNHeadV5(BaseHead):
                 pred_proj = torch.clamp(pred_proj, -1.0, 1.0)
                 gt_proj = torch.clamp(gt_proj, -1.0, 1.0)
                 loss_val = self._projection_loss(pred_proj, gt_proj, self.proj_loss_type)
-                losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_rgb)
+                losses[f"proj_{modality}_s{sensor_idx}"] = (loss_val, self.proj_loss_weight_rgb)
             elif modality in {"lidar", "mmwave"} and self.proj_loss_weight_lidar > 0:
                 pred_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(pred_camera_enc_v, None)
                 gt_extrinsics, _ = self._pose_enc_to_extrinsics_intrinsics(gt_camera_v, None)
                 pred_points = self._transform_to_camera(gt_keypoints_v, pred_extrinsics)
                 gt_points = self._transform_to_camera(gt_keypoints_v, gt_extrinsics)
                 loss_val = self._projection_loss(pred_points, gt_points, self.proj_loss_type)
-                losses[f"proj_{modality}"] = (loss_val, self.proj_loss_weight_lidar)
+                losses[f"proj_{modality}_s{sensor_idx}"] = (loss_val, self.proj_loss_weight_lidar)
 
         return losses
 
@@ -601,85 +829,37 @@ class KeypointCameraGCNHeadV5(BaseHead):
         )
         return extrinsics.squeeze(1), None if intrinsics is None else intrinsics.squeeze(1)
 
-    def _get_gt_camera_encoding(self, data_batch, modality, device, dtype, batch_size):
+    def _get_gt_camera_encoding(self, data_batch, modality, device, dtype, batch_size, sensor_idx=0):
         gt_camera = data_batch.get(f"gt_camera_{modality}", None)
         if gt_camera is None:
             return None
-        return self._prepare_gt_camera_batch(gt_camera, batch_size, device, dtype)
-
-    def _prepare_gt_camera_batch(self, gt_camera, batch_size, device, dtype):
-        if isinstance(gt_camera, (list, tuple)):
-            out = torch.full(
-                (batch_size, self.pose_encoding_dim),
-                float("nan"),
-                device=device,
-                dtype=dtype,
-            )
-            for i, value in enumerate(gt_camera[:batch_size]):
-                parsed = self._parse_single_gt_camera(value, device=device, dtype=dtype)
-                if parsed is not None:
-                    out[i] = parsed
-            return out
-
         if not isinstance(gt_camera, torch.Tensor):
             gt_camera = torch.as_tensor(gt_camera, dtype=dtype)
         gt_camera = gt_camera.to(device=device, dtype=dtype)
-        return self._normalize_gt_camera_shape(gt_camera, batch_size)
 
-    def _parse_single_gt_camera(self, value, device, dtype):
-        if value is None:
-            return None
-        if not isinstance(value, torch.Tensor):
-            value = torch.as_tensor(value, dtype=dtype)
-        value = value.to(device=device, dtype=dtype)
-        value = self._normalize_gt_camera_shape(value, batch_size=1)
-        if value is None:
-            return None
-        return value[0]
-
-    def _normalize_gt_camera_shape(self, gt_camera, batch_size):
-        if not isinstance(gt_camera, torch.Tensor):
-            return None
-
-        if gt_camera.dim() == 4:
+        if gt_camera.dim() == 4:  # B V S C
             if gt_camera.shape[-1] != self.pose_encoding_dim:
                 return None
-            # [B, V, S, 9] -> use last time step, then average over views.
-            if gt_camera.shape[0] == batch_size:
-                return gt_camera[:, :, -1, :].mean(dim=1)
-            if gt_camera.shape[0] == 1 and batch_size > 1:
-                gt_camera = gt_camera.expand(batch_size, -1, -1, -1)
-                return gt_camera[:, :, -1, :].mean(dim=1)
-            if batch_size == 1:
-                flat = gt_camera.reshape(-1, gt_camera.shape[-2], gt_camera.shape[-1])
-                return flat[:, -1, :].mean(dim=0, keepdim=True)
-            return None
-
+            view_idx = min(sensor_idx, gt_camera.shape[1] - 1)
+            return gt_camera[:, view_idx, -1, :]
         if gt_camera.dim() == 3:
             if gt_camera.shape[-1] != self.pose_encoding_dim:
                 return None
             if gt_camera.shape[0] == batch_size:
-                gt_camera = gt_camera[:, -1]
-            elif gt_camera.shape[0] == 1:
-                gt_camera = gt_camera[:, -1]
-                if batch_size > 1:
-                    gt_camera = gt_camera.expand(batch_size, -1)
-            elif batch_size == 1:
-                gt_camera = gt_camera[:, -1, :].mean(dim=0, keepdim=True)
-            else:
-                return None
-
+                return gt_camera[:, -1, :]
+            if batch_size == 1:
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                return gt_camera[view_idx : view_idx + 1, -1, :]
+            return None
         if gt_camera.dim() == 2:
             if gt_camera.shape[-1] != self.pose_encoding_dim:
                 return None
             if gt_camera.shape[0] == batch_size:
                 return gt_camera
-            if gt_camera.shape[0] == 1 and batch_size > 1:
-                return gt_camera.expand(batch_size, -1)
             if batch_size == 1:
-                return gt_camera[-1:].contiguous()
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                return gt_camera[view_idx : view_idx + 1, :]
             return None
-
         if gt_camera.dim() == 1:
             if gt_camera.shape[0] != self.pose_encoding_dim:
                 return None
@@ -687,7 +867,6 @@ class KeypointCameraGCNHeadV5(BaseHead):
             if batch_size > 1:
                 gt_camera = gt_camera.expand(batch_size, -1)
             return gt_camera
-
         return None
 
     def _get_image_size(self, data_batch, modality):

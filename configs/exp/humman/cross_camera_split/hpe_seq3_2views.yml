@@ -77,7 +77,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0003
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -86,24 +86,18 @@ sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
   warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00001
-  eta_min: 0.00001
+  warmup_start_lr: 0.00003
+  eta_min: 0.00003
 # --------------------------------------
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
 backbone_rgb:
-  name: 'TemporalTimmWrapper'
+  name: 'TimmWrapper'
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
-    gru_hidden_dim: 384
-    gru_num_layers: 1
-    gru_dropout: 0.0
-    causal: true
-    fusion: 'residual_add'
-    token_pool: 'none'
-  has_temporal: true
+  has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
   params:
@@ -131,9 +125,9 @@ aggregator:
     embed_dim: 512
     num_register_tokens: 4
     num_smpl_tokens: 1
-    aa_order: ['single', 'cross_joint', 'gcn', 'cross_modality']
+    aa_order: ['single', 'cross_joint', 'gcn']
     aa_block_size: 1
-    depth: 6
+    depth: 12
     block_type: 'Block'
     skeleton_type: 'smpl'
     num_heads: 8

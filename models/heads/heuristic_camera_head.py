@@ -1,9 +1,11 @@
 import math
 import torch
+import numpy as np
 from typing import Iterable, Optional, Tuple
 
 from .base_head import BaseHead
 from misc.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
+from misc.camera_batch import get_gt_camera_encoding
 
 
 class HeuristicCameraHead(BaseHead):
@@ -112,9 +114,9 @@ class HeuristicCameraHead(BaseHead):
             modality = modality.lower()
             if modality in {"rgb", "depth"}:
                 keypoints_2d = self._get_keypoints_2d(
-                    data_batch, pred_dict, modality, device, dtype
+                    data_batch, pred_dict, modality, device, dtype, batch_size
                 )
-                intrinsics = self._get_intrinsics(data_batch, modality, device, dtype)
+                intrinsics = self._get_intrinsics(data_batch, modality, device, dtype, batch_size)
                 if keypoints_2d is None or intrinsics is None:
                     continue
                 intrinsics = self._expand_intrinsics(intrinsics, batch_size)
@@ -130,7 +132,7 @@ class HeuristicCameraHead(BaseHead):
                 )
             elif modality == "lidar":
                 keypoints_3d = self._get_keypoints_3d(
-                    data_batch, pred_dict, modality, device, dtype
+                    data_batch, pred_dict, modality, device, dtype, batch_size
                 )
                 if keypoints_3d is None:
                     continue
@@ -140,7 +142,7 @@ class HeuristicCameraHead(BaseHead):
                 pred_extrinsics[:, m_idx] = self._restore_lidar_translation(
                     pred_extrinsics[:, m_idx], data_batch
                 )
-                intrinsics = self._get_intrinsics(data_batch, modality, device, dtype)
+                intrinsics = self._get_intrinsics(data_batch, modality, device, dtype, batch_size)
                 if intrinsics is None and self.default_fov_deg is not None:
                     intrinsics = self._intrinsics_from_fov(
                         self._get_image_size(data_batch, modality),
@@ -175,40 +177,56 @@ class HeuristicCameraHead(BaseHead):
             return None
 
         keypoints = self._to_tensor(keypoints)
-        keypoints = self._select_frame(keypoints)
+        if keypoints is None:
+            return None
+        batch_size = self._infer_batch_size(data_batch, keypoints)
+        keypoints = self._ensure_bstjc(keypoints, batch_size)
+        if keypoints is None:
+            return None
+        keypoints = keypoints[:, -1]
         return keypoints
 
-    def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype):
+    def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype, batch_size):
         pred = self._get_by_templates(pred_dict, modality, self.pred_keypoints_2d_key_templates)
         if pred is not None:
             pred = self._to_tensor(pred).to(device=device, dtype=dtype)
-            pred = self._select_frame(pred)
-            valid = torch.isfinite(pred).all(dim=-1)
-            if valid.sum().item() >= self.min_points_pnp:
-                return pred
+            pred = self._ensure_bstjc(pred, batch_size)
+            if pred is not None:
+                pred = pred[:, -1]
+                valid = torch.isfinite(pred).all(dim=-1)
+                if valid.sum().item() >= self.min_points_pnp:
+                    return pred
         keypoints = self._get_by_templates(data_batch, modality, self.keypoints_2d_key_templates)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
-        keypoints = self._select_frame(keypoints)
+        keypoints = self._ensure_bstjc(keypoints, batch_size)
+        if keypoints is None:
+            return None
+        keypoints = keypoints[:, -1]
         return keypoints
 
-    def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype):
+    def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype, batch_size):
         pred = self._get_by_templates(pred_dict, modality, self.pred_keypoints_3d_key_templates)
         if pred is not None:
             pred = self._to_tensor(pred).to(device=device, dtype=dtype)
-            pred = self._select_frame(pred)
-            valid = torch.isfinite(pred).all(dim=-1)
-            if valid.sum().item() >= self.min_points_3d:
-                return pred
+            pred = self._ensure_bstjc(pred, batch_size)
+            if pred is not None:
+                pred = pred[:, -1]
+                valid = torch.isfinite(pred).all(dim=-1)
+                if valid.sum().item() >= self.min_points_3d:
+                    return pred
         keypoints = self._get_by_templates(data_batch, modality, self.keypoints_3d_key_templates)
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
-        keypoints = self._select_frame(keypoints)
+        keypoints = self._ensure_bstjc(keypoints, batch_size)
+        if keypoints is None:
+            return None
+        keypoints = keypoints[:, -1]
         return keypoints
 
-    def _get_intrinsics(self, data_batch, modality, device, dtype):
+    def _get_intrinsics(self, data_batch, modality, device, dtype, batch_size):
         if self._fixed_intrinsics is not None:
             intrinsics = self._fixed_intrinsics
         else:
@@ -220,11 +238,7 @@ class HeuristicCameraHead(BaseHead):
         if intrinsics is None:
             return None
         intrinsics = self._to_tensor(intrinsics).to(device=device, dtype=dtype)
-        if intrinsics.dim() == 4:
-            intrinsics = intrinsics[:, -1]
-        if intrinsics.dim() == 2:
-            intrinsics = intrinsics.unsqueeze(0)
-        return intrinsics
+        return self._normalize_intrinsics_shape(intrinsics, batch_size)
 
     def _get_by_templates(self, data_batch, modality, templates):
         for template in templates:
@@ -292,20 +306,18 @@ class HeuristicCameraHead(BaseHead):
         return torch.stack(tensors, dim=0)
 
     def _get_intrinsics_from_pose_encoding(self, data_batch, modality):
-        pose_key = f"gt_camera_{modality}"
-        pose_enc = data_batch.get(pose_key)
+        batch_size = self._infer_batch_size(data_batch, None)
+        pose_enc = get_gt_camera_encoding(
+            data_batch=data_batch,
+            modality=modality,
+            batch_size=batch_size,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            pose_encoding_dim=9,
+        )
         if pose_enc is None:
             return None
-        if isinstance(pose_enc, (list, tuple)):
-            pose_enc = [p for p in pose_enc if p is not None]
-            if not pose_enc:
-                return None
-            pose_enc = pose_enc[0]
-        pose_enc = self._to_tensor(pose_enc)
-        if pose_enc.dim() == 3:
-            pose_enc = pose_enc[:, -1]
-        if pose_enc.dim() == 2:
-            pose_enc = pose_enc.unsqueeze(1)
+        pose_enc = pose_enc.unsqueeze(1)
         _, intrinsics = pose_encoding_to_extri_intri(
             pose_enc,
             image_size_hw=self._get_image_size(data_batch, modality),
@@ -316,18 +328,151 @@ class HeuristicCameraHead(BaseHead):
 
     @staticmethod
     def _to_tensor(x):
+        if x is None:
+            return None
         if isinstance(x, torch.Tensor):
             return x
+        if isinstance(x, np.ndarray):
+            return torch.from_numpy(x).float()
+        if isinstance(x, (list, tuple)):
+            if len(x) == 0:
+                return None
+            items = []
+            ref = None
+            for item in x:
+                t = HeuristicCameraHead._to_tensor(item)
+                if t is None:
+                    items.append(None)
+                    continue
+                t = t.float()
+                if ref is None:
+                    ref = t
+                items.append(t)
+            if ref is None:
+                return None
+            ref_shape = ref.shape
+            ref_device = ref.device
+            ref_dtype = ref.dtype
+            stacked = []
+            for t in items:
+                if t is None:
+                    stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                    continue
+                if t.shape != ref_shape:
+                    if t.numel() == ref.numel():
+                        t = t.reshape(ref_shape)
+                    else:
+                        stacked.append(torch.zeros(ref_shape, dtype=ref_dtype, device=ref_device))
+                        continue
+                stacked.append(t.to(device=ref_device, dtype=ref_dtype))
+            return torch.stack(stacked, dim=0)
         return torch.as_tensor(x, dtype=torch.float32)
 
     @staticmethod
     def _select_frame(x):
         if not isinstance(x, torch.Tensor):
             return x
+        if x.dim() == 5:
+            # [B, V, S, J, C] -> average over views, use last time step.
+            return x.mean(dim=1)[:, -1]
         if x.dim() == 4:
-            # (B, T, J, C)
+            # [B, S, J, C] -> use last time step.
             return x[:, -1]
         return x
+
+    @staticmethod
+    def _ensure_bstjc(tensor, batch_size):
+        if not isinstance(tensor, torch.Tensor):
+            return None
+        if tensor.dim() == 5:
+            if tensor.shape[0] == batch_size:
+                tensor = tensor.mean(dim=1)
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.expand(batch_size, -1, -1, -1, -1).mean(dim=1)
+            elif batch_size == 1:
+                tensor = tensor.mean(dim=0, keepdim=True)
+            else:
+                return None
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0).unsqueeze(0)
+        elif tensor.dim() == 3:
+            if tensor.shape[0] == batch_size:
+                tensor = tensor.unsqueeze(1)
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.unsqueeze(1).expand(batch_size, -1, -1, -1)
+            elif batch_size == 1:
+                tensor = tensor.unsqueeze(0)
+            else:
+                return None
+        elif tensor.dim() == 4:
+            if tensor.shape[0] == batch_size:
+                pass
+            elif tensor.shape[0] == 1 and batch_size > 1:
+                tensor = tensor.expand(batch_size, -1, -1, -1)
+            elif batch_size == 1:
+                tensor = tensor.mean(dim=0, keepdim=True)
+            else:
+                return None
+        else:
+            return None
+        return tensor
+
+    @staticmethod
+    def _normalize_intrinsics_shape(intrinsics, batch_size):
+        if not isinstance(intrinsics, torch.Tensor):
+            return None
+        if intrinsics.dim() == 5:
+            # [B, V, S, 3, 3] -> use last time step, mean over views.
+            if intrinsics.shape[0] == batch_size:
+                return intrinsics[:, :, -1].mean(dim=1)
+            if intrinsics.shape[0] == 1 and batch_size > 1:
+                intrinsics = intrinsics.expand(batch_size, -1, -1, -1, -1)
+                return intrinsics[:, :, -1].mean(dim=1)
+            if batch_size == 1:
+                flat = intrinsics.reshape(-1, intrinsics.shape[-3], intrinsics.shape[-2], intrinsics.shape[-1])
+                return flat[:, -1].mean(dim=0, keepdim=True)
+            return None
+        if intrinsics.dim() == 4:
+            # [B, S, 3, 3] -> use last time step.
+            if intrinsics.shape[0] == batch_size:
+                return intrinsics[:, -1]
+            if intrinsics.shape[0] == 1 and batch_size > 1:
+                intrinsics = intrinsics.expand(batch_size, -1, -1, -1)
+                return intrinsics[:, -1]
+            if batch_size == 1:
+                return intrinsics[:, -1].mean(dim=0, keepdim=True)
+            return None
+        if intrinsics.dim() == 3:
+            if intrinsics.shape[0] == batch_size:
+                return intrinsics
+            if intrinsics.shape[0] == 1 and batch_size > 1:
+                return intrinsics.expand(batch_size, -1, -1)
+            if batch_size == 1:
+                return intrinsics[-1:].contiguous()
+            return None
+        if intrinsics.dim() == 2:
+            intrinsics = intrinsics.unsqueeze(0)
+            if batch_size > 1:
+                intrinsics = intrinsics.expand(batch_size, -1, -1)
+            return intrinsics
+        return None
+
+    def _infer_batch_size(self, data_batch, tensor_fallback=None):
+        sample_ids = data_batch.get("sample_id", None)
+        if isinstance(sample_ids, (list, tuple)):
+            return len(sample_ids)
+        if isinstance(sample_ids, torch.Tensor) and sample_ids.dim() > 0:
+            return int(sample_ids.shape[0])
+        if isinstance(tensor_fallback, torch.Tensor) and tensor_fallback.dim() >= 3:
+            return int(tensor_fallback.shape[0])
+        for key, value in data_batch.items():
+            if isinstance(value, torch.Tensor) and value.dim() >= 1:
+                return int(value.shape[0])
+            if isinstance(value, (list, tuple)) and len(value) > 0 and (
+                key == "sample_id" or str(key).startswith("input_") or str(key).startswith("gt_")
+            ):
+                return len(value)
+        return 1
 
     @staticmethod
     def _denormalize_2d(points_2d, image_size_hw):

@@ -4,6 +4,37 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+
+def _resolve_group_count(num_channels, num_groups):
+    groups = min(max(1, int(num_groups)), int(num_channels))
+    while num_channels % groups != 0 and groups > 1:
+        groups -= 1
+    return groups
+
+
+class ChannelLayerNorm2d(nn.Module):
+    def __init__(self, num_channels, eps=1e-5):
+        super().__init__()
+        self.norm = nn.LayerNorm(num_channels, eps=eps)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1).contiguous()
+        x = self.norm(x)
+        return x.permute(0, 3, 1, 2).contiguous()
+
+
+def build_norm(num_channels, norm_type="bn", num_groups=32):
+    norm_type = str(norm_type).lower()
+    if norm_type == "bn":
+        return nn.BatchNorm2d(num_channels)
+    if norm_type == "gn":
+        groups = _resolve_group_count(num_channels, num_groups)
+        return nn.GroupNorm(groups, num_channels)
+    if norm_type == "ln":
+        return ChannelLayerNorm2d(num_channels)
+    raise ValueError(f"Unsupported norm_type: {norm_type}")
+
+
 def conv_branch_init(conv, branches):
     weight = conv.weight
     n = weight.size(0)
@@ -21,8 +52,10 @@ def conv_init(conv):
 
 
 def bn_init(bn, scale):
-    nn.init.constant_(bn.weight, scale)
-    nn.init.constant_(bn.bias, 0)
+    if hasattr(bn, "weight") and bn.weight is not None:
+        nn.init.constant_(bn.weight, scale)
+    if hasattr(bn, "bias") and bn.bias is not None:
+        nn.init.constant_(bn.bias, 0)
 
 
 def weights_init(m):
@@ -32,7 +65,7 @@ def weights_init(m):
             nn.init.kaiming_normal_(m.weight, mode='fan_out')
         if hasattr(m, 'bias') and m.bias is not None and isinstance(m.bias, torch.Tensor):
             nn.init.constant_(m.bias, 0)
-    elif classname.find('BatchNorm') != -1:
+    elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm)):
         if hasattr(m, 'weight') and m.weight is not None:
             m.weight.data.normal_(1.0, 0.02)
         if hasattr(m, 'bias') and m.bias is not None:
@@ -40,7 +73,16 @@ def weights_init(m):
 
 
 class TemporalConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        dilation=1,
+        norm_type="bn",
+        num_groups=32,
+    ):
         super(TemporalConv, self).__init__()
         pad = (kernel_size + (kernel_size-1) * (dilation-1) - 1) // 2
         self.conv = nn.Conv2d(
@@ -51,7 +93,7 @@ class TemporalConv(nn.Module):
             stride=(stride, 1),
             dilation=(dilation, 1))
 
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.bn = build_norm(out_channels, norm_type=norm_type, num_groups=num_groups)
 
     def forward(self, x):
         x = self.conv(x)
@@ -67,7 +109,9 @@ class MultiScale_TemporalConv(nn.Module):
                  stride=1,
                  dilations=[1,2,3,4],
                  residual=True,
-                 residual_kernel_size=1):
+                 residual_kernel_size=1,
+                 norm_type="bn",
+                 num_groups=32):
 
         super().__init__()
         assert out_channels % (len(dilations) + 2) == 0, '# out channels should be multiples of # branches'
@@ -87,14 +131,17 @@ class MultiScale_TemporalConv(nn.Module):
                     branch_channels,
                     kernel_size=1,
                     padding=0),
-                nn.BatchNorm2d(branch_channels),
+                build_norm(branch_channels, norm_type=norm_type, num_groups=num_groups),
                 nn.ReLU(inplace=True),
                 TemporalConv(
                     branch_channels,
                     branch_channels,
                     kernel_size=ks,
                     stride=stride,
-                    dilation=dilation),
+                    dilation=dilation,
+                    norm_type=norm_type,
+                    num_groups=num_groups,
+                ),
             )
             for ks, dilation in zip(kernel_size, dilations)
         ])
@@ -102,15 +149,15 @@ class MultiScale_TemporalConv(nn.Module):
         # Additional Max & 1x1 branch
         self.branches.append(nn.Sequential(
             nn.Conv2d(in_channels, branch_channels, kernel_size=1, padding=0),
-            nn.BatchNorm2d(branch_channels),
+            build_norm(branch_channels, norm_type=norm_type, num_groups=num_groups),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=(3,1), stride=(stride,1), padding=(1,0)),
-            nn.BatchNorm2d(branch_channels)  # 为什么还要加bn
+            build_norm(branch_channels, norm_type=norm_type, num_groups=num_groups)  # 为什么还要加bn
         ))
 
         self.branches.append(nn.Sequential(
             nn.Conv2d(in_channels, branch_channels, kernel_size=1, padding=0, stride=(stride,1)),
-            nn.BatchNorm2d(branch_channels)
+            build_norm(branch_channels, norm_type=norm_type, num_groups=num_groups)
         ))
 
         # Residual connection
@@ -119,7 +166,14 @@ class MultiScale_TemporalConv(nn.Module):
         elif (in_channels == out_channels) and (stride == 1):
             self.residual = lambda x: x
         else:
-            self.residual = TemporalConv(in_channels, out_channels, kernel_size=residual_kernel_size, stride=stride)
+            self.residual = TemporalConv(
+                in_channels,
+                out_channels,
+                kernel_size=residual_kernel_size,
+                stride=stride,
+                norm_type=norm_type,
+                num_groups=num_groups,
+            )
 
         # initialize
         self.apply(weights_init)
@@ -167,13 +221,13 @@ class CTRGC(nn.Module):
         return x1
 
 class unit_tcn(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=9, stride=1):
+    def __init__(self, in_channels, out_channels, kernel_size=9, stride=1, norm_type="bn", num_groups=32):
         super(unit_tcn, self).__init__()
         pad = int((kernel_size - 1) / 2)
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(kernel_size, 1), padding=(pad, 0),
                               stride=(stride, 1))
 
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.bn = build_norm(out_channels, norm_type=norm_type, num_groups=num_groups)
         self.relu = nn.ReLU(inplace=True)
         conv_init(self.conv)
         bn_init(self.bn, 1)
@@ -184,7 +238,17 @@ class unit_tcn(nn.Module):
 
 
 class unit_gcn(nn.Module):
-    def __init__(self, in_channels, out_channels, A, coff_embedding=4, adaptive=True, residual=True):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        A,
+        coff_embedding=4,
+        adaptive=True,
+        residual=True,
+        norm_type="bn",
+        num_groups=32,
+    ):
         super(unit_gcn, self).__init__()
         inter_channels = out_channels // coff_embedding
         self.inter_c = inter_channels
@@ -200,7 +264,7 @@ class unit_gcn(nn.Module):
             if in_channels != out_channels:
                 self.down = nn.Sequential(
                     nn.Conv2d(in_channels, out_channels, 1),
-                    nn.BatchNorm2d(out_channels)
+                    build_norm(out_channels, norm_type=norm_type, num_groups=num_groups)
                 )
             else:
                 self.down = lambda x: x
@@ -211,14 +275,14 @@ class unit_gcn(nn.Module):
         else:
             self.register_buffer('A', torch.from_numpy(A.astype(np.float32)))
         self.alpha = nn.Parameter(torch.zeros(1))
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.bn = build_norm(out_channels, norm_type=norm_type, num_groups=num_groups)
         self.soft = nn.Softmax(-2)
         self.relu = nn.ReLU(inplace=True)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 conv_init(m)
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm)):
                 bn_init(m, 1)
         bn_init(self.bn, 1e-6)
 
@@ -240,11 +304,38 @@ class unit_gcn(nn.Module):
 
 
 class TCN_GCN_unit(nn.Module):
-    def __init__(self, in_channels, out_channels, A, stride=1, residual=True, adaptive=True, kernel_size=5, dilations=[1,2]):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        A,
+        stride=1,
+        residual=True,
+        adaptive=True,
+        kernel_size=5,
+        dilations=[1,2],
+        norm_type="bn",
+        num_groups=32,
+    ):
         super(TCN_GCN_unit, self).__init__()
-        self.gcn1 = unit_gcn(in_channels, out_channels, A, adaptive=adaptive)
-        self.tcn1 = MultiScale_TemporalConv(out_channels, out_channels, kernel_size=kernel_size, stride=stride, dilations=dilations,
-                                            residual=False)
+        self.gcn1 = unit_gcn(
+            in_channels,
+            out_channels,
+            A,
+            adaptive=adaptive,
+            norm_type=norm_type,
+            num_groups=num_groups,
+        )
+        self.tcn1 = MultiScale_TemporalConv(
+            out_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilations=dilations,
+            residual=False,
+            norm_type=norm_type,
+            num_groups=num_groups,
+        )
         self.relu = nn.ReLU(inplace=True)
         if not residual:
             self.residual = lambda x: 0
@@ -253,7 +344,14 @@ class TCN_GCN_unit(nn.Module):
             self.residual = lambda x: x
 
         else:
-            self.residual = unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
+            self.residual = unit_tcn(
+                in_channels,
+                out_channels,
+                kernel_size=1,
+                stride=stride,
+                norm_type=norm_type,
+                num_groups=num_groups,
+            )
 
     def forward(self, x):
         y = self.relu(self.tcn1(self.gcn1(x)) + self.residual(x))

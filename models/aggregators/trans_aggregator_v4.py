@@ -31,6 +31,8 @@ class TransformerAggregatorV4(nn.Module):
         qk_norm: bool = True,
         init_values: float = 0.01,
         use_grad_ckpt: bool = False,
+        gcn_norm_type: str = "ln",
+        gcn_num_groups: int = 32,
     ):
         super().__init__()
 
@@ -95,7 +97,17 @@ class TransformerAggregatorV4(nn.Module):
         if "gcn" in aa_order:
             A = get_adjacency_matrix(skeleton.bones, skeleton.num_joints)
             self.gcn_blocks = nn.ModuleList(
-                [GCNBlock(embed_dim, embed_dim, A, adaptive=True) for _ in range(depth)]
+                [
+                    GCNBlock(
+                        embed_dim,
+                        embed_dim,
+                        A,
+                        adaptive=True,
+                        norm_type=gcn_norm_type,
+                        num_groups=gcn_num_groups,
+                    )
+                    for _ in range(depth)
+                ]
             )
 
         self.aa_order = aa_order
@@ -155,23 +167,31 @@ class TransformerAggregatorV4(nn.Module):
         if M == 0:
             raise ValueError("At least one modality must be provided.")
 
-        camera_tokens = self.camera_token.expand(B, T, M, -1, -1)
-        register_tokens = self.register_token.expand(B, T, M, -1, -1)
-        smpl_tokens = self.smpl_token.expand(B, T, M, -1, -1)
-        joint_tokens = self.joint_token.expand(B, T, M, -1, -1)
+        total_streams = sum(feat.shape[1] for _, _, feat in active_modalities)
+        camera_tokens = self.camera_token.expand(B, T, total_streams, -1, -1)
+        register_tokens = self.register_token.expand(B, T, total_streams, -1, -1)
+        smpl_tokens = self.smpl_token.expand(B, T, total_streams, -1, -1)
+        joint_tokens = self.joint_token.expand(B, T, total_streams, -1, -1)
 
         # Concatenate special tokens with patch tokens
-        special_tokens = torch.cat([camera_tokens, register_tokens, smpl_tokens, joint_tokens], dim=3) # B T M S D
+        special_tokens = torch.cat([camera_tokens, register_tokens, smpl_tokens, joint_tokens], dim=3) # B T S S D
         modality_tokens = []
         Ns = []
-        for j, (_, embed_idx, feat) in enumerate(active_modalities):
-            # Merge modality-local views into tokens: B V T N C -> B T (V*N) C.
-            feat = rearrange(feat, "b v t n c -> b t (v n) c")
-            feat = torch.cat([feat, special_tokens[:, :, j, :, :]], dim=2)  # B T V*N+S D
-            feat = self._insert_special_tokens(feat, special_tokens[:, :, j, :, :])
-            feat = feat + self.modality_embed[:, :, embed_idx, :].unsqueeze(2)
-            modality_tokens.append(feat)
-            Ns.append(feat.shape[2])
+        stream_idx = 0
+        self.last_stream_modalities = []
+        self.last_stream_sensor_indices = []
+        for modality_name, embed_idx, feat in active_modalities:
+            num_views = feat.shape[1]
+            for view_idx in range(num_views):
+                feat_v = feat[:, view_idx, :, :, :]  # B T N C
+                feat_v = torch.cat([feat_v, special_tokens[:, :, stream_idx, :, :]], dim=2)  # B T N+S D
+                feat_v = self._insert_special_tokens(feat_v, special_tokens[:, :, stream_idx, :, :])
+                feat_v = feat_v + self.modality_embed[:, :, embed_idx, :].unsqueeze(2)
+                modality_tokens.append(feat_v)
+                Ns.append(feat_v.shape[2])
+                self.last_stream_modalities.append(modality_name)
+                self.last_stream_sensor_indices.append(view_idx)
+                stream_idx += 1
 
         single_idx = 0
         cross_idx = 0
@@ -376,16 +396,11 @@ class TransformerAggregatorV4(nn.Module):
         joint_end = joint_start + self.num_joints
 
         for _ in range(self.aa_block_size):
-            joint_slices = []
-            active_indices = []
+            updated = list(tokens_base)
             for i, tokens in enumerate(tokens_base):
                 if tokens is None:
                     continue
-                joint_slices.append(tokens[:, :, joint_start:joint_end, :])
-                active_indices.append(i)
-
-            if joint_slices:
-                joint_tokens = torch.stack(joint_slices, dim=0).mean(dim=0)
+                joint_tokens = tokens[:, :, joint_start:joint_end, :]
                 joint_gcn = rearrange(joint_tokens, "b t v c -> b c t v")
 
                 if self.use_grad_ckpt and self.training:
@@ -394,13 +409,10 @@ class TransformerAggregatorV4(nn.Module):
                     joint_gcn = self.gcn_blocks[idx](joint_gcn)
 
                 joint_tokens = rearrange(joint_gcn, "b c t v -> b t v c")
-                updated = list(tokens_base)
-                for i in active_indices:
-                    tokens = tokens_base[i]
-                    updated[i] = torch.cat(
-                        [tokens[:, :, :joint_start, :], joint_tokens, tokens[:, :, joint_end:, :]], dim=2
-                    )
-                tokens_base = updated
+                updated[i] = torch.cat(
+                    [tokens[:, :, :joint_start, :], joint_tokens, tokens[:, :, joint_end:, :]], dim=2
+                )
+            tokens_base = updated
             idx += 1
             intermediates.append(self._extract_output_tokens(tokens_base))
 

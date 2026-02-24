@@ -82,6 +82,21 @@ Important behavior:
 : `rgb_cameras_per_sample`, `depth_cameras_per_sample`, `lidar_cameras_per_sample`
 - one-camera configs are still valid without any changes.
 
+## HummanPreprocessedDatasetV3 JSON skeleton notes
+
+`datasets/humman_dataset_v3.py` extends V2 with optional JSON skeleton loading:
+- `rgb_skeleton_json`:
+: loads 2D keypoints into `gt_keypoints_2d_rgb` (normalized to `[-1, 1]`).
+- `lidar_skeleton_json`:
+: loads 3D keypoints into `gt_keypoints_lidar` by default (key configurable via `lidar_skeleton_key`).
+
+LiDAR JSON coordinate handling is controlled by:
+- `lidar_skeleton_coord`: `"new_world"` or `"world"` (default: `"new_world"`).
+
+The loader converts LiDAR JSON keypoints so they are consistent with dataset mode:
+- if dataset uses `apply_to_new_world=True`, LiDAR keypoints are output in new-world coordinates.
+- if dataset uses `apply_to_new_world=False`, LiDAR keypoints are output in world coordinates.
+
 ## Split config usage
 
 `configs/datasets/humman_split_config.yml` supports:

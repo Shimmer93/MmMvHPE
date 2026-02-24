@@ -1,11 +1,14 @@
 # The dataset assumes each sample captures one and only one human subject.
 # The dataset should transform all 3D keypoints, SMPL parameters, and camera extrinsic to a new world coordinate system.
-# The new world coordinate system is defined such that the origin is at the pelvis joint of the human model, and the axes are defined such that the smpl model global orientation is (0, 0, 0).
+# The new world coordinate system is pelvis-centered.
+# If remove_root_rotation=True, the axes remove SMPL global orientation.
+# If remove_root_rotation=False, the axes keep world orientation.
 # each sample contains:
 # sample_id: str # unique identifier for the sample
 # modalities: list # list of available modalities for the sample, e.g., ['rgb', 'depth']
 # gt_keypoints: array of shape (24, 3) # ground truth 3D keypoints, centered at the root joint (pelvis)
-# gt_smpl_params: array of shape (72+10) # ground truth SMPL parameters (pose and shape), the first 3 values of pose are set to zero (fixed root orientation)
+# gt_smpl_params: array of shape (72+10) # ground truth SMPL parameters (pose and shape)
+#               # if remove_root_rotation=True, the first 3 values of pose are set to zero
 # rgb_camera (if 'rgb' in modalities):
 #     intrinsic: array of shape (3, 3) # camera intrinsic matrix
 #     extrinsic: array of shape (3, 4) # camera extrinsic matrix (rotation and translation) (may need to be be integrated with translation from raw smpl file)
@@ -20,6 +23,7 @@ import os
 import os.path as osp
 import cv2
 import json
+import hashlib
 import random
 import re
 import warnings
@@ -76,7 +80,11 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return_smpl_sequence: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
+        remove_root_rotation: bool = True,
         skeleton_only: bool = True,
+        random_lidar_rotation_deg: float = 0.0,
+        random_lidar_rotation_seed: int = 0,
+        random_lidar_rotation_ratio: float = 1.0,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -97,8 +105,12 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.return_smpl_sequence = return_smpl_sequence
         self.convert_depth_to_lidar = convert_depth_to_lidar
         self.apply_to_new_world = apply_to_new_world
+        self.remove_root_rotation = bool(remove_root_rotation)
         # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
         self.skeleton_only = bool(skeleton_only)
+        self.random_lidar_rotation_deg = max(0.0, float(random_lidar_rotation_deg))
+        self.random_lidar_rotation_seed = int(random_lidar_rotation_seed)
+        self.random_lidar_rotation_ratio = float(np.clip(float(random_lidar_rotation_ratio), 0.0, 1.0))
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -376,7 +388,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return frames
 
     @staticmethod
-    def _depth_to_lidar_frames(depth_frames, K, R, T, min_depth=1e-6):
+    def _depth_to_lidar_frames(depth_frames, K, min_depth=1e-6):
         K_inv = np.linalg.inv(K)
         pc_seq = []
         for depth in depth_frames:
@@ -388,8 +400,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             rays = K_inv @ pixels
             cam_points = rays * z
             cam_points = cam_points[:, valid]
-            world_points = (R.T @ (cam_points - T)).T
-            pc_seq.append(world_points.astype(np.float32))
+            pc_seq.append(cam_points.T.astype(np.float32))
         return pc_seq
 
     @staticmethod
@@ -407,15 +418,89 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             return np.asarray(gt_transl, dtype=np.float32).reshape(3)
         return np.zeros(3, dtype=np.float32)
 
+    def _new_world_rotation(self, global_orient):
+        if self.remove_root_rotation:
+            return axis_angle_to_matrix_np(global_orient)
+        return np.eye(3, dtype=np.float32)
+
     def _to_new_world(self, global_orient, pelvis, points):
-        R_root = axis_angle_to_matrix_np(global_orient)
-        return (R_root.T @ (points - pelvis).T).T
+        R_new_to_world = self._new_world_rotation(global_orient)
+        return (R_new_to_world.T @ (points - pelvis).T).T
 
 
-    def _update_extrinsic(self, R_wc, T_wc, R_root, pelvis):
-        R_new = R_wc @ R_root
+    def _update_extrinsic(self, R_wc, T_wc, R_new_to_world, pelvis):
+        R_new = R_wc @ R_new_to_world
         T_new = R_wc @ pelvis.reshape(3, 1) + T_wc
         return R_new, T_new
+
+    @staticmethod
+    def _rotate_points_np(points: np.ndarray, R_aug: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32)
+        out = pts.copy()
+        xyz = out[..., :3].reshape(-1, 3)
+        out[..., :3] = (xyz @ R_aug.T).reshape(out[..., :3].shape)
+        return out
+
+    def _rotate_lidar_sequence(self, lidar_seq, R_aug: np.ndarray):
+        if isinstance(lidar_seq, list):
+            return [self._rotate_lidar_sequence(x, R_aug) for x in lidar_seq]
+        if isinstance(lidar_seq, tuple):
+            return tuple(self._rotate_lidar_sequence(x, R_aug) for x in lidar_seq)
+        return self._rotate_points_np(lidar_seq, R_aug)
+
+    @staticmethod
+    def _rotate_camera_extrinsic(extrinsic: np.ndarray, R_aug: np.ndarray) -> np.ndarray:
+        ext = np.asarray(extrinsic, dtype=np.float32)
+        if ext.shape != (3, 4):
+            raise ValueError(f"Camera extrinsic must be shape (3, 4), got {ext.shape}.")
+        R_cam = ext[:, :3]
+        T_cam = ext[:, 3:]
+        R_rot = R_aug @ R_cam
+        T_rot = R_aug @ T_cam
+        return np.hstack((R_rot, T_rot)).astype(np.float32)
+
+    def _rotate_camera_container(self, camera_data, R_aug: np.ndarray):
+        if camera_data is None:
+            return None
+        if isinstance(camera_data, list):
+            return [self._rotate_camera_container(c, R_aug) for c in camera_data]
+        if isinstance(camera_data, tuple):
+            return [self._rotate_camera_container(c, R_aug) for c in camera_data]
+        if not isinstance(camera_data, dict):
+            raise ValueError(f"Camera data must be dict/list/tuple, got {type(camera_data).__name__}.")
+        if "extrinsic" not in camera_data:
+            raise ValueError("Camera dict missing `extrinsic`.")
+        out = dict(camera_data)
+        out["extrinsic"] = self._rotate_camera_extrinsic(out["extrinsic"], R_aug)
+        return out
+
+    def _sample_sequence_rotation(self, seq_name: str) -> np.ndarray:
+        if self.random_lidar_rotation_deg <= 0.0:
+            return np.eye(3, dtype=np.float32)
+        key = f"rotate:{self.random_lidar_rotation_seed}:{seq_name}".encode("utf-8")
+        u64 = int.from_bytes(hashlib.sha1(key).digest()[:8], byteorder="big", signed=False)
+        rng = np.random.RandomState(int(u64 % (2 ** 32)))
+        angle_deg = float(rng.uniform(-self.random_lidar_rotation_deg, self.random_lidar_rotation_deg))
+        axis = rng.normal(size=3).astype(np.float32)
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm < 1e-8:
+            axis = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        else:
+            axis = axis / axis_norm
+        axis_angle = axis * np.deg2rad(angle_deg)
+        return axis_angle_to_matrix_np(axis_angle.astype(np.float32))
+
+    def _should_apply_sequence_rotation(self, seq_name: str) -> bool:
+        if self.random_lidar_rotation_deg <= 0.0:
+            return False
+        if self.random_lidar_rotation_ratio >= 1.0:
+            return True
+        if self.random_lidar_rotation_ratio <= 0.0:
+            return False
+        key = f"apply:{self.random_lidar_rotation_seed}:{seq_name}".encode("utf-8")
+        u64 = int.from_bytes(hashlib.sha1(key).digest()[:8], byteorder="big", signed=False)
+        unit = u64 / float((1 << 64) - 1)
+        return unit < self.random_lidar_rotation_ratio
 
     @staticmethod
     def _sample_camera_names(camera_pool: List[str], num_samples: int) -> List[str]:
@@ -563,13 +648,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         gt_keypoints = keypoints_3d[gt_frame_idx] if keypoints_3d is not None else None
 
         pelvis = self._extract_pelvis(gt_keypoints, gt_transl)
-        R_root = axis_angle_to_matrix_np(np.asarray(gt_global_orient, dtype=np.float32))
+        R_new_to_world = self._new_world_rotation(np.asarray(gt_global_orient, dtype=np.float32))
 
         if gt_keypoints is not None and self.apply_to_new_world:
             gt_keypoints = self._to_new_world(gt_global_orient, pelvis, gt_keypoints)
 
         pose = self._flatten_pose(gt_global_orient, gt_body_pose)
-        if pose.shape[0] >= 3:
+        if self.remove_root_rotation and pose.shape[0] >= 3:
             pose[:3] = 0.0
         pose = pose[:72]
         betas = np.asarray(gt_betas, dtype=np.float32)[:10]
@@ -642,7 +727,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 rgb_cameras_out.append(
                     {
                         "intrinsic": K,
@@ -677,7 +762,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
                 depth_raw_params.append((K, R, T))
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 depth_cameras_out.append(
                     {
                         "intrinsic": K,
@@ -690,9 +775,13 @@ class HummanPreprocessedDatasetV2(BaseDataset):
 
             converted_to_lidar = self.convert_depth_to_lidar and "lidar" not in self.modality_names
             if converted_to_lidar and depth_frames_views:
+                if len(depth_frames_views) != len(depth_raw_params):
+                    raise ValueError(
+                        "Depth-to-lidar conversion requires camera params for every selected depth view."
+                    )
                 lidar_frames_views = []
-                for depth_frames, (K, R, T) in zip(depth_frames_views, depth_raw_params):
-                    lidar_frames = self._depth_to_lidar_frames(depth_frames, K, R, T)
+                for depth_frames, (K, _, _) in zip(depth_frames_views, depth_raw_params):
+                    lidar_frames = self._depth_to_lidar_frames(depth_frames, K)
                     lidar_frames_views.append(lidar_frames)
 
                 if lidar_frames_views:
@@ -704,16 +793,8 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                     sample.pop("input_depth", None)
                     sample["selected_cameras"]["lidar"] = list(selected_depth)
 
-                lidar_cameras = []
-                for K, _, _ in depth_raw_params:
-                    lidar_cameras.append(
-                        {
-                            "intrinsic": K,
-                            "extrinsic": np.hstack((R_root, pelvis.reshape(3, 1))).astype(np.float32),
-                        }
-                    )
-                if lidar_cameras:
-                    sample["lidar_camera"] = self._maybe_single(lidar_cameras)
+                if depth_cameras_out:
+                    sample["lidar_camera"] = self._maybe_single(depth_cameras_out)
             elif depth_cameras_out:
                 sample["depth_camera"] = self._maybe_single(depth_cameras_out)
 
@@ -735,7 +816,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 K = np.array(cam_params["K"], dtype=np.float32)
                 R = np.array(cam_params["R"], dtype=np.float32)
                 T = np.array(cam_params["T"], dtype=np.float32).reshape(3, 1)
-                R_new, T_new = self._update_extrinsic(R, T, R_root, pelvis)
+                R_new, T_new = self._update_extrinsic(R, T, R_new_to_world, pelvis)
                 lidar_cameras_out.append(
                     {
                         "intrinsic": K,
@@ -747,6 +828,12 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 sample["input_lidar"] = self._maybe_single(lidar_frames_views)
             if lidar_cameras_out:
                 sample["lidar_camera"] = self._maybe_single(lidar_cameras_out)
+
+        if "input_lidar" in sample and self._should_apply_sequence_rotation(data_info["seq_name"]):
+            R_aug = self._sample_sequence_rotation(data_info["seq_name"])
+            sample["input_lidar"] = self._rotate_lidar_sequence(sample["input_lidar"], R_aug)
+            if "lidar_camera" in sample and sample["lidar_camera"] is not None:
+                sample["lidar_camera"] = self._rotate_camera_container(sample["lidar_camera"], R_aug)
 
         sample = self.pipeline(sample)
         return sample

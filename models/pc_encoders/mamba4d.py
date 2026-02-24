@@ -74,9 +74,9 @@ class MAMBA4DEncoder(nn.Module):
         elif self.mode == 'all':
             input_feat = input[:,:,:,3:5].clone()
         xyzs, features = self.tube_embedding(input[:,:,:,:3], input_feat.permute(0,1,3,2))
-        print("[DEBUG]: This is the line 77 of mamba4d.py")
-        print("[DEBUG]: The xyzs shape is, ", xyzs.shape)
-        print("[DEBUG]: The features shape is, ", features.shape)
+        # print("[DEBUG]: This is the line 77 of mamba4d.py")
+        # print("[DEBUG]: The xyzs shape is, ", xyzs.shape)
+        # print("[DEBUG]: The features shape is, ", features.shape)
         B, L, C, n = features.shape
 
         xyzts = []
@@ -109,9 +109,9 @@ class MAMBA4DEncoder(nn.Module):
         # Fix features reshape: [B, L, C, n] -> [B, L, n, C] -> [B, L*n, C]
         # features = features.permute(0, 1, 3, 2).contiguous()
         features = features.reshape(features.shape[0], features.shape[1]*features.shape[2], features.shape[3]) # [B, L*n, C]
-        print("[DEBUG]: The features reshaped shape is, ", features.shape)
+        # print("[DEBUG]: The features reshaped shape is, ", features.shape)
         xyzts = self.pos_embedding(xyzts.permute(0, 2, 1)).permute(0, 2, 1)
-        print("[DEBUG]: The pos_embedding output shape is, ", xyzts.shape)
+        # print("[DEBUG]: The pos_embedding output shape is, ", xyzts.shape)
 
         embedding = xyzts + features
 
@@ -125,7 +125,7 @@ class MAMBA4DEncoder(nn.Module):
         if self.emb_relu:
             embedding = self.emb_relu(embedding)
             
-        print("[DEBUG]: The embedding shape is, ", embedding.shape)
+        # print("[DEBUG]: The embedding shape is, ", embedding.shape)
 
         output = self.mambaBlocks(embedding)
         
@@ -155,10 +155,10 @@ class MAMBA4DEncoder(nn.Module):
 
         # # 3. Reshape back to [B, L, N, C]
         output = output.reshape(B, L, -1, output.shape[-1])  # B L N C
-        print("[DEBUG]: The shape of the output is: ", output.shape)
+        # print("[DEBUG]: The shape of the output is: ", output.shape)
         # [FIX END]
-        print("[DEBUG]: MAMBA4DEncoder forward pass completed.")
-        print(f"[DEBUG]: Current memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        print(f"[DEBUG]: Current memory reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+        # print("[DEBUG]: MAMBA4DEncoder forward pass completed.")
+        # print(f"[DEBUG]: Current memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        # print(f"[DEBUG]: Current memory reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
         return output

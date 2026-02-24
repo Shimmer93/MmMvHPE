@@ -7,15 +7,23 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from datasets.humman_dataset_v2 import HummanPreprocessedDatasetV2
+from datasets.humman_dataset_v2 import HummanPreprocessedDatasetV2, axis_angle_to_matrix_np
 
 
 class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
-    """V2 dataset with optional JSON-loaded 2D RGB skeletons.
+    """V2 dataset with optional JSON-loaded RGB/LiDAR skeletons.
 
     When `rgb_skeleton_json` is provided, this class loads 2D keypoints and
     writes them to `gt_keypoints_2d_rgb` (shape: [T, J, 2]), normalized to
     [-1, 1] in x/y.
+
+    When `lidar_skeleton_json` is provided, this class loads 3D keypoints and
+    writes them to `lidar_skeleton_key` (default: `gt_keypoints_lidar`).
+    The loaded LiDAR keypoints are converted to match dataset coordinate mode:
+    - if `apply_to_new_world=True`, output keypoints are in pelvis-centered new-world
+      coordinates (with optional root-rotation removal controlled by
+      `remove_root_rotation`)
+    - else output keypoints are in world coordinates
     """
 
     def __init__(
@@ -42,11 +50,15 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         colocated: bool = False,
         convert_depth_to_lidar: bool = True,
         apply_to_new_world: bool = True,
+        remove_root_rotation: bool = True,
         skeleton_only: bool = True,
         return_keypoints_sequence: bool = False,
         return_smpl_sequence: bool = False,
         rgb_skeleton_json: Optional[str] = None,
         rgb_skeleton_image_size_hw: Sequence[int] = (512, 512),
+        lidar_skeleton_json: Optional[str] = None,
+        lidar_skeleton_coord: str = "new_world",
+        lidar_skeleton_key: str = "gt_keypoints_lidar",
     ):
         super().__init__(
             data_root=data_root,
@@ -71,6 +83,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             colocated=colocated,
             convert_depth_to_lidar=convert_depth_to_lidar,
             apply_to_new_world=apply_to_new_world,
+            remove_root_rotation=remove_root_rotation,
             skeleton_only=skeleton_only,
             return_keypoints_sequence=return_keypoints_sequence,
             return_smpl_sequence=return_smpl_sequence,
@@ -83,6 +96,16 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         )
         self.rgb_skeleton_index: Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]] = {}
         self.rgb_skeleton_shape: Tuple[int, int] = (17, 2)
+        self.lidar_skeleton_json = lidar_skeleton_json
+        self.lidar_skeleton_coord = str(lidar_skeleton_coord).lower()
+        self.lidar_skeleton_key = str(lidar_skeleton_key)
+        self.lidar_skeleton_index: Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]] = {}
+        self.lidar_skeleton_shape: Tuple[int, int] = (24, 3)
+        if self.lidar_skeleton_coord not in {"new_world", "world"}:
+            raise ValueError(
+                f"Unsupported lidar_skeleton_coord={lidar_skeleton_coord}. "
+                "Expected one of {'new_world', 'world'}."
+            )
 
         self._sample_id_re = re.compile(
             r"^(?P<seq>p\d+_a\d+)_rgb_(?P<rgb>kinect_\d{3}|iphone|None)_depth_"
@@ -96,6 +119,15 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             if not self.rgb_skeleton_index:
                 warnings.warn(
                     f"No valid 2D RGB skeleton entries found in {self.rgb_skeleton_json}. "
+                    "Falling back to zeros."
+                )
+        if self.lidar_skeleton_json is not None:
+            self.lidar_skeleton_index, shape = self._build_lidar_skeleton_index(self.lidar_skeleton_json)
+            if shape is not None:
+                self.lidar_skeleton_shape = shape
+            if not self.lidar_skeleton_index:
+                warnings.warn(
+                    f"No valid 3D LiDAR skeleton entries found in {self.lidar_skeleton_json}. "
                     "Falling back to zeros."
                 )
 
@@ -186,14 +218,109 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             return None
         return kpts
 
-    def _parse_sample_id(self, sample_id: str) -> Tuple[Optional[str], Optional[str], int]:
+    def _build_lidar_skeleton_index(
+        self, json_path: str
+    ) -> Tuple[Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]], Optional[Tuple[int, int]]]:
+        path = Path(json_path).expanduser().resolve()
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        if isinstance(payload, dict) and "predictions" in payload:
+            entries = payload["predictions"]
+        elif isinstance(payload, list):
+            entries = payload
+        elif isinstance(payload, dict):
+            entries = [{"image_path": k, "keypoints": v} for k, v in payload.items()]
+        else:
+            raise ValueError(f"Unsupported JSON format for lidar_skeleton_json: {path}")
+
+        index: Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]] = {}
+        inferred_shape: Optional[Tuple[int, int]] = None
+
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+
+            rel_path = (
+                item.get("image_path")
+                or item.get("path")
+                or item.get("img_path")
+                or item.get("file_name")
+            )
+            if rel_path is None:
+                continue
+
+            keypoints = self._extract_3d_keypoints(item)
+            if keypoints is None:
+                continue
+
+            stem = Path(rel_path).stem
+            seq_match = self._seq_re.search(stem)
+            cam_match = self._cam_re.search(stem)
+            frame_match = self._frame_re.search(stem)
+            if not (seq_match and cam_match and frame_match):
+                continue
+
+            seq_name = seq_match.group(1)
+            camera = cam_match.group(1)
+            frame_idx = int(frame_match.group(1))
+            index.setdefault(seq_name, {}).setdefault(camera, []).append((frame_idx, keypoints))
+
+            if inferred_shape is None:
+                inferred_shape = (int(keypoints.shape[0]), int(keypoints.shape[1]))
+
+        for seq_name in index:
+            for camera in index[seq_name]:
+                index[seq_name][camera].sort(key=lambda x: x[0])
+
+        return index, inferred_shape
+
+    @staticmethod
+    def _extract_3d_keypoints(item: Dict) -> Optional[np.ndarray]:
+        keypoints = item.get("keypoints")
+        if keypoints is None:
+            instances = item.get("instances", [])
+            if instances:
+                if len(instances) == 1:
+                    keypoints = instances[0].get("keypoints")
+                else:
+                    best = max(
+                        instances,
+                        key=lambda x: float(x.get("bbox_score", 0.0)) if isinstance(x, dict) else 0.0,
+                    )
+                    if isinstance(best, dict):
+                        keypoints = best.get("keypoints")
+
+        if keypoints is None:
+            return None
+
+        kpts = np.asarray(keypoints, dtype=np.float32)
+        if kpts.ndim == 3 and kpts.shape[0] == 1:
+            kpts = kpts[0]
+        if kpts.ndim != 2:
+            return None
+
+        if kpts.shape[1] >= 3:
+            kpts = kpts[:, :3].astype(np.float32)
+        elif kpts.shape[1] == 2:
+            z = np.zeros((kpts.shape[0], 1), dtype=np.float32)
+            kpts = np.concatenate([kpts.astype(np.float32), z], axis=1)
+        else:
+            return None
+
+        if not np.isfinite(kpts).all():
+            return None
+        return kpts
+
+    def _parse_sample_id(self, sample_id: str) -> Tuple[Optional[str], Optional[str], Optional[str], int]:
         m = self._sample_id_re.match(sample_id)
         if m is None:
-            return None, None, 0
+            return None, None, None, 0
         seq_name = m.group("seq")
         rgb_camera = None if m.group("rgb") == "None" else m.group("rgb")
+        depth_camera = None if m.group("depth") == "None" else m.group("depth")
         start_frame = int(m.group("start"))
-        return seq_name, rgb_camera, start_frame
+        return seq_name, rgb_camera, depth_camera, start_frame
 
     def _resolve_image_size_hw(self, sample) -> Tuple[int, int]:
         rgb = sample.get("input_rgb")
@@ -262,24 +389,126 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             return view_kpts[0]
         return np.stack(view_kpts, axis=0).astype(np.float32)
 
+    def _load_lidar_skeleton_frames(
+        self, seq_name: str, lidar_camera: Optional[str], start_frame: int
+    ) -> np.ndarray:
+        zeros = np.zeros(self.lidar_skeleton_shape, dtype=np.float32)
+        if lidar_camera is None:
+            return np.stack([zeros.copy() for _ in range(self.seq_len)], axis=0)
+
+        seq_data = self.lidar_skeleton_index.get(seq_name, {})
+        if not seq_data:
+            return np.stack([zeros.copy() for _ in range(self.seq_len)], axis=0)
+
+        if lidar_camera in seq_data:
+            frame_list = seq_data[lidar_camera]
+        else:
+            frame_list = seq_data[sorted(seq_data.keys())[0]]
+
+        if not frame_list:
+            return np.stack([zeros.copy() for _ in range(self.seq_len)], axis=0)
+
+        frames = []
+        for i in range(self.seq_len):
+            idx = min(start_frame + i, len(frame_list) - 1)
+            frames.append(frame_list[idx][1].copy())
+        return np.stack(frames, axis=0).astype(np.float32)
+
+    def _load_lidar_skeleton_frames_multi(
+        self, seq_name: str, lidar_cameras: Sequence[Optional[str]], start_frame: int
+    ) -> np.ndarray:
+        if not lidar_cameras:
+            return self._load_lidar_skeleton_frames(seq_name, None, start_frame)
+        view_kpts = []
+        for camera_name in lidar_cameras:
+            view_kpts.append(self._load_lidar_skeleton_frames(seq_name, camera_name, start_frame))
+        if len(view_kpts) == 1:
+            return view_kpts[0]
+        return np.stack(view_kpts, axis=0).astype(np.float32)
+
+    @staticmethod
+    def _to_numpy_3vec(value: Optional[object]) -> np.ndarray:
+        if value is None:
+            return np.zeros(3, dtype=np.float32)
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy().astype(np.float32).reshape(3)
+        return np.asarray(value, dtype=np.float32).reshape(3)
+
+    @staticmethod
+    def _transform_new_world_to_world(
+        points: np.ndarray,
+        global_orient: np.ndarray,
+        pelvis: np.ndarray,
+        remove_root_rotation: bool = True,
+    ) -> np.ndarray:
+        if not remove_root_rotation:
+            pts = points.reshape(-1, 3)
+            pts = pts + pelvis.reshape(1, 3)
+            return pts.reshape(points.shape).astype(np.float32)
+        r_root = axis_angle_to_matrix_np(np.asarray(global_orient, dtype=np.float32).reshape(3))
+        pts = points.reshape(-1, 3)
+        pts = (r_root @ pts.T).T + pelvis.reshape(1, 3)
+        return pts.reshape(points.shape).astype(np.float32)
+
+    @staticmethod
+    def _transform_world_to_new_world(
+        points: np.ndarray,
+        global_orient: np.ndarray,
+        pelvis: np.ndarray,
+        remove_root_rotation: bool = True,
+    ) -> np.ndarray:
+        if not remove_root_rotation:
+            pts = points.reshape(-1, 3)
+            pts = pts - pelvis.reshape(1, 3)
+            return pts.reshape(points.shape).astype(np.float32)
+        r_root = axis_angle_to_matrix_np(np.asarray(global_orient, dtype=np.float32).reshape(3))
+        pts = points.reshape(-1, 3)
+        pts = (r_root.T @ (pts - pelvis.reshape(1, 3)).T).T
+        return pts.reshape(points.shape).astype(np.float32)
+
     def __getitem__(self, index):
         sample = super().__getitem__(index)
-        if not self.rgb_skeleton_index:
+        if not self.rgb_skeleton_index and not self.lidar_skeleton_index:
             return sample
 
         seq_name = sample.get("seq_name")
         start_frame = sample.get("start_frame")
         selected = sample.get("selected_cameras", {})
         rgb_cameras = selected.get("rgb", []) if isinstance(selected, dict) else []
+        lidar_cameras = selected.get("lidar", []) if isinstance(selected, dict) else []
 
         if seq_name is None or start_frame is None:
-            seq_name, rgb_camera, start_frame = self._parse_sample_id(sample.get("sample_id", ""))
+            seq_name, rgb_camera, depth_camera, start_frame = self._parse_sample_id(sample.get("sample_id", ""))
             if seq_name is None:
                 return sample
             rgb_cameras = [rgb_camera]
+            lidar_cameras = [depth_camera]
 
-        kpts = self._load_rgb_skeleton_frames_multi(seq_name, rgb_cameras, int(start_frame))
-        image_size_hw = self._resolve_image_size_hw(sample)
-        kpts = self._normalize_2d(kpts, image_size_hw)
-        sample["gt_keypoints_2d_rgb"] = torch.from_numpy(kpts.astype(np.float32))
+        if self.rgb_skeleton_index:
+            kpts_rgb = self._load_rgb_skeleton_frames_multi(seq_name, rgb_cameras, int(start_frame))
+            image_size_hw = self._resolve_image_size_hw(sample)
+            kpts_rgb = self._normalize_2d(kpts_rgb, image_size_hw)
+            sample["gt_keypoints_2d_rgb"] = torch.from_numpy(kpts_rgb.astype(np.float32))
+
+        if self.lidar_skeleton_index:
+            kpts_lidar = self._load_lidar_skeleton_frames_multi(seq_name, lidar_cameras, int(start_frame))
+            global_orient = self._to_numpy_3vec(sample.get("gt_global_orient"))
+            pelvis = self._to_numpy_3vec(sample.get("gt_pelvis"))
+
+            if self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
+                kpts_lidar = self._transform_new_world_to_world(
+                    kpts_lidar,
+                    global_orient,
+                    pelvis,
+                    remove_root_rotation=self.remove_root_rotation,
+                )
+            elif self.lidar_skeleton_coord == "world" and self.apply_to_new_world:
+                kpts_lidar = self._transform_world_to_new_world(
+                    kpts_lidar,
+                    global_orient,
+                    pelvis,
+                    remove_root_rotation=self.remove_root_rotation,
+                )
+
+            sample[self.lidar_skeleton_key] = torch.from_numpy(kpts_lidar.astype(np.float32))
         return sample

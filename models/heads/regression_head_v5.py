@@ -18,6 +18,7 @@ class RegressionKeypointHeadV5(BaseHead):
         max_modalities=4,
         last_n_layers=-1,
         pose_encoding_type="absT_quaR_FoV",
+        remove_root_rotation=True,
     ):
         super().__init__(losses)
         self.emb_size = emb_size
@@ -28,6 +29,7 @@ class RegressionKeypointHeadV5(BaseHead):
         self.max_modalities = max_modalities
         self.last_n_layers = last_n_layers
         self.pose_encoding_type = pose_encoding_type
+        self.remove_root_rotation = bool(remove_root_rotation)
 
         self.keypoint_gate = nn.Parameter(torch.zeros(emb_size))
 
@@ -67,7 +69,7 @@ class RegressionKeypointHeadV5(BaseHead):
             nn.Linear(emb_size // 2, 3),
         )
 
-    def forward(self, x, modalities=None):
+    def forward(self, x, modalities=None, data_batch=None):
         x = self._select_layers(x)
         if x.dim() == 4:
             x = x.unsqueeze(2)
@@ -77,20 +79,32 @@ class RegressionKeypointHeadV5(BaseHead):
 
         joint_tokens = self._extract_joint_tokens(x)
         camera_tokens = self._extract_camera_tokens(x)
+        stream_modalities, stream_sensor_indices = self._build_stream_specs(
+            modalities=modalities,
+            data_batch=data_batch,
+            target_streams=joint_tokens.shape[1],
+        )
 
-        pred_per_modality = self._regress_per_modality(joint_tokens, modalities)
+        pred_per_modality = self._regress_per_modality(joint_tokens, stream_modalities)
         pred_global = self._regress_global(joint_tokens, camera_tokens)
 
-        return {"per_modality": pred_per_modality, "global": pred_global}
+        return {
+            "per_modality": pred_per_modality,
+            "global": pred_global,
+            "stream_modalities": stream_modalities,
+            "stream_sensor_indices": stream_sensor_indices,
+        }
 
     def loss(self, x, data_batch):
         modalities = data_batch.get("modalities", [])
         if modalities and isinstance(modalities[0], (list, tuple)):
             modalities = modalities[0]
 
-        outputs = self.forward(x, modalities=modalities)
+        outputs = self.forward(x, modalities=modalities, data_batch=data_batch)
         pred_per_modality = outputs["per_modality"]
         pred_global = outputs["global"]
+        stream_modalities = outputs.get("stream_modalities", [])
+        stream_sensor_indices = outputs.get("stream_sensor_indices", [])
 
         gt_keypoints = data_batch.get("gt_keypoints", None)
         if gt_keypoints is None:
@@ -105,17 +119,18 @@ class RegressionKeypointHeadV5(BaseHead):
         gt_keypoints = gt_keypoints.to(pred_global.device)
 
         losses = {}
-        num_modalities = min(len(pred_per_modality), len(modalities))
-        for i in range(num_modalities):
-            modality = modalities[i]
+        num_streams = min(len(pred_per_modality), len(stream_modalities), len(stream_sensor_indices))
+        for i in range(num_streams):
+            modality = stream_modalities[i]
+            sensor_idx = stream_sensor_indices[i]
             pred = pred_per_modality[i]
             proj_pred, proj_gt = self._project_keypoints(
-                pred, gt_keypoints, modality, data_batch
+                pred, gt_keypoints, modality, data_batch, sensor_idx=sensor_idx
             )
             if proj_pred is None:
                 continue
             for loss_name, (loss_fn, loss_weight) in self.losses.items():
-                losses[f"{loss_name}_{modality}"] = (loss_fn(proj_pred, proj_gt), loss_weight)
+                losses[f"{loss_name}_{modality}_s{sensor_idx}"] = (loss_fn(proj_pred, proj_gt), loss_weight)
 
         for loss_name, (loss_fn, loss_weight) in self.losses.items():
             losses[f"{loss_name}_global"] = (loss_fn(pred_global, gt_keypoints), loss_weight)
@@ -191,25 +206,27 @@ class RegressionKeypointHeadV5(BaseHead):
         feats = self.global_norm(feats)
         return self.global_mlp(feats)
 
-    def _project_keypoints(self, pred, gt, modality, data_batch):
+    def _project_keypoints(self, pred, gt, modality, data_batch, sensor_idx=0):
         modality = modality.lower()
         if modality in {"rgb", "depth"}:
-            gt_proj = self._get_2d_keypoints(gt, modality, data_batch, pred.device)
+            gt_proj = self._get_2d_keypoints(
+                gt, modality, data_batch, pred.device, sensor_idx=sensor_idx
+            )
             if gt_proj is None:
                 return None, None
-            pred_proj = self._expand_pred_to_match_views(pred, gt_proj)
-            return pred_proj, gt_proj
+            return pred, gt_proj
         if modality in {"lidar", "mmwave"}:
-            gt_cam = self._get_pc_centered_keypoints(data_batch, modality, pred.device)
+            gt_cam = self._get_pc_centered_keypoints(
+                data_batch, modality, pred.device, sensor_idx=sensor_idx
+            )
             if gt_cam is None:
                 return None, None
-            pred_cam = self._expand_pred_to_match_views(pred, gt_cam)
-            return pred_cam, gt_cam
+            return pred, gt_cam
 
         return None, None
 
-    def _get_2d_keypoints(self, gt, modality, data_batch, device):
-        cam_params = self._get_camera_params(data_batch, modality, device)
+    def _get_2d_keypoints(self, gt, modality, data_batch, device, sensor_idx=0):
+        cam_params = self._get_camera_params(data_batch, modality, device, sensor_idx=sensor_idx)
         if cam_params is None:
             return None
         extrinsics, intrinsics, image_size = cam_params
@@ -218,7 +235,7 @@ class RegressionKeypointHeadV5(BaseHead):
         gt_proj = torch.clamp(gt_proj, -1.0, 1.0)
         return gt_proj
 
-    def _get_pc_centered_keypoints(self, data_batch, modality, device):
+    def _get_pc_centered_keypoints(self, data_batch, modality, device, sensor_idx=0):
         key = f"gt_keypoints_pc_centered_input_{modality}"
         gt = data_batch.get(key, None)
         if gt is None:
@@ -231,68 +248,71 @@ class RegressionKeypointHeadV5(BaseHead):
         if not isinstance(gt, torch.Tensor):
             gt = torch.as_tensor(gt, dtype=torch.float32)
         gt = gt.to(device).float()
-        if gt.dim() == 2:  # J 3
-            return gt.unsqueeze(0)
-        if gt.dim() == 3:
-            batch_size = self._infer_batch_size(data_batch)
+        batch_size = self._infer_batch_size(data_batch)
+        if gt.dim() == 5:
             if batch_size is not None and gt.shape[0] == batch_size:
-                return gt  # B J 3
-            return gt.unsqueeze(0)  # 1 V J 3
+                view_idx = min(sensor_idx, gt.shape[1] - 1)
+                gt = gt[:, view_idx, -1]
+                return gt
+            if batch_size == 1:
+                view_idx = min(sensor_idx, gt.shape[0] - 1)
+                return gt[view_idx : view_idx + 1, -1]
+            return None
         if gt.dim() == 4:
-            return gt  # B V J 3
+            if batch_size is not None and gt.shape[0] == batch_size:
+                view_idx = min(sensor_idx, gt.shape[1] - 1)
+                return gt[:, view_idx]
+            if batch_size == 1:
+                view_idx = min(sensor_idx, gt.shape[0] - 1)
+                return gt[view_idx : view_idx + 1]
+            return None
+        if gt.dim() == 3:
+            if batch_size is not None and gt.shape[0] == batch_size:
+                return gt
+            view_idx = min(sensor_idx, gt.shape[0] - 1)
+            return gt[view_idx : view_idx + 1]
+        if gt.dim() == 2:
+            return gt.unsqueeze(0)
         return None
 
-    def _get_camera_params(self, data_batch, modality, device):
+    def _get_camera_params(self, data_batch, modality, device, sensor_idx=0):
         gt_camera = data_batch.get(f"gt_camera_{modality}", None)
         if gt_camera is None:
             return None
         if not isinstance(gt_camera, torch.Tensor):
             gt_camera = torch.as_tensor(gt_camera, dtype=torch.float32)
         gt_camera = gt_camera.to(device).float()
-        if gt_camera.dim() == 1:
-            gt_camera = gt_camera.unsqueeze(0)
-        if gt_camera.dim() == 2:
-            gt_camera = gt_camera.unsqueeze(0)
         batch_size = self._infer_batch_size(data_batch)
         image_size = self._get_image_size(data_batch, modality)
         if gt_camera.dim() == 4:  # B V S 9
-            gt_camera = gt_camera[:, :, -1, :]  # B V 9
-            bsz, n_views, _ = gt_camera.shape
-            flat = gt_camera.reshape(bsz * n_views, 1, gt_camera.shape[-1])
-            extrinsics, intrinsics = pose_encoding_to_extri_intri(
-                flat,
-                image_size_hw=image_size,
-                pose_encoding_type=self.pose_encoding_type,
-                build_intrinsics=True,
-            )
-            extrinsics = extrinsics.squeeze(1).reshape(bsz, n_views, 3, 4)
-            intrinsics = intrinsics.squeeze(1).reshape(bsz, n_views, 3, 3)
-            return extrinsics, intrinsics, image_size
-        if gt_camera.dim() == 3:
+            view_idx = min(sensor_idx, gt_camera.shape[1] - 1)
+            gt_camera = gt_camera[:, view_idx, -1, :]
+        elif gt_camera.dim() == 3:
             if batch_size is not None and gt_camera.shape[0] == batch_size:
-                # B S 9 -> B 9
                 gt_camera = gt_camera[:, -1, :]
-                extrinsics, intrinsics = pose_encoding_to_extri_intri(
-                    gt_camera.unsqueeze(1),
-                    image_size_hw=image_size,
-                    pose_encoding_type=self.pose_encoding_type,
-                    build_intrinsics=True,
-                )
-                return extrinsics.squeeze(1), intrinsics.squeeze(1), image_size
-            # V S 9 (single sample) -> 1 V 9
-            gt_camera = gt_camera[:, -1, :].unsqueeze(0)
-            bsz, n_views, _ = gt_camera.shape
-            flat = gt_camera.reshape(bsz * n_views, 1, gt_camera.shape[-1])
-            extrinsics, intrinsics = pose_encoding_to_extri_intri(
-                flat,
-                image_size_hw=image_size,
-                pose_encoding_type=self.pose_encoding_type,
-                build_intrinsics=True,
-            )
-            extrinsics = extrinsics.squeeze(1).reshape(bsz, n_views, 3, 4)
-            intrinsics = intrinsics.squeeze(1).reshape(bsz, n_views, 3, 3)
-            return extrinsics, intrinsics, image_size
-        return None
+            else:
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                gt_camera = gt_camera[view_idx : view_idx + 1, -1, :]
+        elif gt_camera.dim() == 2:
+            if batch_size is not None and gt_camera.shape[0] == batch_size:
+                pass
+            elif gt_camera.shape[1] == 9:
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                gt_camera = gt_camera[view_idx : view_idx + 1, :]
+            else:
+                return None
+        elif gt_camera.dim() == 1:
+            gt_camera = gt_camera.unsqueeze(0)
+        else:
+            return None
+
+        extrinsics, intrinsics = pose_encoding_to_extri_intri(
+            gt_camera.unsqueeze(1),
+            image_size_hw=image_size,
+            pose_encoding_type=self.pose_encoding_type,
+            build_intrinsics=True,
+        )
+        return extrinsics.squeeze(1), intrinsics.squeeze(1), image_size
 
     def _get_image_size(self, data_batch, modality):
         input_key = f"input_{modality}"
@@ -335,6 +355,85 @@ class RegressionKeypointHeadV5(BaseHead):
         if pred.dim() + 1 == target.dim():
             return pred.unsqueeze(1).expand(-1, target.shape[1], -1, -1)
         return pred
+
+    def _build_stream_specs(self, modalities=None, data_batch=None, target_streams=None):
+        modalities = self._normalize_modalities(modalities)
+        specs = []
+        for modality in modalities:
+            n_sensors = self._infer_sensor_count(data_batch, modality)
+            for sensor_idx in range(max(1, int(n_sensors))):
+                specs.append((modality, sensor_idx))
+
+        if target_streams is not None:
+            target_streams = int(max(0, target_streams))
+            if len(specs) > target_streams:
+                specs = specs[:target_streams]
+            elif len(specs) < target_streams:
+                base_modalities = modalities if modalities else ["rgb"]
+                counts = {}
+                for m, s in specs:
+                    counts[m] = max(counts.get(m, 0), s + 1)
+                cursor = 0
+                while len(specs) < target_streams:
+                    m = base_modalities[cursor % len(base_modalities)]
+                    s = counts.get(m, 0)
+                    specs.append((m, s))
+                    counts[m] = s + 1
+                    cursor += 1
+
+        stream_modalities = [m for m, _ in specs]
+        stream_sensor_indices = [s for _, s in specs]
+        return stream_modalities, stream_sensor_indices
+
+    @staticmethod
+    def _normalize_modalities(modalities):
+        if modalities is None:
+            return []
+        if isinstance(modalities, (list, tuple)) and len(modalities) > 0 and isinstance(modalities[0], (list, tuple)):
+            modalities = modalities[0]
+        if not isinstance(modalities, (list, tuple)):
+            return []
+        return [str(m).lower() for m in modalities]
+
+    def _infer_sensor_count(self, data_batch, modality):
+        if not isinstance(data_batch, dict):
+            return 1
+
+        selected = data_batch.get("selected_cameras", None)
+        if isinstance(selected, (list, tuple)) and len(selected) > 0:
+            selected = selected[0]
+        if isinstance(selected, dict):
+            cams = selected.get(modality, None)
+            if isinstance(cams, (list, tuple)) and len(cams) > 0:
+                return len(cams)
+
+        gt_camera = data_batch.get(f"gt_camera_{modality}", None)
+        if isinstance(gt_camera, torch.Tensor):
+            batch_size = self._infer_batch_size(data_batch)
+            if gt_camera.dim() >= 4:
+                return int(gt_camera.shape[1])
+            if gt_camera.dim() == 3 and (batch_size is None or gt_camera.shape[0] != batch_size):
+                return int(gt_camera.shape[0])
+            if gt_camera.dim() == 2 and gt_camera.shape[1] == 9 and (batch_size is None or gt_camera.shape[0] != batch_size):
+                return int(gt_camera.shape[0])
+
+        key = f"gt_keypoints_pc_centered_input_{modality}"
+        gt_kps = data_batch.get(key, None)
+        if isinstance(gt_kps, torch.Tensor):
+            batch_size = self._infer_batch_size(data_batch)
+            if gt_kps.dim() >= 4 and batch_size is not None and gt_kps.shape[0] == batch_size:
+                return int(gt_kps.shape[1])
+            if gt_kps.dim() >= 3 and (batch_size is None or gt_kps.shape[0] != batch_size):
+                return int(gt_kps.shape[0])
+
+        inp = data_batch.get(f"input_{modality}", None)
+        if isinstance(inp, torch.Tensor):
+            if modality in {"rgb", "depth"} and inp.dim() >= 6:
+                return int(inp.shape[1])
+            if modality in {"lidar", "mmwave"} and inp.dim() >= 5:
+                return int(inp.shape[1])
+
+        return 1
 
     @staticmethod
     def _infer_batch_size(data_batch):
