@@ -23,7 +23,6 @@ import os
 import os.path as osp
 import cv2
 import json
-import hashlib
 import random
 import re
 import warnings
@@ -80,9 +79,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         apply_to_new_world: bool = True,
         remove_root_rotation: bool = True,
         skeleton_only: bool = True,
-        random_lidar_rotation_deg: float = 0.0,
-        random_lidar_rotation_seed: int = 0,
-        random_lidar_rotation_ratio: float = 1.0,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = data_root
@@ -104,9 +100,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         self.remove_root_rotation = bool(remove_root_rotation)
         # NOTE: When set to False, RGB/Depth frames are skipped while cameras are still loaded.
         self.skeleton_only = bool(skeleton_only)
-        self.random_lidar_rotation_deg = max(0.0, float(random_lidar_rotation_deg))
-        self.random_lidar_rotation_seed = int(random_lidar_rotation_seed)
-        self.random_lidar_rotation_ratio = float(np.clip(float(random_lidar_rotation_ratio), 0.0, 1.0))
 
 
         self.available_kinect_cameras = [f"kinect_{i:03d}" for i in range(10)]
@@ -430,75 +423,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return R_new, T_new
 
     @staticmethod
-    def _rotate_points_np(points: np.ndarray, R_aug: np.ndarray) -> np.ndarray:
-        pts = np.asarray(points, dtype=np.float32)
-        out = pts.copy()
-        xyz = out[..., :3].reshape(-1, 3)
-        out[..., :3] = (xyz @ R_aug.T).reshape(out[..., :3].shape)
-        return out
-
-    def _rotate_lidar_sequence(self, lidar_seq, R_aug: np.ndarray):
-        if isinstance(lidar_seq, list):
-            return [self._rotate_lidar_sequence(x, R_aug) for x in lidar_seq]
-        if isinstance(lidar_seq, tuple):
-            return tuple(self._rotate_lidar_sequence(x, R_aug) for x in lidar_seq)
-        return self._rotate_points_np(lidar_seq, R_aug)
-
-    @staticmethod
-    def _rotate_camera_extrinsic(extrinsic: np.ndarray, R_aug: np.ndarray) -> np.ndarray:
-        ext = np.asarray(extrinsic, dtype=np.float32)
-        if ext.shape != (3, 4):
-            raise ValueError(f"Camera extrinsic must be shape (3, 4), got {ext.shape}.")
-        R_cam = ext[:, :3]
-        T_cam = ext[:, 3:]
-        R_rot = R_aug @ R_cam
-        T_rot = R_aug @ T_cam
-        return np.hstack((R_rot, T_rot)).astype(np.float32)
-
-    def _rotate_camera_container(self, camera_data, R_aug: np.ndarray):
-        if camera_data is None:
-            return None
-        if isinstance(camera_data, list):
-            return [self._rotate_camera_container(c, R_aug) for c in camera_data]
-        if isinstance(camera_data, tuple):
-            return [self._rotate_camera_container(c, R_aug) for c in camera_data]
-        if not isinstance(camera_data, dict):
-            raise ValueError(f"Camera data must be dict/list/tuple, got {type(camera_data).__name__}.")
-        if "extrinsic" not in camera_data:
-            raise ValueError("Camera dict missing `extrinsic`.")
-        out = dict(camera_data)
-        out["extrinsic"] = self._rotate_camera_extrinsic(out["extrinsic"], R_aug)
-        return out
-
-    def _sample_sequence_rotation(self, seq_name: str) -> np.ndarray:
-        if self.random_lidar_rotation_deg <= 0.0:
-            return np.eye(3, dtype=np.float32)
-        key = f"rotate:{self.random_lidar_rotation_seed}:{seq_name}".encode("utf-8")
-        u64 = int.from_bytes(hashlib.sha1(key).digest()[:8], byteorder="big", signed=False)
-        rng = np.random.RandomState(int(u64 % (2 ** 32)))
-        angle_deg = float(rng.uniform(-self.random_lidar_rotation_deg, self.random_lidar_rotation_deg))
-        axis = rng.normal(size=3).astype(np.float32)
-        axis_norm = float(np.linalg.norm(axis))
-        if axis_norm < 1e-8:
-            axis = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        else:
-            axis = axis / axis_norm
-        axis_angle = axis * np.deg2rad(angle_deg)
-        return axis_angle_to_matrix_np(axis_angle.astype(np.float32))
-
-    def _should_apply_sequence_rotation(self, seq_name: str) -> bool:
-        if self.random_lidar_rotation_deg <= 0.0:
-            return False
-        if self.random_lidar_rotation_ratio >= 1.0:
-            return True
-        if self.random_lidar_rotation_ratio <= 0.0:
-            return False
-        key = f"apply:{self.random_lidar_rotation_seed}:{seq_name}".encode("utf-8")
-        u64 = int.from_bytes(hashlib.sha1(key).digest()[:8], byteorder="big", signed=False)
-        unit = u64 / float((1 << 64) - 1)
-        return unit < self.random_lidar_rotation_ratio
-
-    @staticmethod
     def _sample_camera_names(camera_pool: List[str], num_samples: int) -> List[str]:
         if not camera_pool:
             return []
@@ -797,12 +721,6 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 sample["input_lidar"] = self._maybe_single(lidar_frames_views)
             if lidar_cameras_out:
                 sample["lidar_camera"] = self._maybe_single(lidar_cameras_out)
-
-        if "input_lidar" in sample and self._should_apply_sequence_rotation(data_info["seq_name"]):
-            R_aug = self._sample_sequence_rotation(data_info["seq_name"])
-            sample["input_lidar"] = self._rotate_lidar_sequence(sample["input_lidar"], R_aug)
-            if "lidar_camera" in sample and sample["lidar_camera"] is not None:
-                sample["lidar_camera"] = self._rotate_camera_container(sample["lidar_camera"], R_aug)
 
         sample = self.pipeline(sample)
         return sample
