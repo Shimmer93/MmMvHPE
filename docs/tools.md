@@ -63,6 +63,7 @@ Purpose:
 - preprocess single-actor Panoptic Kinoptic sequences into compact, cropped RGB outputs,
 - synchronize body annotation frames with Kinect color/depth streams using `univTime` + `ksynctables`,
 - preserve sequence-local output structure (`<out_root>/<sequence>/...`),
+- embed self-contained world-to-camera extrinsics in `meta/cameras_kinect_cropped.json` (from `calibration_<seq>.json`),
 - support selected-sequence preprocessing for partial/in-progress dataset downloads.
 
 Example (single-sequence smoke run):
@@ -82,6 +83,33 @@ Example (list-driven run):
 uv run python tools/preprocess_panoptic_kinoptic.py \
   --root-dir /data/shared/panoptic-toolbox \
   --out-dir /opt/data/panoptic_kinoptic_single_actor_cropped \
+  --sequence-list /tmp/panoptic_single_actor_sequences.txt \
+  --continue-on-error
+```
+
+### `tools/patch_panoptic_preprocessed_extrinsics.py`
+
+Purpose:
+- patch already preprocessed Panoptic sequences so camera metadata is self-contained,
+- inject `extrinsic_world_to_color` into `<sequence>/meta/cameras_kinect_cropped.json`,
+- avoid re-running expensive preprocessing for completed sequences.
+
+Example (single sequence):
+
+```bash
+uv run python tools/patch_panoptic_preprocessed_extrinsics.py \
+  --preprocessed-root /opt/data/panoptic_kinoptic_single_actor_cropped \
+  --toolbox-root /data/shared/panoptic-toolbox \
+  --sequences 161029_piano2 \
+  --overwrite
+```
+
+Example (list-driven, tolerant mode):
+
+```bash
+uv run python tools/patch_panoptic_preprocessed_extrinsics.py \
+  --preprocessed-root /opt/data/panoptic_kinoptic_single_actor_cropped \
+  --toolbox-root /data/shared/panoptic-toolbox \
   --sequence-list /tmp/panoptic_single_actor_sequences.txt \
   --continue-on-error
 ```

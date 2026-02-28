@@ -62,8 +62,8 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         random_seed: int = 0,
         gt_unit: str = "cm",
         output_num_joints: int = 19,
-        panoptic_toolbox_root: Optional[str] = "/data/shared/panoptic-toolbox",
-        use_panoptic_calibration_extrinsics: bool = True,
+        panoptic_toolbox_root: Optional[str] = None,
+        use_panoptic_calibration_extrinsics: bool = False,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = osp.abspath(osp.expanduser(data_root))
@@ -601,14 +601,41 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if raw_name not in seq_info["cameras"]:
             raise KeyError(f"Camera {raw_name} not found in cropped cameras metadata for {seq_name}")
         cam = seq_info["cameras"][raw_name]
-        ext_map = seq_info.get("panoptic_extrinsics", {})
-        if modality == "rgb" and camera_name in ext_map:
-            extrinsic = ext_map[camera_name]
-        elif modality in {"depth", "lidar"} and camera_name in ext_map:
-            # Use color extrinsic for depth streams since RGB/depth were synchronized and cropped together.
-            extrinsic = ext_map[camera_name]
+        if modality in {"rgb", "depth", "lidar"} and "extrinsic_world_to_color" in cam:
+            ext = np.asarray(cam["extrinsic_world_to_color"], dtype=np.float32)
+            if ext.shape != (3, 4):
+                raise ValueError(
+                    f"Invalid extrinsic_world_to_color shape for {seq_name}/{raw_name}: {ext.shape}"
+                )
+            ext_unit = str(cam.get("extrinsic_world_to_color_unit", "cm")).lower()
+            ext = ext.copy()
+            if ext_unit == "cm":
+                if self.unit == "m":
+                    ext[:, 3] *= 0.01
+                elif self.unit == "mm":
+                    ext[:, 3] *= 10.0
+            elif ext_unit == "m":
+                if self.unit == "mm":
+                    ext[:, 3] *= 1000.0
+            elif ext_unit == "mm":
+                if self.unit == "m":
+                    ext[:, 3] *= 0.001
+            else:
+                raise ValueError(
+                    f"Unsupported extrinsic_world_to_color_unit={ext_unit} for {seq_name}/{raw_name}"
+                )
+            extrinsic = ext
         else:
-            extrinsic = self._camera_extrinsic(cam, modality)
+            extrinsic = None
+        ext_map = seq_info.get("panoptic_extrinsics", {})
+        if extrinsic is None:
+            if modality == "rgb" and camera_name in ext_map:
+                extrinsic = ext_map[camera_name]
+            elif modality in {"depth", "lidar"} and camera_name in ext_map:
+                # Use color extrinsic for depth streams since RGB/depth were synchronized and cropped together.
+                extrinsic = ext_map[camera_name]
+            else:
+                extrinsic = self._camera_extrinsic(cam, modality)
         return {
             "intrinsic": self._camera_intrinsic(cam, modality),
             "extrinsic": extrinsic,

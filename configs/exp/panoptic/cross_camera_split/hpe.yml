@@ -32,8 +32,6 @@ train_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
-    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
-    use_panoptic_calibration_extrinsics: true
 val_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
@@ -55,8 +53,6 @@ val_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
-    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
-    use_panoptic_calibration_extrinsics: true
 test_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
@@ -78,8 +74,6 @@ test_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
-    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
-    use_panoptic_calibration_extrinsics: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------

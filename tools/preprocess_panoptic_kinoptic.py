@@ -28,6 +28,7 @@ class SequencePaths:
     seq_dir: Path
     sync_path: Path
     calib_path: Path
+    panoptic_calib_path: Path
     body_dir: Path
     video_paths: dict[str, Path]
     depth_paths: dict[str, Path]
@@ -137,11 +138,14 @@ def _discover_sequence_paths(root_dir: Path, seq_name: str) -> SequencePaths:
         raise FileNotFoundError(f"sequence directory not found: {seq_dir}")
     sync_path = seq_dir / f"ksynctables_{seq_name}.json"
     calib_path = seq_dir / f"kcalibration_{seq_name}.json"
+    panoptic_calib_path = seq_dir / f"calibration_{seq_name}.json"
     body_dir = seq_dir / "hdPose3d_stage1_coco19"
     if not sync_path.is_file():
         raise FileNotFoundError(f"missing sync table: {sync_path}")
     if not calib_path.is_file():
         raise FileNotFoundError(f"missing calibration: {calib_path}")
+    if not panoptic_calib_path.is_file():
+        raise FileNotFoundError(f"missing panoptic calibration: {panoptic_calib_path}")
     if not body_dir.is_dir():
         raise FileNotFoundError(f"missing body annotation directory: {body_dir}")
     body_files = list(body_dir.rglob("body3DScene_*.json"))
@@ -172,6 +176,7 @@ def _discover_sequence_paths(root_dir: Path, seq_name: str) -> SequencePaths:
         seq_dir=seq_dir,
         sync_path=sync_path,
         calib_path=calib_path,
+        panoptic_calib_path=panoptic_calib_path,
         body_dir=body_dir,
         video_paths=video_paths,
         depth_paths=depth_paths,
@@ -414,6 +419,8 @@ def _process_sequence(
         sync_data = json.load(f)
     with paths.calib_path.open("r", encoding="utf-8") as f:
         calib_data = json.load(f)
+    with paths.panoptic_calib_path.open("r", encoding="utf-8") as f:
+        panoptic_calib_data = json.load(f)
 
     if "kinect" not in sync_data or "color" not in sync_data["kinect"] or "depth" not in sync_data["kinect"]:
         raise ValueError(f"invalid ksynctables format: {paths.sync_path}")
@@ -524,6 +531,15 @@ def _process_sequence(
     sensors = calib_data.get("sensors")
     if not isinstance(sensors, list) or len(sensors) < 10:
         raise ValueError(f"invalid sensors in calibration: {paths.calib_path}")
+    panoptic_cameras = panoptic_calib_data.get("cameras")
+    if not isinstance(panoptic_cameras, list) or not panoptic_cameras:
+        raise ValueError(f"invalid panoptic cameras in calibration: {paths.panoptic_calib_path}")
+    panoptic_camera_map = {}
+    for cam in panoptic_cameras:
+        name = cam.get("name")
+        if not isinstance(name, str):
+            continue
+        panoptic_camera_map[name] = cam
 
     cameras_out: dict[str, dict[str, Any]] = {}
     for node_name in sorted(sync_map.keys()):
@@ -531,6 +547,19 @@ def _process_sequence(
         if node_idx < 0 or node_idx >= len(sensors):
             raise ValueError(f"node index out of calibration range: {node_name}")
         sensor = sensors[node_idx]
+        panoptic_cam_name = f"50_{node_idx + 1:02d}"
+        if panoptic_cam_name not in panoptic_camera_map:
+            raise ValueError(
+                f"missing panoptic camera {panoptic_cam_name} in {paths.panoptic_calib_path}"
+            )
+        panoptic_cam = panoptic_camera_map[panoptic_cam_name]
+        r_world_to_color = np.array(panoptic_cam["R"], dtype=np.float64)
+        t_world_to_color_cm = np.array(panoptic_cam["t"], dtype=np.float64).reshape(3, 1)
+        if r_world_to_color.shape != (3, 3):
+            raise ValueError(
+                f"invalid R shape for {panoptic_cam_name} in {paths.panoptic_calib_path}: "
+                f"{r_world_to_color.shape}"
+            )
 
         rgb_crop = crop_params[node_name]
         depth_crop = crop_params[f"{node_name}_depth"]
@@ -551,6 +580,7 @@ def _process_sequence(
             depth_out_size,
         )
         cam_key = node_name.lower().replace("kinectnode", "kinect_")
+        extrinsic_world_to_color = np.hstack((r_world_to_color, t_world_to_color_cm))
         cameras_out[cam_key] = {
             "node": node_name,
             "K_color": k_color_new.tolist(),
@@ -558,6 +588,9 @@ def _process_sequence(
             "M_color": sensor["M_color"],
             "M_depth": sensor["M_depth"],
             "M_world2sensor": sensor["M_world2sensor"],
+            "extrinsic_world_to_color": extrinsic_world_to_color.tolist(),
+            "extrinsic_world_to_color_unit": "cm",
+            "extrinsic_world_to_color_source": f"{paths.panoptic_calib_path.name}:{panoptic_cam_name}",
             "distCoeffs_color": sensor["distCoeffs_color"],
             "distCoeffs_depth": sensor["distCoeffs_depth"],
             "color_width": int(rgb_out_size[0]),
@@ -588,6 +621,7 @@ def _process_sequence(
                 "num_camera_streams": len(sync_map),
                 "num_written_rgb_frames": total_written_rgb,
                 "cameras_file": "meta/cameras_kinect_cropped.json",
+                "camera_extrinsics_self_contained": True,
             },
             f,
             indent=2,
