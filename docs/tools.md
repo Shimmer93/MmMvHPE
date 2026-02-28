@@ -20,6 +20,72 @@ Current status:
 uv run python tools/data_preprocess.py
 ```
 
+### `tools/panoptic_find_single_actor_sequences.py`
+
+Purpose:
+- scan Panoptic/Kinoptic sequence folders and classify each sequence as:
+  - `single_actor`: no frame has more than one body in `body3DScene_*.json`,
+  - `multi_actor`: at least one frame has two or more bodies,
+  - unknown/incomplete statuses for missing or unreadable annotations.
+
+Example:
+
+```bash
+uv run python tools/panoptic_find_single_actor_sequences.py \
+  --panoptic-root /data/shared/multi_view_hpe/panoptic
+```
+
+### `tools/download_panoptic_hdpose_only.sh`
+
+Purpose:
+- download only `hdPose3d_stage1_coco19.tar` for Panoptic sequences,
+- optionally extract `body3DScene_*.json` for actor counting.
+
+Examples:
+
+```bash
+tools/download_panoptic_hdpose_only.sh \
+  --toolbox-root /data/shared/panoptic-toolbox \
+  --target-root /data/shared/multi_view_hpe/panoptic \
+  --extract
+```
+
+```bash
+tools/download_panoptic_hdpose_only.sh \
+  --target-root /data/shared/multi_view_hpe/panoptic \
+  160906_ian2_2 160906_ian1 \
+  --extract --remove-tar
+```
+
+### `tools/preprocess_panoptic_kinoptic.py`
+
+Purpose:
+- preprocess single-actor Panoptic Kinoptic sequences into compact, cropped RGB outputs,
+- synchronize body annotation frames with Kinect color/depth streams using `univTime` + `ksynctables`,
+- preserve sequence-local output structure (`<out_root>/<sequence>/...`),
+- support selected-sequence preprocessing for partial/in-progress dataset downloads.
+
+Example (single-sequence smoke run):
+
+```bash
+uv run python tools/preprocess_panoptic_kinoptic.py \
+  --root-dir /data/shared/panoptic-toolbox \
+  --out-dir /opt/data/panoptic_kinoptic_single_actor_cropped \
+  --sequences 161029_piano2 \
+  --max-body-frames 128 \
+  --continue-on-error
+```
+
+Example (list-driven run):
+
+```bash
+uv run python tools/preprocess_panoptic_kinoptic.py \
+  --root-dir /data/shared/panoptic-toolbox \
+  --out-dir /opt/data/panoptic_kinoptic_single_actor_cropped \
+  --sequence-list /tmp/panoptic_single_actor_sequences.txt \
+  --continue-on-error
+```
+
 For HuMMan data layout details, see `datasets/HUMMAN_PREPROCESSING.md`.
 
 ## Detection helpers

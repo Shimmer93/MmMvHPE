@@ -1,0 +1,140 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 20
+monitor: 'val_mpjpe'
+monitor_mode: 'min'
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 24
+    modality_names: ['rgb']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    split: 'train'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'cross_camera_split'
+    test_mode: false
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: ['161029_piano2']
+    strict_validation: true
+val_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 24
+    modality_names: ['rgb']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'cross_camera_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: ['161029_piano2']
+    strict_validation: true
+test_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 24
+    modality_names: ['rgb']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'cross_camera_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: ['161029_piano2']
+    strict_validation: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0001
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 2
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: PanopticHPE
+backbone_rgb:
+  name: 'ResNet18'
+  params:
+    pretrained: false
+  has_temporal: false
+aggregator:
+  name: 'SimpleAggregator'
+  params:
+    input_dims: [512, null, null, null]
+    embed_dim: 256
+keypoint_head:
+  name: 'RegressionKeypointHead'
+  params:
+    emb_size: 256
+    num_classes: 72
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+        alias: 'KeypointMSELoss'
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      use_smpl: false
+      root_joint_idx: 0
+  - name: 'PAMPJPE'
+    params:
+      use_smpl: false
+      root_joint_idx: 0
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline

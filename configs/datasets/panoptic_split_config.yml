@@ -1,0 +1,40 @@
+random_split:
+  ratio: 0.8
+  random_seed: 0
+  train_dataset:
+    split: training
+    sequences: null
+    cameras: null
+  val_dataset:
+    split: validation
+    sequences: null
+    cameras: null
+
+cross_camera_split:
+  train_dataset:
+    split: training
+    sequences: null
+    subjects: null
+    actions: null
+    cameras: [kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+  val_dataset:
+    split: validation
+    sequences: null
+    subjects: null
+    actions: null
+    cameras: [kinect_001, kinect_007, kinect_009, kinect_010]
+
+cross_subject_split:
+  train_dataset:
+    split: training
+    sequences: null
+    # Panoptic "subject" here is the sequence prefix before first underscore, e.g. 161029 in 161029_piano2.
+    subjects: null
+    actions: null
+    cameras: null
+  val_dataset:
+    split: validation
+    sequences: null
+    subjects: null
+    actions: null
+    cameras: null
