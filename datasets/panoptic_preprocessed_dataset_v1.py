@@ -61,7 +61,9 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         strict_validation: bool = True,
         random_seed: int = 0,
         gt_unit: str = "cm",
-        output_num_joints: int = 24,
+        output_num_joints: int = 19,
+        panoptic_toolbox_root: Optional[str] = "/data/shared/panoptic-toolbox",
+        use_panoptic_calibration_extrinsics: bool = True,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = osp.abspath(osp.expanduser(data_root))
@@ -86,6 +88,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         self.random_seed = int(random_seed)
         self.gt_unit = str(gt_unit).lower()
         self.output_num_joints = int(output_num_joints)
+        self.panoptic_toolbox_root = (
+            osp.abspath(osp.expanduser(panoptic_toolbox_root))
+            if panoptic_toolbox_root is not None
+            else None
+        )
+        self.use_panoptic_calibration_extrinsics = bool(use_panoptic_calibration_extrinsics)
 
         if self.gt_unit not in {"m", "cm", "mm"}:
             raise ValueError(f"Unsupported gt_unit={gt_unit}. Expected one of {{'m','cm','mm'}}.")
@@ -439,6 +447,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                     "depth_cams": depth_cam_names,
                     "cameras": cameras,
                     "cam_name_to_raw": cam_name_to_raw,
+                    "panoptic_extrinsics": self._load_panoptic_extrinsics(seq_name),
                 }
             except Exception as exc:
                 errors.append(f"{seq_name}: {exc}")
@@ -451,6 +460,45 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
 
         if not out:
             raise ValueError("No valid sequences were indexed.")
+        return out
+
+    def _load_panoptic_extrinsics(self, seq_name: str) -> Dict[str, np.ndarray]:
+        if not self.use_panoptic_calibration_extrinsics or self.panoptic_toolbox_root is None:
+            return {}
+
+        calib_path = Path(self.panoptic_toolbox_root) / seq_name / f"calibration_{seq_name}.json"
+        if not calib_path.is_file():
+            return {}
+
+        with calib_path.open("r", encoding="utf-8") as f:
+            calib = json.load(f)
+        cameras = calib.get("cameras", [])
+        if not isinstance(cameras, list):
+            return {}
+
+        # Panoptic calibration translations are in centimeters.
+        if self.unit == "m":
+            t_scale = 0.01
+        elif self.unit == "mm":
+            t_scale = 10.0
+        else:
+            t_scale = 1.0
+
+        out: Dict[str, np.ndarray] = {}
+        for cam in cameras:
+            name = cam.get("name", "")
+            if not isinstance(name, str) or not name.startswith("50_"):
+                continue
+            try:
+                cam_idx = int(name.split("_", 1)[1])
+            except ValueError:
+                continue
+            cam_name = self._normalize_camera_name(f"kinect_{cam_idx}")
+            r = np.asarray(cam["R"], dtype=np.float32)
+            t = np.asarray(cam["t"], dtype=np.float32).reshape(3, 1) * float(t_scale)
+            if r.shape != (3, 3):
+                continue
+            out[cam_name] = np.hstack((r, t)).astype(np.float32)
         return out
 
     def _build_dataset(self) -> List[Dict[str, Any]]:
@@ -515,14 +563,11 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         elif self.gt_unit == "m" and self.unit == "mm":
             xyz = xyz * 1000.0
         xyz = xyz.astype(np.float32)
-        if xyz.shape[0] > self.output_num_joints:
+        if xyz.shape[0] != self.output_num_joints:
             raise ValueError(
-                f"GT joints ({xyz.shape[0]}) exceed output_num_joints ({self.output_num_joints}) "
+                f"GT joints ({xyz.shape[0]}) do not match output_num_joints ({self.output_num_joints}) "
                 f"for seq={seq_name}, frame={body_frame_id}"
             )
-        if xyz.shape[0] < self.output_num_joints:
-            pad = np.zeros((self.output_num_joints - xyz.shape[0], 3), dtype=np.float32)
-            xyz = np.concatenate([xyz, pad], axis=0)
         return xyz
 
     def _load_rgb_frames(self, seq_name: str, camera_name: str, frame_window: List[int]) -> List[np.ndarray]:
@@ -556,9 +601,17 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if raw_name not in seq_info["cameras"]:
             raise KeyError(f"Camera {raw_name} not found in cropped cameras metadata for {seq_name}")
         cam = seq_info["cameras"][raw_name]
+        ext_map = seq_info.get("panoptic_extrinsics", {})
+        if modality == "rgb" and camera_name in ext_map:
+            extrinsic = ext_map[camera_name]
+        elif modality in {"depth", "lidar"} and camera_name in ext_map:
+            # Use color extrinsic for depth streams since RGB/depth were synchronized and cropped together.
+            extrinsic = ext_map[camera_name]
+        else:
+            extrinsic = self._camera_extrinsic(cam, modality)
         return {
             "intrinsic": self._camera_intrinsic(cam, modality),
-            "extrinsic": self._camera_extrinsic(cam, modality),
+            "extrinsic": extrinsic,
         }
 
     def __len__(self) -> int:
@@ -633,7 +686,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
 
         gt_keypoints = self._load_gt_keypoints(seq_name, gt_body_frame_id)
         pelvis = np.asarray(gt_keypoints[0], dtype=np.float32)
-        gt_keypoints = (gt_keypoints - pelvis[None, :]).astype(np.float32)
+        gt_keypoints = gt_keypoints.astype(np.float32)
 
         gt_smpl_params = np.zeros((82,), dtype=np.float32)
         gt_global_orient = np.zeros((3,), dtype=np.float32)
@@ -659,7 +712,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         }
 
         if self.return_keypoints_sequence:
-            seq_kpts = [self._load_gt_keypoints(seq_name, fid) - pelvis[None, :] for fid in frame_window]
+            seq_kpts = [self._load_gt_keypoints(seq_name, fid) for fid in frame_window]
             sample["gt_keypoints_seq"] = np.stack(seq_kpts, axis=0).astype(np.float32)
 
         if self.return_smpl_sequence:

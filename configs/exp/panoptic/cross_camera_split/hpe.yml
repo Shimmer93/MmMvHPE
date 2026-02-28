@@ -17,7 +17,7 @@ train_dataset:
     data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
     unit: 'm'
     gt_unit: 'cm'
-    output_num_joints: 24
+    output_num_joints: 19
     modality_names: ['rgb']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     split: 'train'
@@ -32,13 +32,15 @@ train_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
+    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
+    use_panoptic_calibration_extrinsics: true
 val_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
     data_root: *data_root
     unit: 'm'
     gt_unit: 'cm'
-    output_num_joints: 24
+    output_num_joints: 19
     modality_names: ['rgb']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     split: 'test'
@@ -53,13 +55,15 @@ val_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
+    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
+    use_panoptic_calibration_extrinsics: true
 test_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
     data_root: *data_root
     unit: 'm'
     gt_unit: 'cm'
-    output_num_joints: 24
+    output_num_joints: 19
     modality_names: ['rgb']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     split: 'test'
@@ -74,6 +78,8 @@ test_dataset:
     colocated: false
     sequence_allowlist: ['161029_piano2']
     strict_validation: true
+    panoptic_toolbox_root: '/data/shared/panoptic-toolbox'
+    use_panoptic_calibration_extrinsics: true
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -108,7 +114,7 @@ keypoint_head:
   name: 'RegressionKeypointHead'
   params:
     emb_size: 256
-    num_classes: 72
+    num_classes: 57
     losses:
       - name: 'MSELoss'
         params: null
@@ -138,3 +144,9 @@ train_pipeline: &train_pipeline
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
+vis_skl_format: 'panoptic_coco19'
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0]
+  depth_std: [255.0]
