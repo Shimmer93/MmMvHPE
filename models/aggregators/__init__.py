@@ -9,6 +9,7 @@ from .trans_aggregator_v4 import TransformerAggregatorV4  # noqa: F401, F403
 from .trans_aggregator_v5 import TransformerAggregatorV5  # noqa: F401, F403
 from .simple_aggregator import SimpleAggregator  # noqa: F401, F403
 from .leir_aggregator import LEIRAggregator  # noqa: F401, F403
+from .fusionformer_modality import FusionFormerModalityAggregator  # noqa: F401, F403
 
 __all__ = [
     'XFiAggregator',
@@ -22,4 +23,5 @@ __all__ = [
     'TransformerAggregatorV5',
     'SimpleAggregator',
     'LEIRAggregator',
+    'FusionFormerModalityAggregator',
 ]

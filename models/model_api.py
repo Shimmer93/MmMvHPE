@@ -18,6 +18,11 @@ class LitModel(L.LightningModule):
     def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
+
+        self.rgb_input_key = getattr(self.hparams, 'rgb_input_key', 'input_rgb')
+        self.depth_input_key = getattr(self.hparams, 'depth_input_key', 'input_depth')
+        self.lidar_input_key = getattr(self.hparams, 'lidar_input_key', 'input_lidar')
+        self.mmwave_input_key = getattr(self.hparams, 'mmwave_input_key', 'input_mmwave')
         self.camera_only = getattr(hparams, "camera_only", False)
         
         if not self.camera_only:
@@ -235,10 +240,10 @@ class LitModel(L.LightningModule):
     def extract_features(self, batch):
         if self.camera_only:
             return None
-        feat_rgb = self.forward_rgb(batch.get('input_rgb', None))
-        feat_depth = self.forward_depth(batch.get('input_depth', None))
-        feat_lidar = self.forward_lidar(batch.get('input_lidar', None))
-        feat_mmwave = self.forward_mmwave(batch.get('input_mmwave', None))
+        feat_rgb = self.forward_rgb(batch.get(self.rgb_input_key, None))
+        feat_depth = self.forward_depth(batch.get(self.depth_input_key, None))
+        feat_lidar = self.forward_lidar(batch.get(self.lidar_input_key, None))
+        feat_mmwave = self.forward_mmwave(batch.get(self.mmwave_input_key, None))
         return feat_rgb, feat_depth, feat_lidar, feat_mmwave
     
     def aggregate_features(self, feats, batch):

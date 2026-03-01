@@ -22,6 +22,7 @@ Exported in `datasets/__init__.py`:
 - `HummanPreprocessedDatasetV2`
 - `HummanPreprocessedDatasetV3`
 - `HummanCameraDatasetV1`
+- `PanopticPreprocessedDatasetV1`
 
 ## Batch/sample contract
 
@@ -107,6 +108,34 @@ The loader converts LiDAR JSON keypoints so they are consistent with dataset mod
 
 When `test_mode=True`, the dataset reads `val_dataset` section of the selected split entry.
 
+`configs/datasets/panoptic_split_config.yml` supports:
+- `random_split` with deterministic sequence-level ratio split (`ratio` + `random_seed`)
+- explicit `train_dataset.sequences` / `val_dataset.sequences` inside `random_split`
+- `cross_camera_split` (`train_dataset.cameras` / `val_dataset.cameras`)
+- `cross_subject_split` (`train_dataset.subjects` / `val_dataset.subjects`)
+- `cross_action_split`-style filtering is also supported via `actions` fields
+
+For Panoptic, sequence-level split is applied first, then optional user sequence allowlist filtering (`sequence_allowlist` or `sequence_list_file`).
+Panoptic `subjects`/`actions` are parsed from sequence name `<subject>_<action>` (split at first underscore).
+
+## Panoptic preprocessed dataset notes
+
+`datasets/panoptic_preprocessed_dataset_v1.py` loads sequence-preserving outputs from:
+- default root: `/opt/data/panoptic_kinoptic_single_actor_cropped`
+- per-sequence required files:
+: `meta/sync_map.json`
+: `meta/cameras_kinect_cropped.json`
+: `meta/manifest.json`
+: `gt3d/*.npy`
+
+Key behavior:
+- strict validation is enabled by default (`strict_validation=true`) and fails on missing artifacts.
+- sample keys follow HuMMan v3 training-facing contract (`sample_id`, `modalities`, `input_*`, `*_camera`, `gt_keypoints`, `gt_smpl_params`, `selected_cameras`, etc.).
+- camera names are normalized to `kinect_###` style.
+
+Dataset entry templates are provided in:
+- `configs/datasets/panoptic_preprocessed_dataset_v1.yml`
+
 ## Transform pipeline config
 
 Pipelines are list-of-dicts:
@@ -168,5 +197,53 @@ print("train size:", len(dm.train_dataset))
 print("val size:", len(dm.val_dataset))
 sample = dm.train_dataset[0]
 print("sample keys:", sorted(sample.keys()))
+PY
+```
+
+Panoptic smoke test on a ready sequence (`161029_piano2`):
+
+```bash
+uv run python - <<'PY'
+from datasets import PanopticPreprocessedDatasetV1
+
+ds = PanopticPreprocessedDatasetV1(
+    data_root="/opt/data/panoptic_kinoptic_single_actor_cropped",
+    modality_names=("rgb", "depth"),
+    seq_len=1,
+    pad_seq=True,
+    split_config="configs/datasets/panoptic_split_config.yml",
+    split_to_use="random_split",
+    sequence_allowlist=["161029_piano2"],
+    strict_validation=True,
+)
+print("dataset size:", len(ds))
+sample = ds[0]
+print("sample_id:", sample["sample_id"])
+print("keys:", sorted(sample.keys()))
+print("rgb camera shape:", sample["rgb_camera"]["intrinsic"].shape)
+print("depth camera shape:", sample["depth_camera"]["intrinsic"].shape)
+print("gt keypoints shape:", sample["gt_keypoints"].shape)
+PY
+```
+
+Deterministic ratio split check (same split membership across repeated runs):
+
+```bash
+uv run python - <<'PY'
+from datasets import PanopticPreprocessedDatasetV1
+
+params = dict(
+    data_root="/opt/data/panoptic_kinoptic_single_actor_cropped",
+    split_config="configs/datasets/panoptic_split_config.yml",
+    split_to_use="random_split",
+    test_mode=False,
+    strict_validation=True,
+)
+ds1 = PanopticPreprocessedDatasetV1(**params)
+ds2 = PanopticPreprocessedDatasetV1(**params)
+seqs1 = sorted(ds1.sequence_data.keys())
+seqs2 = sorted(ds2.sequence_data.keys())
+print("same_membership:", seqs1 == seqs2)
+print("train_sequences:", seqs1)
 PY
 ```
