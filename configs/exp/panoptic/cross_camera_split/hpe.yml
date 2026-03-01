@@ -18,6 +18,8 @@ train_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
@@ -41,6 +43,8 @@ val_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
@@ -64,6 +68,8 @@ test_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
