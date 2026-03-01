@@ -63,6 +63,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         gt_unit: str = "cm",
         output_num_joints: int = 19,
         apply_to_new_world: bool = False,
+        remove_root_rotation: bool = False,
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
     ):
@@ -90,11 +91,16 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         self.gt_unit = str(gt_unit).lower()
         self.output_num_joints = int(output_num_joints)
         self.apply_to_new_world = bool(apply_to_new_world)
+        self.remove_root_rotation = bool(remove_root_rotation)
         self.panoptic_toolbox_root = (
             osp.abspath(osp.expanduser(panoptic_toolbox_root))
             if panoptic_toolbox_root is not None
             else None
         )
+        if self.remove_root_rotation and not self.apply_to_new_world:
+            raise ValueError(
+                "remove_root_rotation=True requires apply_to_new_world=True for PanopticPreprocessedDatasetV1."
+            )
         self.use_panoptic_calibration_extrinsics = bool(use_panoptic_calibration_extrinsics)
 
         if self.gt_unit not in {"m", "cm", "mm"}:
@@ -650,17 +656,71 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         return (pts - pel).astype(np.float32)
 
     @staticmethod
-    def _camera_to_new_world(camera: Dict[str, np.ndarray], pelvis: np.ndarray) -> Dict[str, np.ndarray]:
+    def _world_to_new_world_rot(
+        points: np.ndarray,
+        pelvis: np.ndarray,
+        r_new_to_world: np.ndarray,
+    ) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+        pel = np.asarray(pelvis, dtype=np.float32).reshape(1, 3)
+        r = np.asarray(r_new_to_world, dtype=np.float32)
+        if r.shape != (3, 3):
+            raise ValueError(f"r_new_to_world must be (3,3), got {r.shape}")
+        pts_new = (r.T @ (pts - pel).T).T
+        return pts_new.reshape(points.shape).astype(np.float32)
+
+    @staticmethod
+    def _camera_to_new_world(
+        camera: Dict[str, np.ndarray],
+        pelvis: np.ndarray,
+        r_new_to_world: Optional[np.ndarray] = None,
+    ) -> Dict[str, np.ndarray]:
         out = dict(camera)
         ext = np.asarray(camera["extrinsic"], dtype=np.float32)
         if ext.shape != (3, 4):
             raise ValueError(f"Camera extrinsic must be (3,4), got {ext.shape}")
-        R = ext[:, :3]
-        T = ext[:, 3:4]
+        r_wc = ext[:, :3]
+        t_wc = ext[:, 3:4]
         pel = np.asarray(pelvis, dtype=np.float32).reshape(3, 1)
-        T_new = R @ pel + T
-        out["extrinsic"] = np.hstack((R, T_new)).astype(np.float32)
+        if r_new_to_world is None:
+            r_new_to_world = np.eye(3, dtype=np.float32)
+        r_new_to_world = np.asarray(r_new_to_world, dtype=np.float32)
+        if r_new_to_world.shape != (3, 3):
+            raise ValueError(f"r_new_to_world must be (3,3), got {r_new_to_world.shape}")
+        r_new = r_wc @ r_new_to_world
+        t_new = r_wc @ pel + t_wc
+        out["extrinsic"] = np.hstack((r_new, t_new)).astype(np.float32)
         return out
+
+    @staticmethod
+    def _normalize_vec(v: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+        n = float(np.linalg.norm(v))
+        if n <= eps:
+            raise ValueError("Cannot normalize near-zero vector while estimating root rotation.")
+        return (v / n).astype(np.float32)
+
+    def _estimate_root_rotation_from_joints19(self, keypoints: np.ndarray) -> np.ndarray:
+        # Panoptic joints19 indices:
+        # 0: Neck, 2: BodyCenter, 6: lHip, 12: rHip
+        if keypoints.shape[0] <= 12:
+            raise ValueError(
+                f"Need Panoptic joints19 indices [0,2,6,12], got shape={keypoints.shape}."
+            )
+        neck = np.asarray(keypoints[0], dtype=np.float32)
+        body = np.asarray(keypoints[2], dtype=np.float32)
+        lhip = np.asarray(keypoints[6], dtype=np.float32)
+        rhip = np.asarray(keypoints[12], dtype=np.float32)
+
+        x_axis = self._normalize_vec(rhip - lhip)       # right direction
+        y_seed = self._normalize_vec(neck - body)       # up direction
+        z_axis = self._normalize_vec(np.cross(x_axis, y_seed))   # forward direction
+        y_axis = self._normalize_vec(np.cross(z_axis, x_axis))   # re-orthogonalize up
+
+        r_new_to_world = np.stack([x_axis, y_axis, z_axis], axis=1).astype(np.float32)
+        det = float(np.linalg.det(r_new_to_world))
+        if not np.isfinite(det) or abs(det) < 1e-5:
+            raise ValueError(f"Invalid root rotation matrix estimated from joints19 (det={det}).")
+        return r_new_to_world
 
     def __len__(self) -> int:
         return len(self.data_list)
@@ -741,8 +801,14 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         # Panoptic joints19 order: 2 = BodyCenter (center of hips), used as pelvis/root.
         pelvis = np.asarray(gt_keypoints[2], dtype=np.float32)
         gt_keypoints = gt_keypoints.astype(np.float32)
+        r_new_to_world = np.eye(3, dtype=np.float32)
+        if self.apply_to_new_world and self.remove_root_rotation:
+            r_new_to_world = self._estimate_root_rotation_from_joints19(gt_keypoints)
         if self.apply_to_new_world:
-            gt_keypoints = self._world_to_new_world(gt_keypoints, pelvis)
+            if self.remove_root_rotation:
+                gt_keypoints = self._world_to_new_world_rot(gt_keypoints, pelvis, r_new_to_world)
+            else:
+                gt_keypoints = self._world_to_new_world(gt_keypoints, pelvis)
 
         gt_smpl_params = np.zeros((82,), dtype=np.float32)
         gt_global_orient = np.zeros((3,), dtype=np.float32)
@@ -771,7 +837,10 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             seq_kpts = [self._load_gt_keypoints(seq_name, fid) for fid in frame_window]
             seq_kpts = np.stack(seq_kpts, axis=0).astype(np.float32)
             if self.apply_to_new_world:
-                seq_kpts = seq_kpts - pelvis.reshape(1, 1, 3)
+                if self.remove_root_rotation:
+                    seq_kpts = self._world_to_new_world_rot(seq_kpts, pelvis, r_new_to_world)
+                else:
+                    seq_kpts = seq_kpts - pelvis.reshape(1, 1, 3)
             sample["gt_keypoints_seq"] = seq_kpts
 
         if self.return_smpl_sequence:
@@ -788,7 +857,10 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 sample["input_rgb"] = self._maybe_single(rgb_frames_views)
             if rgb_cameras:
                 if self.apply_to_new_world:
-                    rgb_cameras = [self._camera_to_new_world(cam, pelvis) for cam in rgb_cameras]
+                    rgb_cameras = [
+                        self._camera_to_new_world(cam, pelvis, r_new_to_world if self.remove_root_rotation else None)
+                        for cam in rgb_cameras
+                    ]
                 sample["rgb_camera"] = self._maybe_single(rgb_cameras)
 
         if "depth" in self.modality_names:
@@ -815,11 +887,17 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 sample.pop("input_depth", None)
                 sample["selected_cameras"]["lidar"] = list(selected_depth)
                 if self.apply_to_new_world:
-                    depth_cameras = [self._camera_to_new_world(cam, pelvis) for cam in depth_cameras]
+                    depth_cameras = [
+                        self._camera_to_new_world(cam, pelvis, r_new_to_world if self.remove_root_rotation else None)
+                        for cam in depth_cameras
+                    ]
                 sample["lidar_camera"] = self._maybe_single(depth_cameras)
             elif depth_cameras:
                 if self.apply_to_new_world:
-                    depth_cameras = [self._camera_to_new_world(cam, pelvis) for cam in depth_cameras]
+                    depth_cameras = [
+                        self._camera_to_new_world(cam, pelvis, r_new_to_world if self.remove_root_rotation else None)
+                        for cam in depth_cameras
+                    ]
                 sample["depth_camera"] = self._maybe_single(depth_cameras)
 
         sample = self.pipeline(sample)
