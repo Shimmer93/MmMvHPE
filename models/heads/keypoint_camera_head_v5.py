@@ -181,6 +181,11 @@ class KeypointCameraHeadV5(BaseHead):
         return modalities
 
     def _get_global_keypoints(self, data_batch, pred_dict):
+        json_pred = self._get_json_global_prediction(data_batch)
+        if json_pred is not None:
+            keypoints = self._to_tensor(json_pred)
+            keypoints = self._select_frame(keypoints)
+            return keypoints
         pred = None
         if pred_dict is not None:
             pred = pred_dict.get("pred_keypoints")
@@ -205,6 +210,13 @@ class KeypointCameraHeadV5(BaseHead):
         return keypoints
 
     def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype):
+        if modality == "lidar":
+            json_pred = self._get_json_lidar_prediction(data_batch)
+            if json_pred is not None:
+                keypoints = self._to_tensor(json_pred).to(device=device, dtype=dtype)
+                keypoints = self._select_frame(keypoints)
+                return keypoints
+
         pred = None
         if pred_dict is not None:
             if modality == "lidar":
@@ -220,6 +232,28 @@ class KeypointCameraHeadV5(BaseHead):
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
         keypoints = self._select_frame(keypoints)
         return keypoints
+
+    @staticmethod
+    def _get_json_global_prediction(data_batch):
+        for key in ("pred_keypoints_json", "pred_keypoints_lidar_json"):
+            value = data_batch.get(key)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _get_json_lidar_prediction(data_batch):
+        keys = (
+            "pred_keypoints_pc_centered_input_lidar_json",
+            "pred_keypoints_3d_lidar_json",
+            "pred_keypoints_lidar_json",
+            "pred_keypoints_json",
+        )
+        for key in keys:
+            value = data_batch.get(key)
+            if value is not None:
+                return value
+        return None
 
     @staticmethod
     def _to_tensor(x):

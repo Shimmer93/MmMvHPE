@@ -137,8 +137,10 @@ class RegressionKeypointHeadV5(BaseHead):
 
         return losses
 
-    def predict(self, x):
-        outputs = self.forward(x)
+    def predict(self, x, modalities=None, data_batch=None, return_outputs=False):
+        outputs = self.forward(x, modalities=modalities, data_batch=data_batch)
+        if return_outputs:
+            return outputs
         return outputs["global"]
 
     def _select_layers(self, x):

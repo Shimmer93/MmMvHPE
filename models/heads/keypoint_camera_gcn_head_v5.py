@@ -493,6 +493,9 @@ class KeypointCameraGCNHeadV5(BaseHead):
         return tensor
 
     def _get_global_keypoints(self, data_batch, pred_dict):
+        json_pred = self._get_json_global_prediction(data_batch)
+        if json_pred is not None:
+            return self._to_tensor(json_pred)
         pred = None
         if pred_dict is not None:
             pred = pred_dict.get("pred_keypoints")
@@ -522,6 +525,14 @@ class KeypointCameraGCNHeadV5(BaseHead):
         return keypoints
 
     def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype, sensor_idx=0):
+        if modality == "lidar":
+            json_pred = self._get_json_lidar_prediction(data_batch, sensor_idx=sensor_idx)
+            if json_pred is not None:
+                keypoints = self._to_tensor(json_pred).to(device=device, dtype=dtype)
+                if self.training:
+                    keypoints += torch.randn_like(keypoints) * 0.05
+                return keypoints
+
         pred = None
         if pred_dict is not None:
             if modality == "lidar":
@@ -539,7 +550,33 @@ class KeypointCameraGCNHeadV5(BaseHead):
         if keypoints is None:
             return None
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
+        if self.training:
+            keypoints += torch.randn_like(keypoints) * 0.05
         return keypoints
+
+    @staticmethod
+    def _get_json_global_prediction(data_batch):
+        for key in ("pred_keypoints_json", "pred_keypoints_lidar_json"):
+            value = data_batch.get(key)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _get_json_lidar_prediction(data_batch, sensor_idx=0):
+        keys = (
+            f"pred_keypoints_pc_centered_input_lidar_json_s{sensor_idx}",
+            "pred_keypoints_pc_centered_input_lidar_json",
+            f"pred_keypoints_3d_lidar_json_s{sensor_idx}",
+            "pred_keypoints_3d_lidar_json",
+            "pred_keypoints_lidar_json",
+            "pred_keypoints_json",
+        )
+        for key in keys:
+            value = data_batch.get(key)
+            if value is not None:
+                return value
+        return None
 
     @staticmethod
     def _to_tensor(x):

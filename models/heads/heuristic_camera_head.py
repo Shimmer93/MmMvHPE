@@ -139,9 +139,6 @@ class HeuristicCameraHead(BaseHead):
                 pred_extrinsics[:, m_idx] = self._solve_rigid_batch(
                     global_kps, keypoints_3d, estimate_scale=self.estimate_lidar_scale
                 )
-                pred_extrinsics[:, m_idx] = self._restore_lidar_translation(
-                    pred_extrinsics[:, m_idx], data_batch
-                )
                 intrinsics = self._get_intrinsics(data_batch, modality, device, dtype, batch_size)
                 if intrinsics is None and self.default_fov_deg is not None:
                     intrinsics = self._intrinsics_from_fov(
@@ -254,31 +251,6 @@ class HeuristicCameraHead(BaseHead):
             if isinstance(inp, torch.Tensor) and inp.dim() >= 4:
                 return int(inp.shape[-2]), int(inp.shape[-1])
         return self.default_image_size
-
-    def _restore_lidar_translation(self, extrinsics, data_batch):
-        affine = data_batch.get("input_lidar_affine")
-        if affine is None or not isinstance(extrinsics, torch.Tensor):
-            return extrinsics
-        if isinstance(affine, (list, tuple)):
-            affines = []
-            for a in affine:
-                if a is None:
-                    affines.append(torch.eye(4, dtype=torch.float32))
-                else:
-                    affines.append(self._to_tensor(a))
-            affine = torch.stack(affines, dim=0)
-        else:
-            affine = self._to_tensor(affine)
-        affine = affine.to(device=extrinsics.device, dtype=extrinsics.dtype)
-        if affine.dim() == 2:
-            affine = affine.unsqueeze(0)
-        if affine.shape[0] == 1 and extrinsics.shape[0] > 1:
-            affine = affine.expand(extrinsics.shape[0], -1, -1)
-        if affine.shape[0] != extrinsics.shape[0]:
-            return extrinsics
-        restored = extrinsics.clone()
-        restored[:, :3, 3] = restored[:, :3, 3] - affine[:, :3, 3]
-        return restored
 
     def _get_intrinsics_from_camera_dict(self, data_batch, modality):
         cam_key = f"{modality}_camera"

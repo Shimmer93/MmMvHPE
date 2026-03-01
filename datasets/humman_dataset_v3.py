@@ -548,6 +548,27 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         pts = (r_root.T @ (pts - pelvis.reshape(1, 3)).T).T
         return pts.reshape(points.shape).astype(np.float32)
 
+    def _select_target_frame_from_sequence(self, kpts: np.ndarray) -> np.ndarray:
+        arr = np.asarray(kpts, dtype=np.float32)
+        if arr.ndim == 2:
+            return arr
+        if arr.ndim == 3:
+            # [T, J, 3] -> [J, 3]
+            t = arr.shape[0]
+            idx = (self.seq_len - 1) if self.causal else (self.seq_len // 2)
+            idx = int(np.clip(idx, 0, max(t - 1, 0)))
+            return arr[idx]
+        if arr.ndim == 4:
+            # [V, T, J, 3] -> [V, J, 3], then squeeze single-view.
+            v, t = int(arr.shape[0]), int(arr.shape[1])
+            idx = (self.seq_len - 1) if self.causal else (self.seq_len // 2)
+            idx = int(np.clip(idx, 0, max(t - 1, 0)))
+            out = arr[:, idx]
+            if v == 1:
+                return out[0]
+            return out
+        raise ValueError(f"Unsupported LiDAR keypoint shape {arr.shape} for target-frame selection.")
+
     def __getitem__(self, index):
         sample = super().__getitem__(index)
         if not self.rgb_skeleton_index and not self.lidar_skeleton_index:
@@ -605,5 +626,9 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
                     remove_root_rotation=self.remove_root_rotation,
                 )
 
+            # Match V2 `gt_keypoints` contract: single target frame (not sequence)
+            # unless the caller explicitly requests keypoint sequences.
+            if not self.return_keypoints_sequence:
+                kpts_lidar = self._select_target_frame_from_sequence(kpts_lidar)
             sample[self.lidar_skeleton_key] = torch.from_numpy(kpts_lidar.astype(np.float32))
         return sample
