@@ -208,6 +208,52 @@ def _extract_camera_encoding(arr, sample_idx: int, modality_idx: Optional[int]) 
     return None
 
 
+def _get_sample_lidar_center(data, sample_idx: int) -> Optional[np.ndarray]:
+    centers = data.get("input_lidar_center", None)
+    if centers is None:
+        return None
+
+    if isinstance(centers, np.ndarray) and centers.dtype != object:
+        if centers.ndim == 2 and centers.shape[-1] == 3:
+            if sample_idx >= centers.shape[0]:
+                return None
+            center = centers[sample_idx]
+        elif centers.ndim == 1 and centers.shape[0] == 3:
+            center = centers
+        else:
+            return None
+    else:
+        if sample_idx >= len(centers):
+            return None
+        center = centers[sample_idx]
+        if center is None:
+            return None
+        center = _to_numpy_maybe(center)
+        if center is None:
+            return None
+
+    center = np.asarray(center, dtype=np.float32).reshape(-1)
+    if center.shape[0] != 3:
+        return None
+    if not np.isfinite(center).all():
+        return None
+    return center
+
+
+def _inverse_lidar_camera_center(
+    cam_encoding: Optional[np.ndarray],
+    lidar_center: Optional[np.ndarray],
+) -> Optional[np.ndarray]:
+    if cam_encoding is None or lidar_center is None:
+        return cam_encoding
+    cam = np.asarray(cam_encoding, dtype=np.float32).reshape(-1)
+    if cam.shape[0] < 3:
+        return cam_encoding
+    out = cam.copy()
+    out[:3] = out[:3] + np.asarray(lidar_center, dtype=np.float32).reshape(3)
+    return out
+
+
 def _is_stream_camera_key(camera_key: str) -> bool:
     return str(camera_key).endswith("_stream")
 
@@ -240,6 +286,8 @@ def _find_first_valid_lidar_camera(
             sensor_idx=lidar_sensor_idx,
         )
         cam = _extract_camera_encoding(cameras, i, lidar_idx)
+        center = _get_sample_lidar_center(data, i)
+        cam = _inverse_lidar_camera_center(cam, center)
         if cam is None:
             continue
         if np.isfinite(cam).all():
@@ -306,6 +354,9 @@ def _build_sequence_reference_cameras_for_modality(
             sensor_idx=sensor_idx,
         )
         cam = _extract_camera_encoding(cameras, i, camera_idx)
+        if mod == "lidar":
+            center = _get_sample_lidar_center(data, i)
+            cam = _inverse_lidar_camera_center(cam, center)
         if cam is None or not np.isfinite(cam).all():
             continue
         seq_to_camera[seq_name] = cam.astype(np.float32)
@@ -459,6 +510,9 @@ def _build_temporal_reliability_by_sequence(
             sensor_idx=modality_sensor_indices.get(target_mod, 0),
         )
         target_cam = _extract_camera_encoding(cameras, i, target_idx)
+        if target_mod == "lidar":
+            center = _get_sample_lidar_center(data, i)
+            target_cam = _inverse_lidar_camera_center(target_cam, center)
         if target_cam is None:
             continue
         target_cam = np.asarray(target_cam, dtype=np.float32).reshape(-1)
@@ -482,6 +536,9 @@ def _build_temporal_reliability_by_sequence(
                 sensor_idx=modality_sensor_indices.get(mod, 0),
             )
             cam = _extract_camera_encoding(cameras, i, m_idx)
+            if mod == "lidar":
+                center = _get_sample_lidar_center(data, i)
+                cam = _inverse_lidar_camera_center(cam, center)
             if cam is None:
                 continue
             cam = np.asarray(cam, dtype=np.float32).reshape(-1)

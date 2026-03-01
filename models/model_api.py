@@ -392,8 +392,10 @@ class LitModel(L.LightningModule):
                     dtype=torch.float32,
                 )
             for i in range(batch_size):
+                lidar_center = self._extract_lidar_center_from_affine(batch, i)
                 self.test_preds.append({
                     'sample_id': batch['sample_id'][i],
+                    'input_lidar_center': lidar_center,
                     'camera_modalities': modalities,
                     'camera_stream_modalities': [m for m, _ in stream_specs] if stream_specs else None,
                     'camera_stream_sensor_indices': [s for _, s in stream_specs] if stream_specs else None,
@@ -515,6 +517,38 @@ class LitModel(L.LightningModule):
         raise ValueError(
             f"Expected pred_cameras as Tensor or list[Tensor], got {type(pred_cameras).__name__}."
         )
+
+    @staticmethod
+    def _extract_lidar_center_from_affine(batch, sample_idx):
+        affine = batch.get("input_lidar_affine", None)
+        if affine is None:
+            return None
+
+        if isinstance(affine, torch.Tensor):
+            if affine.dim() == 3:
+                aff = torch2numpy(affine[sample_idx])
+            elif affine.dim() == 2:
+                aff = torch2numpy(affine)
+            else:
+                return None
+        elif isinstance(affine, (list, tuple)):
+            if len(affine) == 0 or sample_idx >= len(affine):
+                return None
+            item = affine[sample_idx]
+            if item is None:
+                return None
+            aff = torch2numpy(item) if isinstance(item, torch.Tensor) else np.asarray(item)
+        else:
+            aff = np.asarray(affine)
+            if aff.ndim == 3:
+                if sample_idx >= aff.shape[0]:
+                    return None
+                aff = aff[sample_idx]
+
+        aff = np.asarray(aff)
+        if aff.shape != (4, 4):
+            return None
+        return (-np.asarray(aff[:3, 3], dtype=np.float32)).copy()
 
     def _reduce_stream_cameras_for_metrics(self, pred_cameras, batch):
         if isinstance(pred_cameras, list):
@@ -732,6 +766,7 @@ class LitModel(L.LightningModule):
             final_preds['pred_smpl_params'] = _stack_or_object([item.get('pred_smpl_params') for item in gathered_preds])
             final_preds['pred_smpl_keypoints'] = _stack_or_object([item.get('pred_smpl_keypoints') for item in gathered_preds])
             final_preds['gt_smpl_params'] = _stack_or_object([item.get('gt_smpl_params') for item in gathered_preds])
+            final_preds['input_lidar_center'] = _stack_or_object([item.get('input_lidar_center') for item in gathered_preds])
             camera_modalities_list = [item.get('camera_modalities', None) for item in gathered_preds]
             if camera_modalities_list and all(m == camera_modalities_list[0] for m in camera_modalities_list):
                 final_preds['camera_modalities'] = camera_modalities_list[0]
@@ -762,6 +797,7 @@ class LitModel(L.LightningModule):
                 'pred_smpl_params',
                 'pred_smpl_keypoints',
                 'gt_smpl_params',
+                'input_lidar_center',
             ]:
                 if final_preds[key] is not None:
                     final_preds[key] = final_preds[key][sorted_indices]
