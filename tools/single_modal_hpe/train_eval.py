@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
@@ -19,6 +20,21 @@ def mpjpe(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     if pred.shape != target.shape:
         raise ValueError(f"mpjpe shape mismatch: pred={tuple(pred.shape)} target={tuple(target.shape)}.")
     return torch.norm(pred - target, dim=-1).mean()
+
+
+def _dist_is_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def _dist_sum(value: float) -> float:
+    if not _dist_is_initialized():
+        return float(value)
+    if torch.cuda.is_available():
+        t = torch.tensor([value], dtype=torch.float64, device=torch.device("cuda", torch.cuda.current_device()))
+    else:
+        t = torch.tensor([value], dtype=torch.float64)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return float(t.item())
 
 
 def _format_seconds(seconds: float) -> str:
@@ -207,6 +223,7 @@ def train_one_epoch(
     log_overwrite: bool = True,
     epoch_idx: Optional[int] = None,
     num_epochs: Optional[int] = None,
+    sync_dist: bool = False,
 ) -> Dict[str, float]:
     model.train()
     start_time = time.time()
@@ -285,6 +302,13 @@ def train_one_epoch(
                 )
             _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
+    if sync_dist:
+        total_loss = _dist_sum(total_loss)
+        total_mpjpe_centered = _dist_sum(total_mpjpe_centered)
+        total_mpjpe_restored = _dist_sum(total_mpjpe_restored)
+        total_samples = int(round(_dist_sum(float(total_samples))))
+        total_restored_samples = int(round(_dist_sum(float(total_restored_samples))))
+
     return {
         "loss": total_loss / max(total_samples, 1),
         "mpjpe_centered": total_mpjpe_centered / max(total_samples, 1),
@@ -304,6 +328,7 @@ def evaluate(
     log_overwrite: bool = True,
     epoch_idx: Optional[int] = None,
     num_epochs: Optional[int] = None,
+    sync_dist: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.time()
@@ -376,6 +401,13 @@ def evaluate(
                 )
             _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
 
+    if sync_dist:
+        total_loss = _dist_sum(total_loss)
+        total_mpjpe_centered = _dist_sum(total_mpjpe_centered)
+        total_mpjpe_restored = _dist_sum(total_mpjpe_restored)
+        total_samples = int(round(_dist_sum(float(total_samples))))
+        total_restored_samples = int(round(_dist_sum(float(total_restored_samples))))
+
     return {
         "loss": total_loss / max(total_samples, 1),
         "mpjpe_centered": total_mpjpe_centered / max(total_samples, 1),
@@ -394,6 +426,7 @@ def test_and_save_predictions(
     save_path: str,
     log_interval: int = 20,
     log_overwrite: bool = True,
+    sync_dist: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.time()
@@ -498,6 +531,12 @@ def test_and_save_predictions(
         gt_keypoints_centered=target_centered_arr,
         input_lidar_center=lidar_center_arr,
     )
+
+    if sync_dist:
+        total_mpjpe_centered = _dist_sum(total_mpjpe_centered)
+        total_mpjpe_restored = _dist_sum(total_mpjpe_restored)
+        total_samples = int(round(_dist_sum(float(total_samples))))
+        total_restored_samples = int(round(_dist_sum(float(total_restored_samples))))
 
     return {
         "mpjpe_centered": total_mpjpe_centered / max(total_samples, 1),

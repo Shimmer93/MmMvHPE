@@ -7,7 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -87,6 +89,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="single",
+        choices=["single", "dp", "ddp"],
+        help="Single GPU, DataParallel, or DistributedDataParallel.",
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default=None,
+        help="Comma-separated GPU ids for DP (e.g., 0,1,2). Defaults to all visible GPUs.",
+    )
     return parser.parse_args()
 
 
@@ -97,13 +112,22 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_dataloader(dataset, batch_size: int, shuffle: bool, num_workers: int, pin_memory: bool, drop_last: bool):
+def build_dataloader(
+    dataset,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    pin_memory: bool,
+    drop_last: bool,
+    sampler=None,
+):
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
         num_workers=num_workers,
         collate_fn=dataset.collate_fn,
+        sampler=sampler,
         pin_memory=pin_memory,
         drop_last=drop_last,
         persistent_workers=num_workers > 0,
@@ -134,6 +158,54 @@ def build_model(args: argparse.Namespace):
     )
 
 
+def _dist_is_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def _init_ddp() -> tuple[int, int, int]:
+    if "LOCAL_RANK" not in os.environ or "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
+        raise RuntimeError(
+            "DDP requires torchrun environment variables LOCAL_RANK/RANK/WORLD_SIZE. "
+            "Launch with: torchrun --nproc_per_node=<num_gpus> ..."
+        )
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    if world_size < 2:
+        raise RuntimeError("DDP strategy selected but WORLD_SIZE < 2.")
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(local_rank)
+    return local_rank, rank, world_size
+
+
+def _cleanup_ddp() -> None:
+    if _dist_is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+
+def _is_main_process(rank: int) -> bool:
+    return rank == 0
+
+
+def _unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def _parse_gpu_ids(gpu_ids_str: str | None) -> list[int]:
+    if gpu_ids_str is None:
+        return list(range(torch.cuda.device_count()))
+    out = []
+    for tok in gpu_ids_str.split(","):
+        tok = tok.strip()
+        if tok == "":
+            continue
+        out.append(int(tok))
+    if len(out) == 0:
+        raise ValueError("`--gpu-ids` is empty after parsing.")
+    return out
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -141,15 +213,25 @@ def main() -> None:
 
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA device was requested but no CUDA GPU is available.")
-    device = torch.device(args.device)
+
+    if args.strategy == "ddp":
+        local_rank, rank, world_size = _init_ddp()
+        device = torch.device("cuda", local_rank)
+        is_main = _is_main_process(rank)
+    else:
+        local_rank, rank, world_size = 0, 0, 1
+        is_main = True
+        device = torch.device(args.device)
+
     if device.type != "cuda":
         raise RuntimeError("MAMBA4DEncoder requires CUDA. Use --device cuda.")
 
     torch.backends.cudnn.benchmark = True
-    os.makedirs(args.output_dir, exist_ok=True)
+    if is_main:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     split_config = args.split_config if args.split_config and os.path.isfile(args.split_config) else None
-    if args.split_config and split_config is None:
+    if args.split_config and split_config is None and is_main:
         print(f"[WARN] split config not found at {args.split_config}; falling back to internal split.")
 
     common_pipeline = build_depth_to_lidar_pipeline(num_points=args.num_points)
@@ -185,10 +267,28 @@ def main() -> None:
         test_mode=True,
     )
 
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Test samples:  {len(test_dataset)}")
+    if is_main:
+        print(f"Train samples: {len(train_dataset)}")
+        print(f"Test samples:  {len(test_dataset)}")
 
     pin_memory = device.type == "cuda"
+    train_sampler = None
+    test_sampler = None
+    if args.strategy == "ddp":
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=False,
+        )
+        test_sampler = DistributedSampler(
+            test_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
     train_loader = build_dataloader(
         train_dataset,
         batch_size=args.batch_size,
@@ -196,6 +296,7 @@ def main() -> None:
         num_workers=args.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        sampler=train_sampler,
     )
     test_loader = build_dataloader(
         test_dataset,
@@ -204,9 +305,34 @@ def main() -> None:
         num_workers=args.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        sampler=test_sampler,
     )
+    test_loader_full = None
+    if args.strategy == "ddp" and is_main:
+        test_loader_full = build_dataloader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=pin_memory,
+            drop_last=False,
+            sampler=None,
+        )
 
     model = build_model(args).to(device)
+    if args.strategy == "dp":
+        gpu_ids = _parse_gpu_ids(args.gpu_ids)
+        if len(gpu_ids) < 2:
+            raise ValueError("DP strategy requires at least 2 GPU ids.")
+        model = torch.nn.DataParallel(model, device_ids=gpu_ids)
+    elif args.strategy == "ddp":
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.epochs, 1))
 
@@ -220,22 +346,27 @@ def main() -> None:
             export_json_path = os.path.join(args.output_dir, export_json_path)
 
     if args.test_only:
+        if args.strategy == "ddp" and not is_main:
+            _cleanup_ddp()
+            return
         ckpt = args.checkpoint if args.checkpoint is not None else best_ckpt_path
         if not os.path.isfile(ckpt):
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-        load_checkpoint(ckpt, model, map_location="cpu")
+        load_checkpoint(ckpt, _unwrap_model(model), map_location="cpu")
         test_metrics = test_and_save_predictions(
             model,
-            test_loader,
+            test_loader_full if test_loader_full is not None else test_loader,
             device,
             pred_path,
-            log_interval=args.log_interval,
-            log_overwrite=args.log_overwrite,
+            log_interval=args.log_interval if is_main else 0,
+            log_overwrite=args.log_overwrite and is_main,
+            sync_dist=False,
         )
-        print(f"Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
-        print(f"Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
-        print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
-        print(f"Predictions saved to: {pred_path}")
+        if is_main:
+            print(f"Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
+            print(f"Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
+            print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
+            print(f"Predictions saved to: {pred_path}")
         if export_json_path is not None:
             export_dataset = HummanDepthToLidarDataset(
                 data_root=args.data_root,
@@ -272,12 +403,15 @@ def main() -> None:
                 log_interval=args.log_interval,
                 log_overwrite=args.log_overwrite,
             )
-            print(
-                f"Exported full-dataset JSON: {export_json_path} "
-                f"(num_images={int(export_metrics['num_images'])}, "
-                f"elapsed={export_metrics['elapsed_sec']:.1f}s)"
-            )
-        print(f"Total elapsed: {time.time() - run_start_time:.1f}s")
+            if is_main:
+                print(
+                    f"Exported full-dataset JSON: {export_json_path} "
+                    f"(num_images={int(export_metrics['num_images'])}, "
+                    f"elapsed={export_metrics['elapsed_sec']:.1f}s)"
+                )
+        if is_main:
+            print(f"Total elapsed: {time.time() - run_start_time:.1f}s")
+        _cleanup_ddp()
         return
 
     best_val_mpjpe = float("inf")
@@ -288,34 +422,39 @@ def main() -> None:
             raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
         loaded_epoch, best_val_mpjpe = load_checkpoint(
             args.checkpoint,
-            model,
+            _unwrap_model(model),
             optimizer=optimizer,
             scheduler=scheduler,
             map_location="cpu",
         )
         start_epoch = loaded_epoch + 1
-        print(f"Resumed from {args.checkpoint} at epoch {start_epoch}")
+        if is_main:
+            print(f"Resumed from {args.checkpoint} at epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         train_metrics = train_one_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             device=device,
             grad_clip=args.grad_clip,
-            log_interval=args.log_interval,
-            log_overwrite=args.log_overwrite,
+            log_interval=args.log_interval if is_main else 0,
+            log_overwrite=args.log_overwrite and is_main,
             epoch_idx=epoch,
             num_epochs=args.epochs,
+            sync_dist=(args.strategy == "ddp"),
         )
         val_metrics = evaluate(
             model=model,
             dataloader=test_loader,
             device=device,
-            log_interval=args.log_interval,
-            log_overwrite=args.log_overwrite,
+            log_interval=args.log_interval if is_main else 0,
+            log_overwrite=args.log_overwrite and is_main,
             epoch_idx=epoch,
             num_epochs=args.epochs,
+            sync_dist=(args.strategy == "ddp"),
         )
         scheduler.step()
 
@@ -323,83 +462,93 @@ def main() -> None:
         if not np.isfinite(current_val_mpjpe):
             current_val_mpjpe = val_metrics["mpjpe_centered"]
 
-        print(
-            f"Epoch [{epoch + 1}/{args.epochs}] "
-            f"train_loss={train_metrics['loss']:.6f} "
-            f"train_mpjpe_centered={train_metrics['mpjpe_centered']:.6f} "
-            f"train_mpjpe_restored={train_metrics['mpjpe_restored']:.6f} "
-            f"val_loss={val_metrics['loss']:.6f} "
-            f"val_mpjpe_centered={val_metrics['mpjpe_centered']:.6f} "
-            f"val_mpjpe_restored={val_metrics['mpjpe_restored']:.6f} "
-            f"train_elapsed={train_metrics['elapsed_sec']:.1f}s "
-            f"val_elapsed={val_metrics['elapsed_sec']:.1f}s "
-            f"total_elapsed={time.time() - run_start_time:.1f}s"
-        )
+        if is_main:
+            print(
+                f"Epoch [{epoch + 1}/{args.epochs}] "
+                f"train_loss={train_metrics['loss']:.6f} "
+                f"train_mpjpe_centered={train_metrics['mpjpe_centered']:.6f} "
+                f"train_mpjpe_restored={train_metrics['mpjpe_restored']:.6f} "
+                f"val_loss={val_metrics['loss']:.6f} "
+                f"val_mpjpe_centered={val_metrics['mpjpe_centered']:.6f} "
+                f"val_mpjpe_restored={val_metrics['mpjpe_restored']:.6f} "
+                f"train_elapsed={train_metrics['elapsed_sec']:.1f}s "
+                f"val_elapsed={val_metrics['elapsed_sec']:.1f}s "
+                f"total_elapsed={time.time() - run_start_time:.1f}s"
+            )
 
-        save_checkpoint(last_ckpt_path, model, optimizer, scheduler, epoch, best_val_mpjpe)
-        if current_val_mpjpe < best_val_mpjpe:
-            best_val_mpjpe = current_val_mpjpe
-            save_checkpoint(best_ckpt_path, model, optimizer, scheduler, epoch, best_val_mpjpe)
-            print(f"Saved best checkpoint to {best_ckpt_path}")
+            save_checkpoint(last_ckpt_path, _unwrap_model(model), optimizer, scheduler, epoch, best_val_mpjpe)
+            if current_val_mpjpe < best_val_mpjpe:
+                best_val_mpjpe = current_val_mpjpe
+                save_checkpoint(best_ckpt_path, _unwrap_model(model), optimizer, scheduler, epoch, best_val_mpjpe)
+                print(f"Saved best checkpoint to {best_ckpt_path}")
+        if args.strategy == "ddp":
+            dist.barrier()
 
-    if not os.path.isfile(best_ckpt_path):
+    if is_main and not os.path.isfile(best_ckpt_path):
         raise RuntimeError("Best checkpoint was not created.")
 
-    load_checkpoint(best_ckpt_path, model, map_location="cpu")
-    test_metrics = test_and_save_predictions(
-        model,
-        test_loader,
-        device,
-        pred_path,
-        log_interval=args.log_interval,
-        log_overwrite=args.log_overwrite,
-    )
-    print(f"Final Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
-    print(f"Final Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
-    print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
-    print(f"Predictions saved to: {pred_path}")
-    if export_json_path is not None:
-        export_dataset = HummanDepthToLidarDataset(
-            data_root=args.data_root,
-            pipeline=common_pipeline,
-            split="all",
-            split_config=None,
-            split_to_use=args.split_to_use,
-            unit=args.unit,
-            depth_cameras=None,
-            seq_len=1,
-            seq_step=1,
-            pad_seq=True,
-            causal=True,
-            use_all_pairs=False,
-            test_mode=True,
-        )
-        export_loader = build_dataloader(
-            export_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        )
-        export_metrics = export_predictions_as_mmpose_json(
-            model=model,
-            dataloader=export_loader,
-            device=device,
-            save_path=export_json_path,
-            input_dir=os.path.join(args.data_root, "depth"),
-            config="tools/single_modal_hpe/main_lidar.py",
-            checkpoint=best_ckpt_path,
-            device_str=args.device,
+    if args.strategy == "ddp":
+        dist.barrier()
+
+    if is_main:
+        load_checkpoint(best_ckpt_path, _unwrap_model(model), map_location="cpu")
+        test_metrics = test_and_save_predictions(
+            model,
+            test_loader_full if test_loader_full is not None else test_loader,
+            device,
+            pred_path,
             log_interval=args.log_interval,
             log_overwrite=args.log_overwrite,
+            sync_dist=False,
         )
-        print(
-            f"Exported full-dataset JSON: {export_json_path} "
-            f"(num_images={int(export_metrics['num_images'])}, "
-            f"elapsed={export_metrics['elapsed_sec']:.1f}s)"
-        )
-    print(f"Total elapsed: {time.time() - run_start_time:.1f}s")
+        print(f"Final Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
+        print(f"Final Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
+        print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
+        print(f"Predictions saved to: {pred_path}")
+        if export_json_path is not None:
+            export_dataset = HummanDepthToLidarDataset(
+                data_root=args.data_root,
+                pipeline=common_pipeline,
+                split="all",
+                split_config=None,
+                split_to_use=args.split_to_use,
+                unit=args.unit,
+                depth_cameras=None,
+                seq_len=1,
+                seq_step=1,
+                pad_seq=True,
+                causal=True,
+                use_all_pairs=False,
+                test_mode=True,
+            )
+            export_loader = build_dataloader(
+                export_dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=pin_memory,
+                drop_last=False,
+            )
+            export_metrics = export_predictions_as_mmpose_json(
+                model=model,
+                dataloader=export_loader,
+                device=device,
+                save_path=export_json_path,
+                input_dir=os.path.join(args.data_root, "depth"),
+                config="tools/single_modal_hpe/main_lidar.py",
+                checkpoint=best_ckpt_path,
+                device_str=args.device,
+                log_interval=args.log_interval,
+                log_overwrite=args.log_overwrite,
+            )
+            print(
+                f"Exported full-dataset JSON: {export_json_path} "
+                f"(num_images={int(export_metrics['num_images'])}, "
+                f"elapsed={export_metrics['elapsed_sec']:.1f}s)"
+            )
+        print(f"Total elapsed: {time.time() - run_start_time:.1f}s")
+
+    _cleanup_ddp()
 
 
 if __name__ == "__main__":
