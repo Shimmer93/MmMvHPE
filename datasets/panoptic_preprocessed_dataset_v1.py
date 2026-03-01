@@ -62,6 +62,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         random_seed: int = 0,
         gt_unit: str = "cm",
         output_num_joints: int = 19,
+        apply_to_new_world: bool = False,
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
     ):
@@ -88,6 +89,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         self.random_seed = int(random_seed)
         self.gt_unit = str(gt_unit).lower()
         self.output_num_joints = int(output_num_joints)
+        self.apply_to_new_world = bool(apply_to_new_world)
         self.panoptic_toolbox_root = (
             osp.abspath(osp.expanduser(panoptic_toolbox_root))
             if panoptic_toolbox_root is not None
@@ -641,6 +643,25 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             "extrinsic": extrinsic,
         }
 
+    @staticmethod
+    def _world_to_new_world(points: np.ndarray, pelvis: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32)
+        pel = np.asarray(pelvis, dtype=np.float32).reshape(1, 3)
+        return (pts - pel).astype(np.float32)
+
+    @staticmethod
+    def _camera_to_new_world(camera: Dict[str, np.ndarray], pelvis: np.ndarray) -> Dict[str, np.ndarray]:
+        out = dict(camera)
+        ext = np.asarray(camera["extrinsic"], dtype=np.float32)
+        if ext.shape != (3, 4):
+            raise ValueError(f"Camera extrinsic must be (3,4), got {ext.shape}")
+        R = ext[:, :3]
+        T = ext[:, 3:4]
+        pel = np.asarray(pelvis, dtype=np.float32).reshape(3, 1)
+        T_new = R @ pel + T
+        out["extrinsic"] = np.hstack((R, T_new)).astype(np.float32)
+        return out
+
     def __len__(self) -> int:
         return len(self.data_list)
 
@@ -714,6 +735,8 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         gt_keypoints = self._load_gt_keypoints(seq_name, gt_body_frame_id)
         pelvis = np.asarray(gt_keypoints[0], dtype=np.float32)
         gt_keypoints = gt_keypoints.astype(np.float32)
+        if self.apply_to_new_world:
+            gt_keypoints = self._world_to_new_world(gt_keypoints, pelvis)
 
         gt_smpl_params = np.zeros((82,), dtype=np.float32)
         gt_global_orient = np.zeros((3,), dtype=np.float32)
@@ -740,7 +763,10 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
 
         if self.return_keypoints_sequence:
             seq_kpts = [self._load_gt_keypoints(seq_name, fid) for fid in frame_window]
-            sample["gt_keypoints_seq"] = np.stack(seq_kpts, axis=0).astype(np.float32)
+            seq_kpts = np.stack(seq_kpts, axis=0).astype(np.float32)
+            if self.apply_to_new_world:
+                seq_kpts = seq_kpts - pelvis.reshape(1, 1, 3)
+            sample["gt_keypoints_seq"] = seq_kpts
 
         if self.return_smpl_sequence:
             sample["gt_smpl_params_seq"] = np.zeros((len(frame_window), 82), dtype=np.float32)
@@ -755,6 +781,8 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             if self.skeleton_only and rgb_frames_views:
                 sample["input_rgb"] = self._maybe_single(rgb_frames_views)
             if rgb_cameras:
+                if self.apply_to_new_world:
+                    rgb_cameras = [self._camera_to_new_world(cam, pelvis) for cam in rgb_cameras]
                 sample["rgb_camera"] = self._maybe_single(rgb_cameras)
 
         if "depth" in self.modality_names:
@@ -780,8 +808,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                     sample["modalities"].remove("depth")
                 sample.pop("input_depth", None)
                 sample["selected_cameras"]["lidar"] = list(selected_depth)
+                if self.apply_to_new_world:
+                    depth_cameras = [self._camera_to_new_world(cam, pelvis) for cam in depth_cameras]
                 sample["lidar_camera"] = self._maybe_single(depth_cameras)
             elif depth_cameras:
+                if self.apply_to_new_world:
+                    depth_cameras = [self._camera_to_new_world(cam, pelvis) for cam in depth_cameras]
                 sample["depth_camera"] = self._maybe_single(depth_cameras)
 
         sample = self.pipeline(sample)
