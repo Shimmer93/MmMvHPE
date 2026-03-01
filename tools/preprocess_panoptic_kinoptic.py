@@ -601,6 +601,7 @@ def _process_sequence(
 
     # Store gt3d once per body frame, independent of camera stream.
     for body_frame_id, bf in body_lookup.items():
+        out_gt3d.mkdir(parents=True, exist_ok=True)
         gt = np.array(bf.joints19, dtype=np.float32).reshape(19, 4)
         np.save(out_gt3d / f"{body_frame_id:08d}.npy", gt.astype(np.float16))
 
