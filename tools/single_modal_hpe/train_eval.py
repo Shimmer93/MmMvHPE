@@ -43,53 +43,144 @@ def _to_float_tensor(x, device: Optional[torch.device] = None) -> torch.Tensor:
     return t.to(device=device) if device is not None else t
 
 
-def _get_required_tensor(batch: Dict[str, object], key: str) -> torch.Tensor:
-    value = batch.get(key, None)
+def _infer_batch_size(batch: Dict[str, object]) -> int:
+    sample_ids = batch.get("sample_id", None)
+    if isinstance(sample_ids, (list, tuple)):
+        return len(sample_ids)
+
+    for value in batch.values():
+        if isinstance(value, torch.Tensor) and value.dim() >= 1:
+            return int(value.shape[0])
+        if isinstance(value, np.ndarray) and value.ndim >= 1:
+            return int(value.shape[0])
+        if isinstance(value, (list, tuple)):
+            return len(value)
+    raise ValueError("Failed to infer batch size from batch content.")
+
+
+def _as_item_list(
+    value: object,
+    batch_size: int,
+    key: str,
+    *,
+    allow_missing: bool = False,
+) -> list:
     if value is None:
+        if allow_missing:
+            return [None] * batch_size
         raise KeyError(f"Missing required key `{key}` in batch.")
 
     if isinstance(value, torch.Tensor):
-        return value.float()
+        if value.dim() == 0:
+            if batch_size != 1:
+                raise ValueError(f"`{key}` scalar tensor is incompatible with batch_size={batch_size}.")
+            return [value]
+        if value.shape[0] == batch_size:
+            return [value[i] for i in range(batch_size)]
+        if batch_size == 1:
+            return [value]
+        raise ValueError(
+            f"`{key}` tensor shape {tuple(value.shape)} is incompatible with batch_size={batch_size}."
+        )
+
     if isinstance(value, np.ndarray):
-        return torch.from_numpy(value).float()
+        if value.ndim == 0:
+            if batch_size != 1:
+                raise ValueError(f"`{key}` scalar ndarray is incompatible with batch_size={batch_size}.")
+            return [value]
+        if value.shape[0] == batch_size:
+            return [value[i] for i in range(batch_size)]
+        if batch_size == 1:
+            return [value]
+        raise ValueError(
+            f"`{key}` ndarray shape {value.shape} is incompatible with batch_size={batch_size}."
+        )
+
     if isinstance(value, (list, tuple)):
-        if len(value) == 0:
-            raise ValueError(f"`{key}` list is empty.")
-        items = []
-        for i, item in enumerate(value):
-            if item is None:
-                raise ValueError(f"`{key}` contains None at batch index {i}.")
-            items.append(_to_float_tensor(item))
-        return torch.stack(items, dim=0)
-    raise TypeError(f"Unsupported `{key}` type: {type(value).__name__}.")
+        if len(value) != batch_size:
+            raise ValueError(
+                f"`{key}` list length {len(value)} does not match batch_size={batch_size}."
+            )
+        return list(value)
+
+    if batch_size == 1:
+        return [value]
+    raise TypeError(f"Unsupported `{key}` type for batched data: {type(value).__name__}.")
 
 
-def _get_optional_tensor(batch: Dict[str, object], key: str) -> Optional[torch.Tensor]:
-    value = batch.get(key, None)
-    if value is None:
-        return None
-    if isinstance(value, torch.Tensor):
-        return value.float()
-    if isinstance(value, np.ndarray):
-        return torch.from_numpy(value).float()
-    if isinstance(value, (list, tuple)):
-        if len(value) == 0:
-            return None
-        if any(v is None for v in value):
-            return None
-        return torch.stack([_to_float_tensor(v) for v in value], dim=0)
-    return None
+def _stack_selected(items: list, valid_indices: list, key: str) -> torch.Tensor:
+    if len(valid_indices) == 0:
+        raise ValueError(f"No valid indices to stack for `{key}`.")
+    rows = []
+    for i in valid_indices:
+        item = items[i]
+        if item is None:
+            raise ValueError(f"`{key}` is None at valid index {i}.")
+        rows.append(_to_float_tensor(item))
+    return torch.stack(rows, dim=0)
 
 
-def _get_lidar_centers(batch: Dict[str, object]) -> torch.Tensor:
-    affine = _get_required_tensor(batch, PC_AFFINE_KEY)
+def _prepare_lidar_batch(batch: Dict[str, object]) -> Dict[str, object]:
+    batch_size = _infer_batch_size(batch)
+
+    input_items = _as_item_list(batch.get("input_lidar", None), batch_size, "input_lidar")
+    gt_centered_items = _as_item_list(
+        batch.get(PC_CENTERED_TARGET_KEY, None), batch_size, PC_CENTERED_TARGET_KEY
+    )
+    affine_items = _as_item_list(batch.get(PC_AFFINE_KEY, None), batch_size, PC_AFFINE_KEY)
+    gt_global_items = _as_item_list(
+        batch.get(GLOBAL_TARGET_KEY, None), batch_size, GLOBAL_TARGET_KEY, allow_missing=True
+    )
+    sample_id_items = _as_item_list(
+        batch.get("sample_id", None), batch_size, "sample_id", allow_missing=True
+    )
+    frame_path_items = _as_item_list(
+        batch.get("frame_path", None), batch_size, "frame_path", allow_missing=True
+    )
+
+    valid_indices = [
+        i for i in range(batch_size)
+        if input_items[i] is not None and gt_centered_items[i] is not None and affine_items[i] is not None
+    ]
+    if len(valid_indices) == 0:
+        raise ValueError(
+            "No valid samples in batch for single-modal HPE. "
+            "Required keys: input_lidar, gt_keypoints_pc_centered_input_lidar, input_lidar_affine."
+        )
+
+    input_lidar = _stack_selected(input_items, valid_indices, "input_lidar")
+    gt_centered = _stack_selected(gt_centered_items, valid_indices, PC_CENTERED_TARGET_KEY)
+    affine = _stack_selected(affine_items, valid_indices, PC_AFFINE_KEY)
     if affine.dim() == 2:
         affine = affine.unsqueeze(0)
     if affine.dim() != 3 or affine.shape[1:] != (4, 4):
         raise ValueError(
             f"Expected `{PC_AFFINE_KEY}` as [B,4,4] (or [4,4]), got {tuple(affine.shape)}."
         )
-    return -affine[:, :3, 3]
+    lidar_centers = -affine[:, :3, 3]
+
+    sample_ids = []
+    frame_paths = []
+    gt_global_selected = []
+    for i in valid_indices:
+        sid = sample_id_items[i]
+        sid_str = str(sid) if sid is not None else f"sample_{i}"
+        sample_ids.append(sid_str)
+
+        fp = frame_path_items[i]
+        frame_paths.append(str(fp) if fp is not None else sid_str)
+        gt_global_selected.append(gt_global_items[i])
+
+    return {
+        "input_lidar": input_lidar,
+        "gt_centered": gt_centered,
+        "lidar_centers": lidar_centers,
+        "gt_global_items": gt_global_selected,
+        "sample_ids": sample_ids,
+        "frame_paths": frame_paths,
+        "num_total": batch_size,
+        "num_valid": len(valid_indices),
+    }
 
 
 def _restore_centered_keypoints(pred_centered: torch.Tensor, centers: torch.Tensor) -> torch.Tensor:
@@ -124,15 +215,28 @@ def train_one_epoch(
     total_mpjpe_restored = 0.0
     total_samples = 0
     total_restored_samples = 0
+    total_dropped = 0
+    total_skipped_batches = 0
 
     num_steps = len(dataloader)
     for step_idx, batch in enumerate(dataloader, start=1):
-        input_lidar = _get_required_tensor(batch, "input_lidar").to(device, non_blocking=True)
-        gt_centered = _get_required_tensor(batch, PC_CENTERED_TARGET_KEY).to(device, non_blocking=True)
-        lidar_centers = _get_lidar_centers(batch).to(device, non_blocking=True)
-        gt_global = _get_optional_tensor(batch, GLOBAL_TARGET_KEY)
-        if gt_global is not None:
-            gt_global = gt_global.to(device, non_blocking=True)
+        try:
+            packed = _prepare_lidar_batch(batch)
+        except (KeyError, ValueError) as e:
+            total_skipped_batches += 1
+            if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
+                elapsed = _format_seconds(time.time() - start_time)
+                _print_progress(
+                    f"[Train] Step {step_idx}/{num_steps} skipped_batch={total_skipped_batches} reason={e} elapsed={elapsed}",
+                    final=(step_idx == num_steps),
+                    overwrite=False,
+                )
+            continue
+        input_lidar = packed["input_lidar"].to(device, non_blocking=True)
+        gt_centered = packed["gt_centered"].to(device, non_blocking=True)
+        lidar_centers = packed["lidar_centers"].to(device, non_blocking=True)
+        total_dropped += int(packed["num_total"] - packed["num_valid"])
+        gt_restored = _restore_centered_keypoints(gt_centered, lidar_centers)
 
         optimizer.zero_grad(set_to_none=True)
         pred_centered = model(input_lidar)
@@ -148,10 +252,8 @@ def train_one_epoch(
         total_samples += batch_size
         total_loss += float(loss.item()) * batch_size
         total_mpjpe_centered += float(mpjpe(pred_centered.detach(), gt_centered).item()) * batch_size
-
-        if gt_global is not None:
-            total_mpjpe_restored += float(mpjpe(pred_restored.detach(), gt_global).item()) * batch_size
-            total_restored_samples += batch_size
+        total_mpjpe_restored += float(mpjpe(pred_restored.detach(), gt_restored).item()) * batch_size
+        total_restored_samples += batch_size
 
         if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
             avg_loss = total_loss / max(total_samples, 1)
@@ -169,6 +271,7 @@ def train_one_epoch(
                     f"loss={avg_loss:.6f} "
                     f"mpjpe_centered={avg_mpjpe_centered:.6f} "
                     f"mpjpe_restored={avg_mpjpe_restored:.6f} "
+                    f"dropped={total_dropped} "
                     f"elapsed={elapsed}"
                 )
             else:
@@ -177,6 +280,7 @@ def train_one_epoch(
                     f"loss={avg_loss:.6f} "
                     f"mpjpe_centered={avg_mpjpe_centered:.6f} "
                     f"mpjpe_restored={avg_mpjpe_restored:.6f} "
+                    f"dropped={total_dropped} "
                     f"elapsed={elapsed}"
                 )
             _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
@@ -208,15 +312,28 @@ def evaluate(
     total_mpjpe_restored = 0.0
     total_samples = 0
     total_restored_samples = 0
+    total_dropped = 0
+    total_skipped_batches = 0
 
     num_steps = len(dataloader)
     for step_idx, batch in enumerate(dataloader, start=1):
-        input_lidar = _get_required_tensor(batch, "input_lidar").to(device, non_blocking=True)
-        gt_centered = _get_required_tensor(batch, PC_CENTERED_TARGET_KEY).to(device, non_blocking=True)
-        lidar_centers = _get_lidar_centers(batch).to(device, non_blocking=True)
-        gt_global = _get_optional_tensor(batch, GLOBAL_TARGET_KEY)
-        if gt_global is not None:
-            gt_global = gt_global.to(device, non_blocking=True)
+        try:
+            packed = _prepare_lidar_batch(batch)
+        except (KeyError, ValueError) as e:
+            total_skipped_batches += 1
+            if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
+                elapsed = _format_seconds(time.time() - start_time)
+                _print_progress(
+                    f"[Val]   Step {step_idx}/{num_steps} skipped_batch={total_skipped_batches} reason={e} elapsed={elapsed}",
+                    final=(step_idx == num_steps),
+                    overwrite=False,
+                )
+            continue
+        input_lidar = packed["input_lidar"].to(device, non_blocking=True)
+        gt_centered = packed["gt_centered"].to(device, non_blocking=True)
+        lidar_centers = packed["lidar_centers"].to(device, non_blocking=True)
+        total_dropped += int(packed["num_total"] - packed["num_valid"])
+        gt_restored = _restore_centered_keypoints(gt_centered, lidar_centers)
 
         pred_centered = model(input_lidar)
         pred_restored = _restore_centered_keypoints(pred_centered, lidar_centers)
@@ -226,9 +343,8 @@ def evaluate(
         total_samples += batch_size
         total_loss += float(loss.item()) * batch_size
         total_mpjpe_centered += float(mpjpe(pred_centered, gt_centered).item()) * batch_size
-        if gt_global is not None:
-            total_mpjpe_restored += float(mpjpe(pred_restored, gt_global).item()) * batch_size
-            total_restored_samples += batch_size
+        total_mpjpe_restored += float(mpjpe(pred_restored, gt_restored).item()) * batch_size
+        total_restored_samples += batch_size
 
         if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
             avg_loss = total_loss / max(total_samples, 1)
@@ -246,6 +362,7 @@ def evaluate(
                     f"loss={avg_loss:.6f} "
                     f"mpjpe_centered={avg_mpjpe_centered:.6f} "
                     f"mpjpe_restored={avg_mpjpe_restored:.6f} "
+                    f"dropped={total_dropped} "
                     f"elapsed={elapsed}"
                 )
             else:
@@ -254,6 +371,7 @@ def evaluate(
                     f"loss={avg_loss:.6f} "
                     f"mpjpe_centered={avg_mpjpe_centered:.6f} "
                     f"mpjpe_restored={avg_mpjpe_restored:.6f} "
+                    f"dropped={total_dropped} "
                     f"elapsed={elapsed}"
                 )
             _print_progress(msg, final=(step_idx == num_steps), overwrite=log_overwrite)
@@ -289,15 +407,28 @@ def test_and_save_predictions(
     total_mpjpe_restored = 0.0
     total_samples = 0
     total_restored_samples = 0
+    total_dropped = 0
+    total_skipped_batches = 0
 
     num_steps = len(dataloader)
     for batch_idx, batch in enumerate(dataloader, start=1):
-        input_lidar = _get_required_tensor(batch, "input_lidar").to(device, non_blocking=True)
-        gt_centered = _get_required_tensor(batch, PC_CENTERED_TARGET_KEY).to(device, non_blocking=True)
-        lidar_centers = _get_lidar_centers(batch).to(device, non_blocking=True)
-        gt_global = _get_optional_tensor(batch, GLOBAL_TARGET_KEY)
-        if gt_global is not None:
-            gt_global = gt_global.to(device, non_blocking=True)
+        try:
+            packed = _prepare_lidar_batch(batch)
+        except (KeyError, ValueError) as e:
+            total_skipped_batches += 1
+            if log_interval > 0 and (batch_idx % log_interval == 0 or batch_idx == num_steps):
+                elapsed = _format_seconds(time.time() - start_time)
+                _print_progress(
+                    f"[Test]  Step {batch_idx}/{num_steps} skipped_batch={total_skipped_batches} reason={e} elapsed={elapsed}",
+                    final=(batch_idx == num_steps),
+                    overwrite=False,
+                )
+            continue
+        input_lidar = packed["input_lidar"].to(device, non_blocking=True)
+        gt_centered = packed["gt_centered"].to(device, non_blocking=True)
+        lidar_centers = packed["lidar_centers"].to(device, non_blocking=True)
+        total_dropped += int(packed["num_total"] - packed["num_valid"])
+        gt_restored = _restore_centered_keypoints(gt_centered, lidar_centers)
 
         pred_centered = model(input_lidar)
         pred_restored = _restore_centered_keypoints(pred_centered, lidar_centers)
@@ -305,24 +436,22 @@ def test_and_save_predictions(
         batch_size = input_lidar.shape[0]
         total_samples += batch_size
         total_mpjpe_centered += float(mpjpe(pred_centered, gt_centered).item()) * batch_size
-        if gt_global is not None:
-            total_mpjpe_restored += float(mpjpe(pred_restored, gt_global).item()) * batch_size
-            total_restored_samples += batch_size
+        total_mpjpe_restored += float(mpjpe(pred_restored, gt_restored).item()) * batch_size
+        total_restored_samples += batch_size
 
         all_pred_centered.append(pred_centered.cpu().numpy())
         all_pred_restored.append(pred_restored.cpu().numpy())
         all_target_centered.append(gt_centered.cpu().numpy())
-        if gt_global is None:
-            all_target_global.append(np.full(pred_restored.shape, np.nan, dtype=np.float32))
-        else:
-            all_target_global.append(gt_global.cpu().numpy())
+        gt_global_rows = []
+        for i, gt_item in enumerate(packed["gt_global_items"]):
+            if gt_item is None:
+                gt_global_rows.append(np.full((pred_restored.shape[1], 3), np.nan, dtype=np.float32))
+            else:
+                gt_global_rows.append(_to_float_tensor(gt_item).cpu().numpy())
+        all_target_global.append(np.stack(gt_global_rows, axis=0))
         all_lidar_centers.append(lidar_centers.cpu().numpy())
 
-        sample_ids = batch.get("sample_id", None)
-        if sample_ids is None:
-            all_sample_ids.extend([f"sample_{batch_idx}_{i}" for i in range(batch_size)])
-        else:
-            all_sample_ids.extend(list(sample_ids))
+        all_sample_ids.extend(packed["sample_ids"])
 
         if log_interval > 0 and (batch_idx % log_interval == 0 or batch_idx == num_steps):
             avg_mpjpe_centered = total_mpjpe_centered / max(total_samples, 1)
@@ -336,6 +465,7 @@ def test_and_save_predictions(
                 f"[Test]  Step {batch_idx}/{num_steps} "
                 f"mpjpe_centered={avg_mpjpe_centered:.6f} "
                 f"mpjpe_restored={avg_mpjpe_restored:.6f} "
+                f"dropped={total_dropped} "
                 f"elapsed={elapsed}"
             )
             _print_progress(msg, final=(batch_idx == num_steps), overwrite=log_overwrite)
@@ -437,15 +567,23 @@ def export_predictions_as_mmpose_json(
 
     num_steps = len(dataloader)
     for step_idx, batch in enumerate(dataloader, start=1):
-        input_lidar = _get_required_tensor(batch, "input_lidar").to(device, non_blocking=True)
-        lidar_centers = _get_lidar_centers(batch).to(device, non_blocking=True)
+        try:
+            packed = _prepare_lidar_batch(batch)
+        except (KeyError, ValueError) as e:
+            if log_interval > 0 and (step_idx % log_interval == 0 or step_idx == num_steps):
+                elapsed = _format_seconds(time.time() - start_time)
+                _print_progress(
+                    f"[Export] Step {step_idx}/{num_steps} skipped_batch reason={e} elapsed={elapsed}",
+                    final=(step_idx == num_steps),
+                    overwrite=False,
+                )
+            continue
+        input_lidar = packed["input_lidar"].to(device, non_blocking=True)
+        lidar_centers = packed["lidar_centers"].to(device, non_blocking=True)
         pred_centered = model(input_lidar)
         pred_restored = _restore_centered_keypoints(pred_centered, lidar_centers).cpu().numpy()
 
-        frame_paths = batch.get("frame_path", None)
-        if frame_paths is None:
-            sample_ids = batch.get("sample_id", [f"sample_{step_idx}_{i}" for i in range(input_lidar.shape[0])])
-            frame_paths = [str(x) for x in sample_ids]
+        frame_paths = packed["frame_paths"]
 
         for i in range(pred_restored.shape[0]):
             kp = pred_restored[i].astype(np.float32)
