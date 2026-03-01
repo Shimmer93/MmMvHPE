@@ -18,8 +18,10 @@ train_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
-    modality_names: ['rgb']
+    modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
     split: 'train'
     split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -30,7 +32,7 @@ train_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
-    sequence_allowlist: ['161029_piano2']
+    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose1", "171204_pose2", "171204_pose3", "171204_pose4", "171204_pose5", "171204_pose6"]
     strict_validation: true
 val_dataset:
   name: 'PanopticPreprocessedDatasetV1'
@@ -39,8 +41,10 @@ val_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
-    modality_names: ['rgb']
+    modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
     split: 'test'
     split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -51,7 +55,7 @@ val_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
-    sequence_allowlist: ['161029_piano2']
+    sequence_allowlist: *sequence_allowlist
     strict_validation: true
 test_dataset:
   name: 'PanopticPreprocessedDatasetV1'
@@ -60,8 +64,10 @@ test_dataset:
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
-    modality_names: ['rgb']
+    modality_names: ['rgb', 'depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
     split: 'test'
     split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
@@ -72,7 +78,7 @@ test_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
-    sequence_allowlist: ['161029_piano2']
+    sequence_allowlist: *sequence_allowlist
     strict_validation: true
 # --------------------------------------
 # Optimizer parameters
@@ -99,10 +105,30 @@ backbone_rgb:
   params:
     pretrained: false
   has_temporal: false
+backbone_lidar:
+  name: 'MAMBA4DEncoder'
+  params:
+    radius: 0.1
+    nsamples: 16
+    spatial_stride: 32
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    mlp_dim: 1024
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
+    mode: 'xyz'
+  has_temporal: true
 aggregator:
   name: 'SimpleAggregator'
   params:
-    input_dims: [512, null, null, null]
+    input_dims: [512, null, 512, null]
     embed_dim: 256
 keypoint_head:
   name: 'RegressionKeypointHead'
@@ -134,6 +160,11 @@ train_pipeline: &train_pipeline
     params:
       norm_mode: 'imagenet'
       keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
   - name: ToTensor
     params: null
 val_pipeline: *train_pipeline
