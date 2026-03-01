@@ -59,6 +59,7 @@ class HummanDepthToLidarDataset(HummanPreprocessedDatasetV2):
         random_lidar_rotation_deg: float = 0.0,
         random_lidar_rotation_seed: int = 0,
         random_lidar_rotation_ratio: float = 1.0,
+        expand_all_depth_cameras: bool = False,
     ) -> None:
         if pipeline is None:
             pipeline = build_depth_to_lidar_pipeline(num_points=1024)
@@ -91,8 +92,27 @@ class HummanDepthToLidarDataset(HummanPreprocessedDatasetV2):
         self.random_lidar_rotation_deg = max(0.0, float(random_lidar_rotation_deg))
         self.random_lidar_rotation_seed = int(random_lidar_rotation_seed)
         self.random_lidar_rotation_ratio = float(np.clip(float(random_lidar_rotation_ratio), 0.0, 1.0))
+        self.expand_all_depth_cameras = bool(expand_all_depth_cameras)
+        if self.expand_all_depth_cameras:
+            self._expand_data_list_by_depth_camera()
         # Dedicated RNG so augmentation is controlled by this wrapper only.
         self._rotation_rng = np.random.RandomState(self.random_lidar_rotation_seed)
+
+    def _expand_data_list_by_depth_camera(self) -> None:
+        expanded = []
+        for data_info in self.data_list:
+            depth_cameras = list(data_info.get("depth_cameras", []))
+            if len(depth_cameras) == 0:
+                expanded.append(data_info)
+                continue
+            for cam in depth_cameras:
+                item = dict(data_info)
+                item["depth_camera"] = cam
+                item["lidar_camera"] = cam
+                item["depth_cameras"] = [cam]
+                item["lidar_cameras"] = [cam]
+                expanded.append(item)
+        self.data_list = expanded
 
     @staticmethod
     def _axis_angle_to_matrix(axis_angle: np.ndarray) -> np.ndarray:

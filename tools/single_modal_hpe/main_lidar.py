@@ -403,7 +403,10 @@ def main() -> None:
                 random_lidar_rotation_deg=0.0,
                 random_lidar_rotation_seed=args.seed,
                 random_lidar_rotation_ratio=0.0,
+                expand_all_depth_cameras=True,
             )
+            if is_main:
+                print(f"Export dataset size (all frames x cameras): {len(export_dataset)}")
             export_loader = build_dataloader(
                 export_dataset,
                 batch_size=args.batch_size,
@@ -544,7 +547,9 @@ def main() -> None:
                 random_lidar_rotation_deg=0.0,
                 random_lidar_rotation_seed=args.seed,
                 random_lidar_rotation_ratio=0.0,
+                expand_all_depth_cameras=True,
             )
+            print(f"Export dataset size (all frames x cameras): {len(export_dataset)}")
             export_loader = build_dataloader(
                 export_dataset,
                 batch_size=args.batch_size,
