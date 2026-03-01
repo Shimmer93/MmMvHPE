@@ -29,6 +29,10 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         "meta/manifest.json",
         "gt3d",
     )
+    NECK_IDX = 0
+    BODYCENTER_IDX = 2
+    LHIP_IDX = 6
+    RHIP_IDX = 12
 
     def __init__(
         self,
@@ -64,6 +68,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         output_num_joints: int = 19,
         apply_to_new_world: bool = False,
         remove_root_rotation: bool = False,
+        root_rotation_fallback: str = "error",
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
     ):
@@ -92,6 +97,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         self.output_num_joints = int(output_num_joints)
         self.apply_to_new_world = bool(apply_to_new_world)
         self.remove_root_rotation = bool(remove_root_rotation)
+        self.root_rotation_fallback = str(root_rotation_fallback).lower()
         self.panoptic_toolbox_root = (
             osp.abspath(osp.expanduser(panoptic_toolbox_root))
             if panoptic_toolbox_root is not None
@@ -100,6 +106,11 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if self.remove_root_rotation and not self.apply_to_new_world:
             raise ValueError(
                 "remove_root_rotation=True requires apply_to_new_world=True for PanopticPreprocessedDatasetV1."
+            )
+        if self.root_rotation_fallback not in {"error", "identity"}:
+            raise ValueError(
+                f"Unsupported root_rotation_fallback={root_rotation_fallback}. "
+                "Expected one of {'error','identity'}."
             )
         self.use_panoptic_calibration_extrinsics = bool(use_panoptic_calibration_extrinsics)
 
@@ -445,6 +456,25 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 if not frame_ids:
                     raise ValueError(f"No synchronized frame IDs remain after validation for sequence {seq_name}")
 
+                collapsed_hip_frames: set[int] = set()
+                if self.remove_root_rotation and self.seq_len > 1:
+                    hip_thr = self._collapsed_hip_threshold_in_unit()
+                    for fid in frame_ids:
+                        gtp = gt_by_frame[fid]
+                        arr = np.load(gtp).astype(np.float32)
+                        if arr.ndim != 2 or arr.shape[0] <= self.RHIP_IDX or arr.shape[1] < 3:
+                            raise ValueError(f"Invalid gt3d shape in {gtp}: {arr.shape}")
+                        xyz = arr[:, :3]
+                        if self.gt_unit == "cm" and self.unit == "m":
+                            xyz = xyz / 100.0
+                        elif self.gt_unit == "mm" and self.unit == "m":
+                            xyz = xyz / 1000.0
+                        elif self.gt_unit == "m" and self.unit == "mm":
+                            xyz = xyz * 1000.0
+                        hip_dist = float(np.linalg.norm(xyz[self.RHIP_IDX] - xyz[self.LHIP_IDX]))
+                        if hip_dist < hip_thr:
+                            collapsed_hip_frames.add(int(fid))
+
                 out[seq_name] = {
                     "seq_dir": str(seq_dir),
                     "rgb_by_cam": rgb_by_cam,
@@ -456,6 +486,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                     "cameras": cameras,
                     "cam_name_to_raw": cam_name_to_raw,
                     "panoptic_extrinsics": self._load_panoptic_extrinsics(seq_name),
+                    "collapsed_hip_frames": collapsed_hip_frames,
                 }
             except Exception as exc:
                 errors.append(f"{seq_name}: {exc}")
@@ -511,12 +542,14 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
 
     def _build_dataset(self) -> List[Dict[str, Any]]:
         data_list: List[Dict[str, Any]] = []
+        dropped_windows = 0
         for seq_name in sorted(self.sequence_data.keys()):
             seq_info = self.sequence_data[seq_name]
             frame_ids = seq_info["frame_ids"]
             rgb_cams = list(seq_info["rgb_cams"])
             depth_cams = list(seq_info["depth_cams"])
             lidar_cams = list(depth_cams)
+            collapsed_hip_frames = set(seq_info.get("collapsed_hip_frames", set()))
 
             if len(frame_ids) < self.seq_len and self.pad_seq:
                 starts = [0]
@@ -524,6 +557,21 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 starts = list(range(0, max(0, len(frame_ids) - self.seq_len + 1), self.seq_step))
 
             for start_idx in starts:
+                # Keep logic simple for approximate root-rotation mode:
+                # if any frame in the temporal window has collapsed hips, drop this sample.
+                if self.remove_root_rotation and self.seq_len > 1 and collapsed_hip_frames:
+                    window = []
+                    for i in range(self.seq_len):
+                        idx = start_idx + i
+                        if idx >= len(frame_ids):
+                            if not self.pad_seq:
+                                break
+                            idx = len(frame_ids) - 1
+                        window.append(frame_ids[idx])
+                    if any(fid in collapsed_hip_frames for fid in window):
+                        dropped_windows += 1
+                        continue
+
                 if self.use_all_pairs:
                     rgb_pool = rgb_cams if rgb_cams else [None]
                     depth_pool = depth_cams if depth_cams else [None]
@@ -556,6 +604,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                             "lidar_cameras": list(lidar_cams),
                         }
                     )
+        if dropped_windows > 0:
+            print(
+                "[PanopticPreprocessedDatasetV1] INFO: "
+                f"dropped {dropped_windows} sample windows with collapsed hips "
+                f"(remove_root_rotation=True, seq_len={self.seq_len})."
+            )
         return data_list
 
     def _load_gt_keypoints(self, seq_name: str, body_frame_id: int) -> np.ndarray:
@@ -577,6 +631,14 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 f"for seq={seq_name}, frame={body_frame_id}"
             )
         return xyz
+
+    def _collapsed_hip_threshold_in_unit(self) -> float:
+        # 1 cm default threshold in current unit.
+        if self.unit == "m":
+            return 0.01
+        if self.unit == "mm":
+            return 10.0
+        return 1.0
 
     def _load_rgb_frames(self, seq_name: str, camera_name: str, frame_window: List[int]) -> List[np.ndarray]:
         rgb_map = self.sequence_data[seq_name]["rgb_by_cam"][camera_name]
@@ -803,7 +865,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         gt_keypoints = gt_keypoints.astype(np.float32)
         r_new_to_world = np.eye(3, dtype=np.float32)
         if self.apply_to_new_world and self.remove_root_rotation:
-            r_new_to_world = self._estimate_root_rotation_from_joints19(gt_keypoints)
+            try:
+                r_new_to_world = self._estimate_root_rotation_from_joints19(gt_keypoints)
+            except ValueError:
+                if self.root_rotation_fallback == "error":
+                    raise
+                r_new_to_world = np.eye(3, dtype=np.float32)
         if self.apply_to_new_world:
             if self.remove_root_rotation:
                 gt_keypoints = self._world_to_new_world_rot(gt_keypoints, pelvis, r_new_to_world)
