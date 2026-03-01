@@ -20,6 +20,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
     When `lidar_skeleton_json` is provided, this class loads 3D keypoints and
     writes them to `lidar_skeleton_key` (default: `gt_keypoints_lidar`).
     The loaded LiDAR keypoints are converted to match dataset coordinate mode:
+    - input can be `"new_world"`, `"world"`, or `"lidar"` (`"camera"` alias)
     - if `apply_to_new_world=True`, output keypoints are in pelvis-centered new-world
       coordinates (with optional root-rotation removal controlled by
       `remove_root_rotation`)
@@ -98,13 +99,15 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         self.rgb_skeleton_shape: Tuple[int, int] = (17, 2)
         self.lidar_skeleton_json = lidar_skeleton_json
         self.lidar_skeleton_coord = str(lidar_skeleton_coord).lower()
+        if self.lidar_skeleton_coord == "camera":
+            self.lidar_skeleton_coord = "lidar"
         self.lidar_skeleton_key = str(lidar_skeleton_key)
         self.lidar_skeleton_index: Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]] = {}
         self.lidar_skeleton_shape: Tuple[int, int] = (24, 3)
-        if self.lidar_skeleton_coord not in {"new_world", "world"}:
+        if self.lidar_skeleton_coord not in {"new_world", "world", "lidar"}:
             raise ValueError(
                 f"Unsupported lidar_skeleton_coord={lidar_skeleton_coord}. "
-                "Expected one of {'new_world', 'world'}."
+                "Expected one of {'new_world', 'world', 'lidar'}."
             )
 
         self._sample_id_re = re.compile(
@@ -167,16 +170,10 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             if keypoints is None:
                 continue
 
-            stem = Path(rel_path).stem
-            seq_match = self._seq_re.search(stem)
-            cam_match = self._cam_re.search(stem)
-            frame_match = self._frame_re.search(stem)
-            if not (seq_match and cam_match and frame_match):
+            seq_name, camera, frame_idx = self._parse_stem_to_index_triplet(Path(rel_path).stem, modality="rgb")
+            if seq_name is None or camera is None or frame_idx is None:
                 continue
 
-            seq_name = seq_match.group(1)
-            camera = cam_match.group(1)
-            frame_idx = int(frame_match.group(1))
             index.setdefault(seq_name, {}).setdefault(camera, []).append((frame_idx, keypoints))
 
             if inferred_shape is None:
@@ -254,16 +251,10 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             if keypoints is None:
                 continue
 
-            stem = Path(rel_path).stem
-            seq_match = self._seq_re.search(stem)
-            cam_match = self._cam_re.search(stem)
-            frame_match = self._frame_re.search(stem)
-            if not (seq_match and cam_match and frame_match):
+            seq_name, camera, frame_idx = self._parse_stem_to_index_triplet(Path(rel_path).stem, modality="lidar")
+            if seq_name is None or camera is None or frame_idx is None:
                 continue
 
-            seq_name = seq_match.group(1)
-            camera = cam_match.group(1)
-            frame_idx = int(frame_match.group(1))
             index.setdefault(seq_name, {}).setdefault(camera, []).append((frame_idx, keypoints))
 
             if inferred_shape is None:
@@ -321,6 +312,28 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         depth_camera = None if m.group("depth") == "None" else m.group("depth")
         start_frame = int(m.group("start"))
         return seq_name, rgb_camera, depth_camera, start_frame
+
+    def _parse_stem_to_index_triplet(
+        self, stem: str, modality: str
+    ) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        seq_match = self._seq_re.search(stem)
+        cam_match = self._cam_re.search(stem)
+        frame_match = self._frame_re.search(stem)
+        if seq_match and cam_match and frame_match:
+            return seq_match.group(1), cam_match.group(1), int(frame_match.group(1))
+
+        seq_name, rgb_camera, depth_camera, start_frame = self._parse_sample_id(stem)
+        if seq_name is None:
+            return None, None, None
+        if modality == "rgb":
+            camera = rgb_camera
+        elif modality == "lidar":
+            camera = depth_camera
+        else:
+            raise ValueError(f"Unsupported modality `{modality}`.")
+        if camera is None:
+            camera = "unknown"
+        return seq_name, camera, int(start_frame)
 
     def _resolve_image_size_hw(self, sample) -> Tuple[int, int]:
         rgb = sample.get("input_rgb")
@@ -435,6 +448,75 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         return np.asarray(value, dtype=np.float32).reshape(3)
 
     @staticmethod
+    def _to_numpy_affine(value: Optional[object]) -> np.ndarray:
+        if value is None:
+            return np.eye(4, dtype=np.float32)
+        if isinstance(value, torch.Tensor):
+            arr = value.detach().cpu().numpy().astype(np.float32)
+        else:
+            arr = np.asarray(value, dtype=np.float32)
+        if arr.shape == (4, 4):
+            return arr
+        if arr.ndim == 3 and arr.shape[0] == 1 and arr.shape[1:] == (4, 4):
+            return arr[0]
+        raise ValueError(f"Expected affine shape (4,4), got {arr.shape}.")
+
+    @staticmethod
+    def _to_camera_list(camera_raw):
+        if camera_raw is None:
+            return []
+        if isinstance(camera_raw, (list, tuple)):
+            return list(camera_raw)
+        return [camera_raw]
+
+    @staticmethod
+    def _lidar_to_new_world_single(points: np.ndarray, extrinsic_after: np.ndarray, center: np.ndarray) -> np.ndarray:
+        if extrinsic_after.shape != (3, 4):
+            raise ValueError(f"Expected lidar extrinsic shape (3,4), got {extrinsic_after.shape}.")
+        r = extrinsic_after[:, :3].astype(np.float32)
+        t_after = extrinsic_after[:, 3].astype(np.float32)
+        t_raw = t_after + center.astype(np.float32)
+        pts = points.reshape(-1, 3).astype(np.float32)
+        out = (r.T @ (pts - t_raw.reshape(1, 3)).T).T
+        return out.reshape(points.shape).astype(np.float32)
+
+    def _transform_lidar_to_new_world(
+        self,
+        kpts_lidar: np.ndarray,
+        lidar_camera,
+        input_lidar_affine,
+    ) -> np.ndarray:
+        camera_list = self._to_camera_list(lidar_camera)
+        if len(camera_list) == 0:
+            raise ValueError(
+                "lidar_skeleton_coord='lidar' requires `lidar_camera` in sample to recover new-world coordinates."
+            )
+        extrinsics = []
+        for cam in camera_list:
+            if not isinstance(cam, dict) or "extrinsic" not in cam:
+                raise ValueError("Each lidar_camera entry must be a dict containing `extrinsic`.")
+            extrinsics.append(np.asarray(cam["extrinsic"], dtype=np.float32))
+
+        affine = self._to_numpy_affine(input_lidar_affine)
+        center = -affine[:3, 3].astype(np.float32)
+        kpts = np.asarray(kpts_lidar, dtype=np.float32)
+
+        if kpts.ndim == 3:
+            return self._lidar_to_new_world_single(kpts, extrinsics[0], center)
+        if kpts.ndim == 4:
+            num_views = int(kpts.shape[0])
+            if len(extrinsics) not in {1, num_views}:
+                raise ValueError(
+                    f"LiDAR view count mismatch: kpts has {num_views} views but lidar_camera has {len(extrinsics)}."
+                )
+            out_views = []
+            for vidx in range(num_views):
+                ext = extrinsics[0] if len(extrinsics) == 1 else extrinsics[vidx]
+                out_views.append(self._lidar_to_new_world_single(kpts[vidx], ext, center))
+            return np.stack(out_views, axis=0).astype(np.float32)
+        raise ValueError(f"Expected LiDAR keypoints with ndim 3 or 4, got shape {kpts.shape}.")
+
+    @staticmethod
     def _transform_new_world_to_world(
         points: np.ndarray,
         global_orient: np.ndarray,
@@ -495,7 +577,20 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             global_orient = self._to_numpy_3vec(sample.get("gt_global_orient"))
             pelvis = self._to_numpy_3vec(sample.get("gt_pelvis"))
 
-            if self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
+            if self.lidar_skeleton_coord == "lidar":
+                kpts_lidar = self._transform_lidar_to_new_world(
+                    kpts_lidar,
+                    sample.get("lidar_camera"),
+                    sample.get("input_lidar_affine"),
+                )
+                if not self.apply_to_new_world:
+                    kpts_lidar = self._transform_new_world_to_world(
+                        kpts_lidar,
+                        global_orient,
+                        pelvis,
+                        remove_root_rotation=self.remove_root_rotation,
+                    )
+            elif self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
                 kpts_lidar = self._transform_new_world_to_world(
                     kpts_lidar,
                     global_orient,
