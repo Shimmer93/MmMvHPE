@@ -733,7 +733,13 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             gt_body_frame_id = frame_window[len(frame_window) // 2]
 
         gt_keypoints = self._load_gt_keypoints(seq_name, gt_body_frame_id)
-        pelvis = np.asarray(gt_keypoints[0], dtype=np.float32)
+        if gt_keypoints.shape[0] <= 2:
+            raise ValueError(
+                f"Panoptic joints19 requires BodyCenter at index 2, got shape={gt_keypoints.shape} "
+                f"for seq={seq_name}, frame={gt_body_frame_id}"
+            )
+        # Panoptic joints19 order: 2 = BodyCenter (center of hips), used as pelvis/root.
+        pelvis = np.asarray(gt_keypoints[2], dtype=np.float32)
         gt_keypoints = gt_keypoints.astype(np.float32)
         if self.apply_to_new_world:
             gt_keypoints = self._world_to_new_world(gt_keypoints, pelvis)
