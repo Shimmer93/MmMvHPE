@@ -49,6 +49,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--unit", type=str, default="m", choices=["m", "mm"])
     parser.add_argument("--num-points", type=int, default=1024)
+    parser.add_argument(
+        "--train-random-rot-deg",
+        type=float,
+        default=0.0,
+        help="Max random LiDAR rotation in degrees for training samples.",
+    )
+    parser.add_argument(
+        "--train-random-rot-ratio",
+        type=float,
+        default=1.0,
+        help="Fraction of training sequences that receive random LiDAR rotation.",
+    )
 
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -250,6 +262,9 @@ def main() -> None:
         causal=args.causal,
         use_all_pairs=False,
         test_mode=False,
+        random_lidar_rotation_deg=args.train_random_rot_deg,
+        random_lidar_rotation_seed=args.seed,
+        random_lidar_rotation_ratio=args.train_random_rot_ratio,
     )
     test_dataset = HummanDepthToLidarDataset(
         data_root=args.data_root,
@@ -265,6 +280,9 @@ def main() -> None:
         causal=args.causal,
         use_all_pairs=False,
         test_mode=True,
+        random_lidar_rotation_deg=0.0,
+        random_lidar_rotation_seed=args.seed,
+        random_lidar_rotation_ratio=0.0,
     )
 
     if is_main:
@@ -382,6 +400,9 @@ def main() -> None:
                 causal=True,
                 use_all_pairs=False,
                 test_mode=True,
+                random_lidar_rotation_deg=0.0,
+                random_lidar_rotation_seed=args.seed,
+                random_lidar_rotation_ratio=0.0,
             )
             export_loader = build_dataloader(
                 export_dataset,
@@ -520,6 +541,9 @@ def main() -> None:
                 causal=True,
                 use_all_pairs=False,
                 test_mode=True,
+                random_lidar_rotation_deg=0.0,
+                random_lidar_rotation_seed=args.seed,
+                random_lidar_rotation_ratio=0.0,
             )
             export_loader = build_dataloader(
                 export_dataset,

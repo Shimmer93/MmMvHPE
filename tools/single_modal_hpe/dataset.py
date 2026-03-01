@@ -53,6 +53,9 @@ class HummanDepthToLidarDataset(HummanPreprocessedDatasetV2):
         apply_to_new_world: bool = True,
         remove_root_rotation: bool = True,
         colocated: bool = False,
+        random_lidar_rotation_deg: float = 0.0,
+        random_lidar_rotation_seed: int = 0,
+        random_lidar_rotation_ratio: float = 1.0,
     ) -> None:
         if pipeline is None:
             pipeline = build_depth_to_lidar_pipeline(num_points=1024)
@@ -81,4 +84,7 @@ class HummanDepthToLidarDataset(HummanPreprocessedDatasetV2):
             apply_to_new_world=apply_to_new_world,
             remove_root_rotation=remove_root_rotation,
             skeleton_only=True,
+            random_lidar_rotation_deg=float(random_lidar_rotation_deg),
+            random_lidar_rotation_seed=int(random_lidar_rotation_seed),
+            random_lidar_rotation_ratio=float(random_lidar_rotation_ratio),
         )
