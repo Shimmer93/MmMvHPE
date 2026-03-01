@@ -28,8 +28,6 @@ def build_default_encoder_kwargs(encoder_dim: int) -> Dict[str, Any]:
 
 
 class SimpleLidarHPEModel(nn.Module):
-    """Predicts pelvis-centered skeleton and optional LiDAR-frame skeleton."""
-
     def __init__(
         self,
         num_joints: int = 24,
@@ -45,14 +43,14 @@ class SimpleLidarHPEModel(nn.Module):
 
         self.encoder = MAMBA4DEncoder(**kwargs)
         out_dim = int(kwargs["dim"])
-        self.feature_proj = nn.Sequential(
+        self.head = nn.Sequential(
             nn.LayerNorm(out_dim),
             nn.Linear(out_dim, int(head_hidden_dim)),
             nn.GELU(),
+            nn.Linear(int(head_hidden_dim), self.num_joints * 3),
         )
-        self.skeleton_head = nn.Linear(int(head_hidden_dim), self.num_joints * 3)
 
-    def _encode(self, input_lidar: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_lidar: torch.Tensor) -> torch.Tensor:
         features = self.encoder(input_lidar)
         if features.dim() == 4:
             pooled = features.mean(dim=(1, 2))
@@ -60,23 +58,6 @@ class SimpleLidarHPEModel(nn.Module):
             pooled = features.mean(dim=1)
         else:
             raise ValueError(f"Unexpected encoder output shape: {tuple(features.shape)}")
-        return self.feature_proj(pooled)
 
-    def forward(self, input_lidar: torch.Tensor, lidar_centers: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        feat = self._encode(input_lidar)
-        pred_keypoints = self.skeleton_head(feat).view(feat.shape[0], self.num_joints, 3)
-
-        if lidar_centers is None:
-            pred_keypoints_lidar = pred_keypoints
-        else:
-            if lidar_centers.dim() != 2 or lidar_centers.shape[0] != pred_keypoints.shape[0] or lidar_centers.shape[1] != 3:
-                raise ValueError(
-                    "Expected lidar_centers with shape [B,3] matching batch size, got "
-                    f"{tuple(lidar_centers.shape)}."
-                )
-            pred_keypoints_lidar = pred_keypoints + lidar_centers.unsqueeze(1)
-
-        return {
-            "pred_keypoints": pred_keypoints,
-            "pred_keypoints_lidar": pred_keypoints_lidar,
-        }
+        pred = self.head(pooled)
+        return pred.view(pred.shape[0], self.num_joints, 3)
