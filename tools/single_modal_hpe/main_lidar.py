@@ -13,8 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.single_modal_hpe.dataset import HummanDepthToLidarDataset
-from tools.single_modal_hpe.model import SimpleLidarHPEModel
+from tools.single_modal_hpe.dataset import HummanDepthToLidarDataset, build_depth_to_lidar_pipeline
 from tools.single_modal_hpe.train_eval import (
     evaluate,
     export_predictions_as_mmpose_json,
@@ -34,16 +33,20 @@ def parse_args() -> argparse.Namespace:
         default="configs/datasets/humman_split_config.yml",
         help="Optional split config yaml.",
     )
-    parser.add_argument("--split-to-use", type=str, default="cross_camera_split")
+    parser.add_argument("--split-to-use", type=str, default="random_split")
     parser.add_argument("--train-split", type=str, default="train")
     parser.add_argument("--test-split", type=str, default="test")
     parser.add_argument("--depth-cameras", nargs="+", default=None)
     parser.add_argument("--seq-len", type=int, default=1)
     parser.add_argument("--seq-step", type=int, default=1)
-    parser.add_argument("--causal", action="store_true")
+    parser.add_argument(
+        "--causal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use causal target selection (matches main config default).",
+    )
     parser.add_argument("--unit", type=str, default="m", choices=["m", "mm"])
     parser.add_argument("--num-points", type=int, default=1024)
-    parser.add_argument("--min-depth", type=float, default=1e-6)
 
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -72,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drop-path", type=float, default=0.1)
     parser.add_argument("--mode", type=str, default="xyz", choices=["xyz", "d", "all", "only_h"])
 
-    parser.add_argument("--output-dir", type=str, default="logs/single_model_hpe")
+    parser.add_argument("--output-dir", type=str, default="logs/single_modal_hpe")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--test-only", action="store_true")
     parser.add_argument("--pred-file", type=str, default="test_predictions.npz")
@@ -107,7 +110,9 @@ def build_dataloader(dataset, batch_size: int, shuffle: bool, num_workers: int, 
     )
 
 
-def build_model(args: argparse.Namespace) -> SimpleLidarHPEModel:
+def build_model(args: argparse.Namespace):
+    from tools.single_modal_hpe.model import SimpleLidarHPEModel
+
     encoder_kwargs = {
         "radius": args.radius,
         "nsamples": args.nsamples,
@@ -147,31 +152,7 @@ def main() -> None:
     if args.split_config and split_config is None:
         print(f"[WARN] split config not found at {args.split_config}; falling back to internal split.")
 
-    # Match the requested training pipeline.
-    common_pipeline = [
-        {
-            "name": "CameraParamToPoseEncoding",
-            "params": {"pose_encoding_type": "absT_quaR_FoV"},
-        },
-        {
-            "name": "PCCenterWithKeypoints",
-            "params": {
-                "center_type": "mean",
-                "keys": ["input_lidar"],
-                # Keep LiDAR supervision in the same frame as V2 + PCCenterWithKeypoints.
-                "keypoints_key": "gt_keypoints",
-            },
-        },
-        {
-            "name": "PCPad",
-            "params": {
-                "num_points": 1024,
-                "pad_mode": "repeat",
-                "keys": ["input_lidar"],
-            },
-        },
-        {"name": "ToTensor", "params": None},
-    ]
+    common_pipeline = build_depth_to_lidar_pipeline(num_points=args.num_points)
 
     train_dataset = HummanDepthToLidarDataset(
         data_root=args.data_root,
@@ -183,10 +164,10 @@ def main() -> None:
         depth_cameras=args.depth_cameras,
         seq_len=args.seq_len,
         seq_step=args.seq_step,
+        pad_seq=True,
         causal=args.causal,
+        use_all_pairs=False,
         test_mode=False,
-        num_points=args.num_points,
-        min_depth=args.min_depth,
     )
     test_dataset = HummanDepthToLidarDataset(
         data_root=args.data_root,
@@ -198,10 +179,10 @@ def main() -> None:
         depth_cameras=args.depth_cameras,
         seq_len=args.seq_len,
         seq_step=args.seq_step,
+        pad_seq=True,
         causal=args.causal,
+        use_all_pairs=False,
         test_mode=True,
-        num_points=args.num_points,
-        min_depth=args.min_depth,
     )
 
     print(f"Train samples: {len(train_dataset)}")
@@ -251,7 +232,8 @@ def main() -> None:
             log_interval=args.log_interval,
             log_overwrite=args.log_overwrite,
         )
-        print(f"Test MPJPE: {test_metrics['mpjpe']:.6f}")
+        print(f"Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
+        print(f"Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
         print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
         print(f"Predictions saved to: {pred_path}")
         if export_json_path is not None:
@@ -265,10 +247,10 @@ def main() -> None:
                 depth_cameras=None,
                 seq_len=1,
                 seq_step=1,
+                pad_seq=True,
                 causal=True,
+                use_all_pairs=False,
                 test_mode=True,
-                num_points=args.num_points,
-                min_depth=args.min_depth,
             )
             export_loader = build_dataloader(
                 export_dataset,
@@ -337,20 +319,26 @@ def main() -> None:
         )
         scheduler.step()
 
+        current_val_mpjpe = val_metrics["mpjpe_restored"]
+        if not np.isfinite(current_val_mpjpe):
+            current_val_mpjpe = val_metrics["mpjpe_centered"]
+
         print(
             f"Epoch [{epoch + 1}/{args.epochs}] "
             f"train_loss={train_metrics['loss']:.6f} "
-            f"train_mpjpe={train_metrics['mpjpe']:.6f} "
+            f"train_mpjpe_centered={train_metrics['mpjpe_centered']:.6f} "
+            f"train_mpjpe_restored={train_metrics['mpjpe_restored']:.6f} "
             f"val_loss={val_metrics['loss']:.6f} "
-            f"val_mpjpe={val_metrics['mpjpe']:.6f} "
+            f"val_mpjpe_centered={val_metrics['mpjpe_centered']:.6f} "
+            f"val_mpjpe_restored={val_metrics['mpjpe_restored']:.6f} "
             f"train_elapsed={train_metrics['elapsed_sec']:.1f}s "
             f"val_elapsed={val_metrics['elapsed_sec']:.1f}s "
             f"total_elapsed={time.time() - run_start_time:.1f}s"
         )
 
         save_checkpoint(last_ckpt_path, model, optimizer, scheduler, epoch, best_val_mpjpe)
-        if val_metrics["mpjpe"] < best_val_mpjpe:
-            best_val_mpjpe = val_metrics["mpjpe"]
+        if current_val_mpjpe < best_val_mpjpe:
+            best_val_mpjpe = current_val_mpjpe
             save_checkpoint(best_ckpt_path, model, optimizer, scheduler, epoch, best_val_mpjpe)
             print(f"Saved best checkpoint to {best_ckpt_path}")
 
@@ -366,7 +354,8 @@ def main() -> None:
         log_interval=args.log_interval,
         log_overwrite=args.log_overwrite,
     )
-    print(f"Final Test MPJPE: {test_metrics['mpjpe']:.6f}")
+    print(f"Final Test MPJPE (centered): {test_metrics['mpjpe_centered']:.6f}")
+    print(f"Final Test MPJPE (restored): {test_metrics['mpjpe_restored']:.6f}")
     print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
     print(f"Predictions saved to: {pred_path}")
     if export_json_path is not None:
@@ -380,10 +369,10 @@ def main() -> None:
             depth_cameras=None,
             seq_len=1,
             seq_step=1,
+            pad_seq=True,
             causal=True,
+            use_all_pairs=False,
             test_mode=True,
-            num_points=args.num_points,
-            min_depth=args.min_depth,
         )
         export_loader = build_dataloader(
             export_dataset,
