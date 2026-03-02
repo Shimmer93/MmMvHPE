@@ -8,7 +8,7 @@ keypoints/vertices using the SMPL model for evaluation.
 import numpy as np
 import torch
 from misc.utils import torch2numpy as to_numpy
-from .mpjpe import mpjpe_func, pampjpe_func
+from .mpjpe import mpjpe_func, pampjpe_func, pcmpjpe_func
 
 
 def smpl_to_keypoints(smpl_params, smpl_model, device='cuda'):
@@ -206,6 +206,76 @@ class SMPL_PAMPJPE:
 
         pampjpe = pampjpe_func(pred_keypoints, target_keypoints, reduce=True)
         return pampjpe
+
+
+def _extract_smpl_global_orient(source, source_name):
+    if source is None:
+        raise ValueError(f"Missing {source_name}, cannot compute SMPL_PCMPJPE.")
+
+    if isinstance(source, dict):
+        if "global_orient" not in source:
+            raise ValueError(f"{source_name} is missing required key 'global_orient'.")
+        orient = source["global_orient"]
+        return to_numpy(orient)
+
+    if isinstance(source, list):
+        if len(source) == 0:
+            raise ValueError(f"{source_name} list is empty.")
+        orient_list = []
+        for idx, item in enumerate(source):
+            if not isinstance(item, dict) or "global_orient" not in item:
+                raise ValueError(
+                    f"{source_name}[{idx}] must be a dict containing 'global_orient' to compute SMPL_PCMPJPE."
+                )
+            orient_list.append(np.asarray(to_numpy(item["global_orient"]), dtype=np.float32).reshape(3))
+        return np.stack(orient_list, axis=0).astype(np.float32)
+
+    arr = np.asarray(to_numpy(source), dtype=np.float32)
+    if arr.shape[-1] < 3:
+        raise ValueError(f"{source_name} must end with dim>=3 to parse root orientation, got {arr.shape}.")
+    return arr[..., :3].astype(np.float32)
+
+
+class SMPL_PCMPJPE:
+    """
+    Pelvis-centered MPJPE with pelvis orientation alignment for SMPL predictions.
+    """
+
+    def __init__(self, affix=None, pelvis_idx=0):
+        self.affix = affix
+        self.pelvis_idx = pelvis_idx
+        self.name = f'smpl_pcmpjpe_{affix}' if affix is not None else 'smpl_pcmpjpe'
+
+    def __call__(self, preds, targets):
+        pred_keypoints = preds.get('pred_smpl_keypoints', None)
+        if pred_keypoints is None:
+            raise ValueError("'pred_smpl_keypoints' not found in predictions for SMPL_PCMPJPE.")
+        pred_keypoints = to_numpy(pred_keypoints)
+        target_keypoints = to_numpy(targets['gt_keypoints'])
+
+        pred_smpl = preds.get('pred_smpl', None)
+        if pred_smpl is not None:
+            pred_root_rot = _extract_smpl_global_orient(pred_smpl, "pred_smpl")
+        else:
+            pred_smpl_params = preds.get('pred_smpl_params', None)
+            pred_root_rot = _extract_smpl_global_orient(pred_smpl_params, "pred_smpl_params")
+
+        gt_smpl = targets.get('gt_smpl', None)
+        if gt_smpl is not None:
+            gt_root_rot = _extract_smpl_global_orient(gt_smpl, "gt_smpl")
+        else:
+            gt_smpl_params = targets.get('gt_smpl_params', None)
+            gt_root_rot = _extract_smpl_global_orient(gt_smpl_params, "gt_smpl_params")
+
+        pcmpjpe = pcmpjpe_func(
+            pred_keypoints,
+            target_keypoints,
+            pelvis_idx=self.pelvis_idx,
+            pred_root_rot=pred_root_rot,
+            gt_root_rot=gt_root_rot,
+            reduce=True,
+        )
+        return pcmpjpe
 
 
 class SMPL_VertexError:
