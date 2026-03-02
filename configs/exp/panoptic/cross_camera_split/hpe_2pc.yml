@@ -6,8 +6,6 @@ sync_batchnorm: false
 clip_grad: null
 precision: 16
 epochs: &epochs 20
-monitor: 'val_mpjpe'
-monitor_mode: 'min'
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
@@ -20,7 +18,7 @@ train_dataset:
     output_num_joints: 19
     apply_to_new_world: true
     remove_root_rotation: true
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     convert_depth_to_lidar: true
@@ -34,12 +32,13 @@ train_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
-    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose1", "171204_pose2", "171204_pose3", "171204_pose4", "171204_pose5", "171204_pose6"]
+    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose3", "171204_pose4"]
     strict_validation: true
     apply_to_new_world: true
     remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
+    depth_cameras_per_sample: 2
 val_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
@@ -49,7 +48,7 @@ val_dataset:
     output_num_joints: 19
     apply_to_new_world: true
     remove_root_rotation: true
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     convert_depth_to_lidar: true
@@ -69,6 +68,7 @@ val_dataset:
     remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
+    depth_cameras_per_sample: 2
 test_dataset:
   name: 'PanopticPreprocessedDatasetV1'
   params:
@@ -78,7 +78,7 @@ test_dataset:
     output_num_joints: 19
     apply_to_new_world: true
     remove_root_rotation: true
-    modality_names: ['rgb', 'depth']
+    modality_names: ['depth']
     rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
     convert_depth_to_lidar: true
@@ -98,32 +98,27 @@ test_dataset:
     remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
+    depth_cameras_per_sample: 2
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0002
+  lr: &lr 0.00005
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
 # --------------------------------------
 sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
-  warmup_epochs: 2
+  warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00002
-  eta_min: 0.00002
+  warmup_start_lr: 0.000005
+  eta_min: 0.000005
 # --------------------------------------
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-backbone_rgb:
-  name: 'TimmWrapper'
-  params:
-    model_name: 'vit_small_patch16_dinov3'
-    pretrained: true
-  has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
   params:
@@ -163,7 +158,6 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
-    gcn_norm_type: 'gn'
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
   params:
@@ -204,13 +198,9 @@ train_pipeline: &train_pipeline
       center_type: 'mean'
       keys: ['input_lidar']
       keypoints_key: 'gt_keypoints'
-  - name: VideoNormalize
-    params:
-      norm_mode: 'imagenet'
-      keys: ['input_rgb']
   - name: PCPad
     params:
-      num_points: 1024
+      num_points: 2048
       pad_mode: 'repeat'
       keys: ['input_lidar']
   - name: ToTensor
