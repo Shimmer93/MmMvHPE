@@ -11,6 +11,10 @@ import yaml
 from datasets.base_dataset import BaseDataset
 
 
+class _SkipInvalidSampleError(RuntimeError):
+    """Internal signal to skip one malformed sample and try another index."""
+
+
 class PanopticPreprocessedDatasetV1(BaseDataset):
     """Panoptic Kinoptic preprocessed dataset with HuMMan-v3-compatible sample keys.
 
@@ -68,7 +72,8 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         output_num_joints: int = 19,
         apply_to_new_world: bool = False,
         remove_root_rotation: bool = False,
-        root_rotation_fallback: str = "error",
+        root_rotation_fallback: str = "skip",
+        max_skip_invalid_samples: int = 64,
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
     ):
@@ -98,6 +103,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         self.apply_to_new_world = bool(apply_to_new_world)
         self.remove_root_rotation = bool(remove_root_rotation)
         self.root_rotation_fallback = str(root_rotation_fallback).lower()
+        self.max_skip_invalid_samples = int(max_skip_invalid_samples)
         self.panoptic_toolbox_root = (
             osp.abspath(osp.expanduser(panoptic_toolbox_root))
             if panoptic_toolbox_root is not None
@@ -107,10 +113,14 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             raise ValueError(
                 "remove_root_rotation=True requires apply_to_new_world=True for PanopticPreprocessedDatasetV1."
             )
-        if self.root_rotation_fallback not in {"error", "identity"}:
+        if self.root_rotation_fallback not in {"error", "identity", "skip"}:
             raise ValueError(
                 f"Unsupported root_rotation_fallback={root_rotation_fallback}. "
-                "Expected one of {'error','identity'}."
+                "Expected one of {'error','identity','skip'}."
+            )
+        if self.max_skip_invalid_samples <= 0:
+            raise ValueError(
+                f"max_skip_invalid_samples must be > 0, got {self.max_skip_invalid_samples}"
             )
         self.use_panoptic_calibration_extrinsics = bool(use_panoptic_calibration_extrinsics)
 
@@ -788,6 +798,28 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         return len(self.data_list)
 
     def __getitem__(self, index: int):
+        if self.root_rotation_fallback != "skip":
+            return self._getitem_impl(index)
+
+        if not self.data_list:
+            raise IndexError("Cannot fetch sample from empty dataset.")
+        total = len(self.data_list)
+        start = int(index) % total
+        max_attempts = min(total, self.max_skip_invalid_samples)
+        last_exc: Optional[Exception] = None
+
+        for offset in range(max_attempts):
+            try:
+                return self._getitem_impl((start + offset) % total)
+            except _SkipInvalidSampleError as exc:
+                last_exc = exc
+
+        raise RuntimeError(
+            f"Failed to fetch a valid sample after {max_attempts} attempts "
+            "while root_rotation_fallback='skip'."
+        ) from last_exc
+
+    def _getitem_impl(self, index: int):
         data_info = self.data_list[index].copy()
         seq_name = data_info["seq_name"]
         seq_info = self.sequence_data[seq_name]
@@ -867,10 +899,15 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if self.apply_to_new_world and self.remove_root_rotation:
             try:
                 r_new_to_world = self._estimate_root_rotation_from_joints19(gt_keypoints)
-            except ValueError:
+            except ValueError as exc:
                 if self.root_rotation_fallback == "error":
                     raise
-                r_new_to_world = np.eye(3, dtype=np.float32)
+                if self.root_rotation_fallback == "identity":
+                    r_new_to_world = np.eye(3, dtype=np.float32)
+                else:
+                    raise _SkipInvalidSampleError(
+                        "Skipping sample due to invalid root rotation estimated from joints19."
+                    ) from exc
         if self.apply_to_new_world:
             if self.remove_root_rotation:
                 gt_keypoints = self._world_to_new_world_rot(gt_keypoints, pelvis, r_new_to_world)
