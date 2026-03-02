@@ -148,8 +148,8 @@ smpl_head:
   name: 'VIBETokenHeadV5'
   params:
     emb_size: 1024
-    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
-    smpl_mean_params: 'weights/smpl_mean_params.npz'
+    smpl_path: '/opt/data/SMPL_NEUTRAL.pkl'
+    smpl_mean_params: '/opt/data/smpl_mean_params.npz'
     n_iters: 3
     num_register_tokens: 4
     num_smpl_tokens: 1
