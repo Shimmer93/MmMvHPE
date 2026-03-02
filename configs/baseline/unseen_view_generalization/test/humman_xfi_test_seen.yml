@@ -1,0 +1,168 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 32
+epochs: &epochs 20
+detect_anomaly: true
+debug_log_interval: 200
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: &data_root '/opt/data/humman_cropped'
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    depth_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    split: "train"
+    split_config: 'configs/datasets/humman_split_config.yml'
+    split_to_use: 'cross_subject_split'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    convert_depth_to_lidar: true
+val_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    depth_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    split: "test"
+    split_config: 'configs/datasets/humman_split_config.yml'
+    split_to_use: 'cross_subject_split'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    convert_depth_to_lidar: true
+test_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    depth_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
+    split: "test"
+    split_config: 'configs/datasets/humman_split_config.yml'
+    split_to_use: 'cross_subject_split'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    convert_depth_to_lidar: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0005
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 4
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: XFi
+backbone_rgb:
+  name: 'XFiResNet'
+  params:
+    block_type: 'Block'
+    layer_list: [2, 2, 2, 2]
+    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/RGB_Resnet18.pt'
+  has_temporal: false
+backbone_lidar:
+  name: 'XFiPointTransformerEncoderLidar'
+  params:
+    input_dim: 3
+    nblocks: 5
+    nneighbor: 16
+    transformer_dim: 512
+    n_points: 1024
+    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/lidar_all_random.pt'
+  has_temporal: false
+aggregator:
+  name: 'XFiAggregator'
+  params:
+    active_modalities: ['rgb', 'lidar']
+    input_dim: 512
+    output_dim: 512
+    num_modalities: 4
+    dim_expansion: 2
+    hidden_dim: 512
+    num_heads: 8
+    dim_heads: 64
+    model_depth: 4
+keypoint_head:
+  name: 'XFiRegressionHead'
+  params:
+    emb_size: 512
+    num_classes: 72  # 24 joints * 3 coordinates
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PCMPJPE'
+    params:
+      affix: null
+      skeleton_name: 'smpl'
+      pelvis_idx: 0
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: VideoResize
+    params:
+      size: [480, 640]
+      keep_ratio: false
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'h36m'  # Skeleton format for visualization
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization: (x - 0) / 255

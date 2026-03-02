@@ -1,4 +1,4 @@
-from .mpjpe import MPJPE, PAMPJPE
+from .mpjpe import MPJPE, PAMPJPE, PCMPJPE
 from .camera import (
     CameraTranslationError,
     CameraRotationError,
@@ -11,6 +11,7 @@ from .camera import (
 from .smpl_metrics import (
     SMPL_MPJPE,
     SMPL_PAMPJPE,
+    SMPL_PCMPJPE,
     SMPL_VertexError,
     SMPL_PAVertexError,
     SMPL_ParamError,
@@ -19,6 +20,7 @@ from .smpl_metrics import (
 __all__ = [
     'MPJPE',
     'PAMPJPE',
+    'PCMPJPE',
     'CameraTranslationError',
     'CameraRotationError',
     'CameraFoVError',
@@ -28,6 +30,7 @@ __all__ = [
     'CameraRotationAngleError',
     'SMPL_MPJPE',
     'SMPL_PAMPJPE',
+    'SMPL_PCMPJPE',
     'SMPL_VertexError',
     'SMPL_PAVertexError',
     'SMPL_ParamError',
