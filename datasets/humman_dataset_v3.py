@@ -21,6 +21,8 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
     writes them to `lidar_skeleton_key` (default: `gt_keypoints_lidar`).
     The loaded LiDAR keypoints are converted to match dataset coordinate mode:
     - input can be `"new_world"`, `"world"`, or `"lidar"` (`"camera"` alias)
+    - if `lidar_skeleton_is_pc_centered=True`, keypoints are treated as already
+      PC-centered LiDAR-frame and no coordinate conversion is applied
     - if `apply_to_new_world=True`, output keypoints are in pelvis-centered new-world
       coordinates (with optional root-rotation removal controlled by
       `remove_root_rotation`)
@@ -60,6 +62,7 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         lidar_skeleton_json: Optional[str] = None,
         lidar_skeleton_coord: str = "new_world",
         lidar_skeleton_key: str = "gt_keypoints_lidar",
+        lidar_skeleton_is_pc_centered: bool = False,
     ):
         super().__init__(
             data_root=data_root,
@@ -102,12 +105,17 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
         if self.lidar_skeleton_coord == "camera":
             self.lidar_skeleton_coord = "lidar"
         self.lidar_skeleton_key = str(lidar_skeleton_key)
+        self.lidar_skeleton_is_pc_centered = bool(lidar_skeleton_is_pc_centered)
         self.lidar_skeleton_index: Dict[str, Dict[str, List[Tuple[int, np.ndarray]]]] = {}
         self.lidar_skeleton_shape: Tuple[int, int] = (24, 3)
         if self.lidar_skeleton_coord not in {"new_world", "world", "lidar"}:
             raise ValueError(
                 f"Unsupported lidar_skeleton_coord={lidar_skeleton_coord}. "
                 "Expected one of {'new_world', 'world', 'lidar'}."
+            )
+        if self.lidar_skeleton_is_pc_centered and self.lidar_skeleton_coord != "lidar":
+            raise ValueError(
+                "lidar_skeleton_is_pc_centered=True requires lidar_skeleton_coord='lidar'."
             )
 
         self._sample_id_re = re.compile(
@@ -598,33 +606,34 @@ class HummanPreprocessedDatasetV3(HummanPreprocessedDatasetV2):
             global_orient = self._to_numpy_3vec(sample.get("gt_global_orient"))
             pelvis = self._to_numpy_3vec(sample.get("gt_pelvis"))
 
-            if self.lidar_skeleton_coord == "lidar":
-                kpts_lidar = self._transform_lidar_to_new_world(
-                    kpts_lidar,
-                    sample.get("lidar_camera"),
-                    sample.get("input_lidar_affine"),
-                )
-                if not self.apply_to_new_world:
+            if not self.lidar_skeleton_is_pc_centered:
+                if self.lidar_skeleton_coord == "lidar":
+                    kpts_lidar = self._transform_lidar_to_new_world(
+                        kpts_lidar,
+                        sample.get("lidar_camera"),
+                        sample.get("input_lidar_affine"),
+                    )
+                    if not self.apply_to_new_world:
+                        kpts_lidar = self._transform_new_world_to_world(
+                            kpts_lidar,
+                            global_orient,
+                            pelvis,
+                            remove_root_rotation=self.remove_root_rotation,
+                        )
+                elif self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
                     kpts_lidar = self._transform_new_world_to_world(
                         kpts_lidar,
                         global_orient,
                         pelvis,
                         remove_root_rotation=self.remove_root_rotation,
                     )
-            elif self.lidar_skeleton_coord == "new_world" and not self.apply_to_new_world:
-                kpts_lidar = self._transform_new_world_to_world(
-                    kpts_lidar,
-                    global_orient,
-                    pelvis,
-                    remove_root_rotation=self.remove_root_rotation,
-                )
-            elif self.lidar_skeleton_coord == "world" and self.apply_to_new_world:
-                kpts_lidar = self._transform_world_to_new_world(
-                    kpts_lidar,
-                    global_orient,
-                    pelvis,
-                    remove_root_rotation=self.remove_root_rotation,
-                )
+                elif self.lidar_skeleton_coord == "world" and self.apply_to_new_world:
+                    kpts_lidar = self._transform_world_to_new_world(
+                        kpts_lidar,
+                        global_orient,
+                        pelvis,
+                        remove_root_rotation=self.remove_root_rotation,
+                    )
 
             # Match V2 `gt_keypoints` contract: single target frame (not sequence)
             # unless the caller explicitly requests keypoint sequences.

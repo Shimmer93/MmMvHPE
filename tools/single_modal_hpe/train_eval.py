@@ -618,14 +618,13 @@ def export_predictions_as_mmpose_json(
                 )
             continue
         input_lidar = packed["input_lidar"].to(device, non_blocking=True)
-        lidar_centers = packed["lidar_centers"].to(device, non_blocking=True)
         pred_centered = model(input_lidar)
-        pred_restored = _restore_centered_keypoints(pred_centered, lidar_centers).cpu().numpy()
+        pred_centered_np = pred_centered.cpu().numpy()
 
         frame_paths = packed["frame_paths"]
 
-        for i in range(pred_restored.shape[0]):
-            kp = pred_restored[i].astype(np.float32)
+        for i in range(pred_centered_np.shape[0]):
+            kp = pred_centered_np[i].astype(np.float32)
             kps = np.ones((kp.shape[0],), dtype=np.float32)
             predictions.append(
                 {
@@ -652,6 +651,7 @@ def export_predictions_as_mmpose_json(
         "config": str(config),
         "checkpoint": str(checkpoint),
         "device": str(device_str),
+        "keypoint_frame": "pc_centered_lidar",
         "num_images": len(predictions),
         "predictions": predictions,
     }

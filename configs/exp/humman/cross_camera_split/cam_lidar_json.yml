@@ -18,7 +18,8 @@ train_dataset:
     rgb_skeleton_json: &rgb_skeleton_json '/opt/data/humman_cropped/skl_rgb.json'
     lidar_skeleton_json: &lidar_skeleton_json '/opt/data/humman_cropped/skl_lidar.json'
     lidar_skeleton_coord: 'lidar'
-    lidar_skeleton_key: 'pred_keypoints_json'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
@@ -41,7 +42,8 @@ val_dataset:
     rgb_skeleton_json: *rgb_skeleton_json
     lidar_skeleton_json: *lidar_skeleton_json
     lidar_skeleton_coord: 'lidar'
-    lidar_skeleton_key: 'pred_keypoints_json'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
@@ -64,7 +66,8 @@ test_dataset:
     rgb_skeleton_json: *rgb_skeleton_json
     lidar_skeleton_json: *lidar_skeleton_json
     lidar_skeleton_coord: 'lidar'
-    lidar_skeleton_key: 'pred_keypoints_json'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
     rgb_skeleton_image_size_hw: [224, 224]
     unit: 'm'
     modality_names: ['rgb', 'depth']
@@ -271,6 +274,7 @@ train_pipeline: &train_pipeline
       center_type: 'mean'
       keys: ['input_lidar']
       keypoints_key: 'gt_keypoints'
+      extra_keypoints_keys: ['pred_keypoints_json']
   # - name: AddKeypointNoise
   #   params:
   #     noise_std_3d: 0.05
