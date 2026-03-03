@@ -12,21 +12,26 @@ monitor_mode: 'max'
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'HummanPreprocessedDatasetV3'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
-    data_root: &data_root '/root/autodl-tmp/humman_cropped'
-    rgb_skeleton_json: &rgb_skeleton_json '/root/autodl-tmp/humman_cropped/skl_rgb.json'
-    lidar_skeleton_json: &lidar_skeleton_json '/root/autodl-tmp/humman_cropped/skl_lidar.json'
+    data_root: &data_root '/root/autodl-tmp/panoptic'
+    rgb_skeleton_json: &rgb_skeleton_json '/root/autodl-tmp/panoptic/skl_rgb.json'
+    lidar_skeleton_json: &lidar_skeleton_json '/root/autodl-tmp/panoptic/skl_lidar.json'
     lidar_skeleton_coord: 'lidar'
     lidar_skeleton_is_pc_centered: true
     lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
-    rgb_skeleton_image_size_hw: [224, 224]
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    split: "train"
-    split_config: 'configs/datasets/humman_split_config.yml'
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
+    split: 'train'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: false
     seq_len: 1
@@ -35,8 +40,12 @@ train_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
+    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose3", "171204_pose4"]
+    strict_validation: true
+    root_rotation_fallback: 'skip'
+    max_skip_invalid_samples: 256
 val_dataset:
-  name: 'HummanPreprocessedDatasetV3'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
     data_root: *data_root
     rgb_skeleton_json: *rgb_skeleton_json
@@ -44,13 +53,18 @@ val_dataset:
     lidar_skeleton_coord: 'lidar'
     lidar_skeleton_is_pc_centered: true
     lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
-    rgb_skeleton_image_size_hw: [224, 224]
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
-    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
-    split: "test"
-    split_config: 'configs/datasets/humman_split_config.yml'
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
     seq_len: 1
@@ -59,8 +73,12 @@ val_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
+    sequence_allowlist: *sequence_allowlist
+    strict_validation: true
+    root_rotation_fallback: 'skip'
+    max_skip_invalid_samples: 256
 test_dataset:
-  name: 'HummanPreprocessedDatasetV3'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
     data_root: *data_root
     rgb_skeleton_json: *rgb_skeleton_json
@@ -68,13 +86,18 @@ test_dataset:
     lidar_skeleton_coord: 'lidar'
     lidar_skeleton_is_pc_centered: true
     lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
-    rgb_skeleton_image_size_hw: [224, 224]
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: true
+    remove_root_rotation: true
     modality_names: ['rgb', 'depth']
-    rgb_cameras: [ kinect_001, kinect_007, kinect_009]
-    depth_cameras: [ kinect_001, kinect_007, kinect_009]
-    split: "test"
-    split_config: 'configs/datasets/humman_split_config.yml'
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    convert_depth_to_lidar: true
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
     split_to_use: 'cross_camera_split'
     test_mode: true
     seq_len: 1
@@ -83,6 +106,10 @@ test_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
+    sequence_allowlist: *sequence_allowlist
+    strict_validation: true
+    root_rotation_fallback: 'skip'
+    max_skip_invalid_samples: 256
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -103,7 +130,6 @@ sched_params:
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
-pretrained_camera_head_path: /root/autodl-tmp/logs/eccv26_humman/cross_camera_cam_json/HummanVIBEToken-epoch=15-val_cam_pose_auc_30_rgb=0.5336.ckpt
 backbone_rgb:
   name: 'TimmWrapper'
   eval: true
@@ -152,26 +178,13 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
+    gcn_norm_type: 'gn'
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
   eval: true
   params:
     emb_size: 1024
-    num_joints: 24
-    num_register_tokens: 4
-    num_smpl_tokens: 1
-    max_modalities: 4
-    last_n_layers: 4
-    pose_encoding_type: "absT_quaR_FoV"
-    losses: []
-smpl_head:
-  name: 'VIBETokenHeadV5'
-  eval: true
-  params:
-    emb_size: 1024
-    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
-    smpl_mean_params: 'weights/smpl_mean_params.npz'
-    n_iters: 3
+    num_joints: 19
     num_register_tokens: 4
     num_smpl_tokens: 1
     max_modalities: 4
@@ -181,7 +194,7 @@ smpl_head:
 camera_head:
   name: 'KeypointCameraGCNHeadV5'
   params:
-    num_joints: 24
+    num_joints: 19
     hidden_dim: 256
     num_layers: 4
     dropout: 0.1
@@ -196,7 +209,7 @@ camera_head:
     proj_loss_type: "l1"
     gcn_depth: 3
     input_2d_skeleton_format: "coco"
-    input_3d_skeleton_format: "smpl"
+    input_3d_skeleton_format: "coco"
     train_branch: "both"
     losses:
       - name: 'CameraLoss'
@@ -210,22 +223,12 @@ camera_head:
 metrics:
   - name: 'MPJPE'
     params:
-      use_smpl: true
+      use_smpl: false
       root_joint_idx: 0
   - name: 'PAMPJPE'
     params:
-      use_smpl: true
+      use_smpl: false
       root_joint_idx: 0
-  - name: 'MPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'MPJPE_no_smpl'
-  - name: 'PAMPJPE'
-    params:
-      use_smpl: false
-      affix: no_smpl
-    alias: 'PAMPJPE_no_smpl'
   - name: 'CameraPoseAUC'
     params:
       modality: 'rgb'
@@ -256,29 +259,14 @@ metrics:
 # Augmentation parameters
 # --------------------------------------
 train_pipeline: &train_pipeline
-  # - name: ReplaceBySyntheticCamera
-  #   params:
-  #     synthetic_prob: 0.5
-  #     rot_jitter_deg: 10.0
-  #     trans_jitter: 0.1
-  #     focal_scale: [0.99, 1.01]
-  #     modalities: ['rgb', 'lidar']
   - name: CameraParamToPoseEncoding
     params:
       pose_encoding_type: "absT_quaR_FoV"
-  # - name: SyncKeypointsWithCameraEncoding
-  #   params:
-  #     pose_encoding_type: "absT_quaR_FoV"
   - name: PCCenterWithKeypoints
     params:
       center_type: 'mean'
       keys: ['input_lidar']
       keypoints_key: 'gt_keypoints'
-  # - name: AddKeypointNoise
-  #   params:
-  #     noise_std_3d: 0.05
-  #     noise_std_2d: 0.01
-  #     apply_to_global: true
   - name: VideoNormalize
     params:
       norm_mode: 'imagenet'
@@ -311,7 +299,7 @@ val_pipeline: &val_pipeline
   - name: ToTensor
     params: null
 test_pipeline: *val_pipeline
-vis_skl_format: 'smpl'
+vis_skl_format: 'panoptic_coco19'
 vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]
   rgb_std: [58.395, 57.12, 57.375]

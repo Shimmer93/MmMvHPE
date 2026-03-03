@@ -72,7 +72,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         output_num_joints: int = 19,
         apply_to_new_world: bool = False,
         remove_root_rotation: bool = False,
-        root_rotation_fallback: str = "skip",
+        root_rotation_fallback: str = "identity",
         max_skip_invalid_samples: int = 64,
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
