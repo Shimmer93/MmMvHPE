@@ -665,13 +665,25 @@ class LitModel(L.LightningModule):
         if not self.with_keypoint_head:
             return
         modalities = self._normalize_modalities(batch.get("modalities", []))
+        outputs = None
         try:
-            outputs = self.keypoint_head.forward(feats_agg, modalities=modalities, data_batch=batch)
+            outputs = self.keypoint_head.predict(
+                feats_agg,
+                modalities=modalities,
+                data_batch=batch,
+                return_outputs=True,
+            )
         except TypeError:
+            outputs = None
+
+        if outputs is None:
             try:
-                outputs = self.keypoint_head.forward(feats_agg, modalities=modalities)
+                outputs = self.keypoint_head.forward(feats_agg, modalities=modalities, data_batch=batch)
             except TypeError:
-                return
+                try:
+                    outputs = self.keypoint_head.forward(feats_agg, modalities=modalities)
+                except TypeError:
+                    return
         if not isinstance(outputs, dict):
             return
         per_modality = outputs.get("per_modality")

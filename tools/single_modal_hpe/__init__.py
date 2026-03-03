@@ -1,7 +1,5 @@
-from .dataset import HummanDepthToLidarDataset
-from .model import SimpleLidarHPEModel
-
 __all__ = [
     "HummanDepthToLidarDataset",
+    "build_depth_to_lidar_pipeline",
     "SimpleLidarHPEModel",
 ]

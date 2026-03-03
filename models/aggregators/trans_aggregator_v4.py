@@ -31,7 +31,7 @@ class TransformerAggregatorV4(nn.Module):
         qk_norm: bool = True,
         init_values: float = 0.01,
         use_grad_ckpt: bool = False,
-        gcn_norm_type: str = "ln",
+        gcn_norm_type: str = "gn",
         gcn_num_groups: int = 32,
     ):
         super().__init__()

@@ -410,6 +410,148 @@ def _to_homogeneous(extrinsic: np.ndarray) -> np.ndarray:
     return out
 
 
+def _skew(v: np.ndarray) -> np.ndarray:
+    x, y, z = np.asarray(v, dtype=np.float64).reshape(3).tolist()
+    return np.array(
+        [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]],
+        dtype=np.float64,
+    )
+
+
+def _so3_exp(rotvec: np.ndarray) -> np.ndarray:
+    w = np.asarray(rotvec, dtype=np.float64).reshape(3)
+    theta = float(np.linalg.norm(w))
+    wx = _skew(w)
+    i3 = np.eye(3, dtype=np.float64)
+    if theta < 1e-12:
+        return i3 + wx
+    a = np.sin(theta) / theta
+    b = (1.0 - np.cos(theta)) / (theta * theta)
+    return i3 + a * wx + b * (wx @ wx)
+
+
+def _so3_log(rot: np.ndarray) -> np.ndarray:
+    r = np.asarray(rot, dtype=np.float64).reshape(3, 3)
+    tr = float(np.trace(r))
+    cos_theta = np.clip((tr - 1.0) * 0.5, -1.0, 1.0)
+    theta = float(np.arccos(cos_theta))
+    if theta < 1e-12:
+        return np.array(
+            [
+                0.5 * (r[2, 1] - r[1, 2]),
+                0.5 * (r[0, 2] - r[2, 0]),
+                0.5 * (r[1, 0] - r[0, 1]),
+            ],
+            dtype=np.float64,
+        )
+    s = np.sin(theta)
+    if abs(s) < 1e-12:
+        vals, vecs = np.linalg.eig(r)
+        idx = int(np.argmin(np.abs(vals - 1.0)))
+        axis = np.real(vecs[:, idx]).astype(np.float64)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        return axis * theta
+    scale = theta / (2.0 * s)
+    return np.array(
+        [
+            scale * (r[2, 1] - r[1, 2]),
+            scale * (r[0, 2] - r[2, 0]),
+            scale * (r[1, 0] - r[0, 1]),
+        ],
+        dtype=np.float64,
+    )
+
+
+def _huber_weights(norms: np.ndarray, delta: float) -> np.ndarray:
+    d = max(float(delta), 1e-8)
+    n = np.asarray(norms, dtype=np.float64)
+    w = np.ones_like(n, dtype=np.float64)
+    mask = n > d
+    if np.any(mask):
+        w[mask] = d / np.maximum(n[mask], 1e-12)
+    return w
+
+
+def _robust_mean_vectors_huber(
+    vectors: np.ndarray,
+    huber_delta: float,
+    max_iters: int,
+) -> np.ndarray:
+    vecs = np.asarray(vectors, dtype=np.float64).reshape(-1, 3)
+    if vecs.shape[0] == 1:
+        return vecs[0]
+    mu = np.median(vecs, axis=0)
+    for _ in range(max(int(max_iters), 1)):
+        res = vecs - mu[None, :]
+        norms = np.linalg.norm(res, axis=1)
+        w = _huber_weights(norms, huber_delta)
+        w_sum = float(np.sum(w))
+        if not np.isfinite(w_sum) or w_sum <= 1e-12:
+            break
+        mu_new = np.sum(vecs * w[:, None], axis=0) / w_sum
+        if float(np.linalg.norm(mu_new - mu)) < 1e-9:
+            mu = mu_new
+            break
+        mu = mu_new
+    return mu
+
+
+def _robust_mean_rotations_huber(
+    rotations: Sequence[np.ndarray],
+    huber_delta_deg: float,
+    max_iters: int,
+) -> np.ndarray:
+    rs = [np.asarray(r, dtype=np.float64).reshape(3, 3) for r in rotations]
+    if len(rs) == 1:
+        return rs[0]
+    r_mean = rs[0]
+    delta_rad = np.deg2rad(max(float(huber_delta_deg), 1e-6))
+    for _ in range(max(int(max_iters), 1)):
+        errs = []
+        for r in rs:
+            errs.append(_so3_log(r_mean.T @ r))
+        err_arr = np.stack(errs, axis=0)
+        norms = np.linalg.norm(err_arr, axis=1)
+        w = _huber_weights(norms, delta_rad)
+        w_sum = float(np.sum(w))
+        if not np.isfinite(w_sum) or w_sum <= 1e-12:
+            break
+        step = np.sum(err_arr * w[:, None], axis=0) / w_sum
+        step_norm = float(np.linalg.norm(step))
+        if step_norm < 1e-9:
+            break
+        r_mean = r_mean @ _so3_exp(step)
+    return r_mean
+
+
+def _robust_mean_extrinsics_huber(
+    extrinsics: Sequence[np.ndarray],
+    huber_trans_delta: float,
+    huber_rot_delta_deg: float,
+    max_iters: int,
+) -> np.ndarray:
+    exts = [np.asarray(e, dtype=np.float64).reshape(3, 4) for e in extrinsics]
+    if len(exts) == 0:
+        raise ValueError("Cannot compute robust mean for empty extrinsic list.")
+    if len(exts) == 1:
+        return exts[0].astype(np.float32)
+
+    rotations = [e[:, :3] for e in exts]
+    translations = np.stack([e[:, 3] for e in exts], axis=0)
+    r_mean = _robust_mean_rotations_huber(
+        rotations=rotations,
+        huber_delta_deg=huber_rot_delta_deg,
+        max_iters=max_iters,
+    )
+    t_mean = _robust_mean_vectors_huber(
+        vectors=translations,
+        huber_delta=huber_trans_delta,
+        max_iters=max_iters,
+    )
+    out = np.concatenate([r_mean, t_mean.reshape(3, 1)], axis=1)
+    return out.astype(np.float32)
+
+
 def _parse_modalities_list(text: str) -> List[str]:
     parts = [p.strip().lower() for p in str(text).split(",")]
     return [p for p in parts if p]
@@ -612,6 +754,209 @@ def _build_temporal_reliability_by_sequence(
     return out
 
 
+def _build_pred_extrinsics_by_sample_for_modalities(
+    data,
+    camera_key: str,
+    sample_ids: Sequence[str],
+    num_samples: int,
+    modalities: Sequence[str],
+    modality_fallback_indices: Dict[str, Optional[int]],
+    modality_sensor_indices: Dict[str, int],
+    pose_encoding_type: str,
+    show_progress: bool = True,
+) -> Dict[str, List[Optional[np.ndarray]]]:
+    cameras = data.get(camera_key, None)
+    if cameras is None:
+        raise ValueError(f"Missing `{camera_key}` in prediction file.")
+    use_stream_index = _is_stream_camera_key(camera_key)
+    mods = [str(m).lower() for m in modalities]
+    out: Dict[str, List[Optional[np.ndarray]]] = {m: [None] * num_samples for m in mods}
+    for i in _iter_with_progress(
+        range(num_samples),
+        desc=f"decode cameras {camera_key}",
+        total=num_samples,
+        enabled=show_progress,
+    ):
+        for mod in mods:
+            camera_idx = _get_camera_index(
+                data=data,
+                sample_idx=i,
+                modality=mod,
+                fallback_idx=modality_fallback_indices.get(mod, None),
+                use_stream_index=use_stream_index,
+                sensor_idx=modality_sensor_indices.get(mod, 0),
+            )
+            cam = _extract_camera_encoding(cameras, i, camera_idx)
+            if mod == "lidar":
+                center = _get_sample_lidar_center(data, i)
+                cam = _inverse_lidar_camera_center(cam, center)
+            if cam is None:
+                continue
+            cam = np.asarray(cam, dtype=np.float32).reshape(-1)
+            if cam.shape[0] < 9 or (not np.isfinite(cam).all()):
+                continue
+            try:
+                extr = _pose_encoding_to_extrinsic(cam, pose_encoding_type)
+            except Exception:
+                continue
+            if not np.isfinite(extr).all():
+                continue
+            out[mod][i] = extr.astype(np.float32)
+    return out
+
+
+def _estimate_seq_rig_transforms_from_predicted_cameras(
+    sample_ids: Sequence[str],
+    pred_extr_by_modality: Dict[str, List[Optional[np.ndarray]]],
+    target_modality: str,
+    modalities: Sequence[str],
+    huber_trans_delta: float,
+    huber_rot_delta_deg: float,
+    max_iters: int,
+    show_progress: bool = True,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    target_mod = str(target_modality).lower()
+    if target_mod not in pred_extr_by_modality:
+        raise ValueError(f"Target modality `{target_mod}` missing from predicted extrinsics.")
+    mods = [str(m).lower() for m in modalities]
+    rel_by_mod_seq: Dict[str, Dict[str, List[np.ndarray]]] = {m: {} for m in mods}
+    num_samples = len(sample_ids)
+
+    for i in _iter_with_progress(
+        range(num_samples),
+        desc="estimate rig transforms",
+        total=num_samples,
+        enabled=show_progress,
+    ):
+        seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+        target_extr = pred_extr_by_modality.get(target_mod, [None] * num_samples)[i]
+        if target_extr is None:
+            continue
+        h_target = _to_homogeneous(target_extr)
+        for mod in mods:
+            mod_extr = pred_extr_by_modality.get(mod, [None] * num_samples)[i]
+            if mod_extr is None:
+                continue
+            h_mod = _to_homogeneous(mod_extr)
+            try:
+                h_rel = h_target @ np.linalg.inv(h_mod)
+            except np.linalg.LinAlgError:
+                continue
+            if not np.isfinite(h_rel).all():
+                continue
+            rel_by_mod_seq.setdefault(mod, {}).setdefault(seq_name, []).append(h_rel[:3, :4].astype(np.float32))
+
+    out: Dict[str, Dict[str, np.ndarray]] = {m: {} for m in mods}
+    for mod in mods:
+        for seq_name, rel_list in rel_by_mod_seq.get(mod, {}).items():
+            if len(rel_list) == 0:
+                continue
+            out[mod][seq_name] = _robust_mean_extrinsics_huber(
+                extrinsics=rel_list,
+                huber_trans_delta=huber_trans_delta,
+                huber_rot_delta_deg=huber_rot_delta_deg,
+                max_iters=max_iters,
+            )
+    return out
+
+
+def _build_temporal_reliability_from_projected_cameras_by_sequence(
+    sample_ids: Sequence[str],
+    pred_extr_by_modality: Dict[str, List[Optional[np.ndarray]]],
+    seq_rig_extr_by_modality: Dict[str, Dict[str, np.ndarray]],
+    target_modality: str,
+    modalities: Sequence[str],
+    trans_tau: float,
+    rot_tau_deg: float,
+    show_progress: bool = True,
+) -> Dict[str, Dict[str, float]]:
+    mods = [str(m).lower() for m in modalities]
+    target_mod = str(target_modality).lower()
+    if target_mod not in pred_extr_by_modality:
+        raise ValueError(f"Target modality `{target_mod}` missing from predicted extrinsics.")
+    num_samples = len(sample_ids)
+    stats_by_mod: Dict[str, Dict[str, dict]] = {m: {} for m in mods}
+
+    for i in _iter_with_progress(
+        range(num_samples),
+        desc="temporal reliability projected cams",
+        total=num_samples,
+        enabled=show_progress,
+    ):
+        seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+        target_extr = pred_extr_by_modality.get(target_mod, [None] * num_samples)[i]
+        if target_extr is None:
+            continue
+        h_target = _to_homogeneous(target_extr)
+        for mod in mods:
+            mod_extr = pred_extr_by_modality.get(mod, [None] * num_samples)[i]
+            rig_extr = seq_rig_extr_by_modality.get(mod, {}).get(seq_name, None)
+            if mod_extr is None or rig_extr is None:
+                continue
+
+            h_proj = _to_homogeneous(rig_extr) @ _to_homogeneous(mod_extr)
+            if not np.isfinite(h_proj).all():
+                continue
+            try:
+                # Temporal stability should measure cross-sensor alignment consistency,
+                # not raw camera motion. Use residual to target camera at each frame.
+                h_res = h_proj @ np.linalg.inv(h_target)
+            except np.linalg.LinAlgError:
+                continue
+            if not np.isfinite(h_res).all():
+                continue
+            r = h_res[:3, :3].astype(np.float64)
+            t = h_res[:3, 3].astype(np.float64)
+
+            seq_stats = stats_by_mod[mod].setdefault(
+                seq_name,
+                {
+                    "n": 0,
+                    "t_mean": np.zeros(3, dtype=np.float64),
+                    "t_m2": np.zeros(3, dtype=np.float64),
+                    "r0": None,
+                    "a_mean": 0.0,
+                    "a_m2": 0.0,
+                },
+            )
+            seq_stats["n"] += 1
+            n = int(seq_stats["n"])
+
+            delta_t = t - seq_stats["t_mean"]
+            seq_stats["t_mean"] += delta_t / n
+            delta_t2 = t - seq_stats["t_mean"]
+            seq_stats["t_m2"] += delta_t * delta_t2
+
+            if seq_stats["r0"] is None:
+                seq_stats["r0"] = r.copy()
+                angle = 0.0
+            else:
+                angle = _rotation_angle_deg(r, seq_stats["r0"])
+            delta_a = angle - seq_stats["a_mean"]
+            seq_stats["a_mean"] += delta_a / n
+            delta_a2 = angle - seq_stats["a_mean"]
+            seq_stats["a_m2"] += delta_a * delta_a2
+
+    out: Dict[str, Dict[str, float]] = {m: {} for m in mods}
+    for mod, per_seq in stats_by_mod.items():
+        for seq_name, st in per_seq.items():
+            n = int(st["n"])
+            if n <= 1:
+                out[mod][seq_name] = 1.0
+                continue
+            t_var = st["t_m2"] / max(n - 1, 1)
+            t_std = float(np.mean(np.sqrt(np.maximum(t_var, 0.0))))
+            a_var = float(st["a_m2"]) / max(n - 1, 1)
+            a_std = float(np.sqrt(max(a_var, 0.0)))
+            out[mod][seq_name] = _stability_to_score(
+                trans_std=t_std,
+                rot_std_deg=a_std,
+                trans_tau=trans_tau,
+                rot_tau_deg=rot_tau_deg,
+            )
+    return out
+
+
 def _cross_sensor_scores(
     points_by_modality: Dict[str, np.ndarray],
     target_modality: str,
@@ -784,6 +1129,87 @@ def _project_multisensor_to_target_frame_seqfixed(
     return pred_proj, gt_proj, len(kept_modalities), reliability_scores
 
 
+def _project_multisensor_to_target_frame_rigfused(
+    seq_name: str,
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+    target_modality: str,
+    fusion_modalities: Sequence[str],
+    pred_sample_extr_by_modality: Dict[str, Optional[np.ndarray]],
+    pred_target_seq_extr: Dict[str, np.ndarray],
+    seq_rig_extr_by_modality: Dict[str, Dict[str, np.ndarray]],
+    gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]],
+    temporal_reliability_by_modality: Dict[str, Dict[str, float]],
+    reliability_source: str,
+    fusion_mode: str,
+    cross_sensor_tau: float,
+    hard_gate_ratio: float,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int, Dict[str, float]]:
+    target_modality = str(target_modality).lower()
+    target_gt_extr = gt_seq_extr_by_modality.get(target_modality, {}).get(seq_name, None)
+    target_pred_ref_extr = pred_target_seq_extr.get(seq_name, None)
+    target_pred_cur_extr = pred_sample_extr_by_modality.get(target_modality, None)
+    if target_gt_extr is None or target_pred_ref_extr is None or target_pred_cur_extr is None:
+        return None, None, 0, {}
+
+    try:
+        h_reanchor = _to_homogeneous(target_pred_ref_extr) @ np.linalg.inv(_to_homogeneous(target_pred_cur_extr))
+    except np.linalg.LinAlgError:
+        return None, None, 0, {}
+    if not np.isfinite(h_reanchor).all():
+        return None, None, 0, {}
+
+    points_by_modality: Dict[str, np.ndarray] = {}
+    for mod in fusion_modalities:
+        mod = str(mod).lower()
+        mod_extr = pred_sample_extr_by_modality.get(mod, None)
+        rig_extr = seq_rig_extr_by_modality.get(mod, {}).get(seq_name, None)
+        if mod_extr is None or rig_extr is None:
+            continue
+        h_proj = _to_homogeneous(rig_extr) @ _to_homogeneous(mod_extr)
+        if not np.isfinite(h_proj).all():
+            continue
+        h_proj = h_reanchor @ h_proj
+        if not np.isfinite(h_proj).all():
+            continue
+        points_by_modality[mod] = _transform_points(pred_points, h_proj[:3, :4]).astype(np.float32)
+
+    if len(points_by_modality) == 0:
+        return None, None, 0, {}
+
+    mods = list(points_by_modality.keys())
+    cross_scores = _cross_sensor_scores(
+        points_by_modality,
+        target_modality=target_modality,
+        tau=cross_sensor_tau,
+    )
+    temp_scores = {
+        mod: float(temporal_reliability_by_modality.get(mod, {}).get(seq_name, 1.0))
+        for mod in mods
+    }
+    reliability_scores = _combine_reliability(
+        mods=mods,
+        source=reliability_source,
+        cross_scores=cross_scores,
+        temporal_scores=temp_scores,
+    )
+    kept_modalities = _select_modalities_by_fusion_mode(
+        mods=mods,
+        scores=reliability_scores,
+        fusion_mode=fusion_mode,
+        hard_gate_ratio=hard_gate_ratio,
+    )
+    pred_proj = _fuse_points(
+        points_by_modality=points_by_modality,
+        modalities=kept_modalities,
+        scores=reliability_scores,
+        fusion_mode=fusion_mode,
+    ).astype(np.float32)
+
+    gt_proj = _transform_points(gt_points, target_gt_extr).astype(np.float32)
+    return pred_proj, gt_proj, len(kept_modalities), reliability_scores
+
+
 def _format_mm(x_meters: float) -> str:
     return f"{x_meters:.6f} m ({x_meters * 1000.0:.3f} mm)"
 
@@ -855,31 +1281,39 @@ def main():
         "--projection-mode",
         type=str,
         default="seq_lidar_ref",
-        choices=["seq_lidar_ref", "multi_sensor"],
+        choices=["seq_lidar_ref", "multi_sensor", "multi_sensor_rig_fused"],
         help=(
             "Projection strategy. "
             "`seq_lidar_ref`: keep old fixed per-sequence LiDAR-camera projection. "
-            "`multi_sensor`: fuse fixed per-sequence cameras from multiple modalities into a target frame."
+            "`multi_sensor`: fuse fixed per-sequence cameras from multiple modalities into a target frame. "
+            "`multi_sensor_rig_fused`: estimate fixed sensor-to-target transforms per sequence from predicted "
+            "cameras, then project each sensor stream via those transforms before fusion."
         ),
     )
     parser.add_argument(
         "--target-modality",
         type=str,
         default="lidar",
-        help="Target sensor frame for `multi_sensor` projection mode (e.g., lidar, rgb).",
+        help=(
+            "Target sensor frame for `multi_sensor` and `multi_sensor_rig_fused` "
+            "projection modes (e.g., lidar, rgb)."
+        ),
     )
     parser.add_argument(
         "--fusion-modalities",
         type=str,
         default="rgb,lidar",
-        help="Comma-separated modalities to fuse in `multi_sensor` mode (e.g., rgb,lidar).",
+        help=(
+            "Comma-separated modalities to fuse in `multi_sensor` and "
+            "`multi_sensor_rig_fused` modes (e.g., rgb,lidar)."
+        ),
     )
     parser.add_argument(
         "--fusion-mode",
         type=str,
         default="mean",
         choices=["mean", "weighted", "hard_gate"],
-        help="How to fuse modalities in `multi_sensor` mode.",
+        help="How to fuse modalities in multi-sensor projection modes.",
     )
     parser.add_argument(
         "--reliability-source",
@@ -911,6 +1345,30 @@ def main():
         type=float,
         default=0.8,
         help="Keep modalities with reliability >= hard_gate_ratio * best_reliability.",
+    )
+    parser.add_argument(
+        "--rig-mean-huber-trans-delta",
+        type=float,
+        default=0.10,
+        help=(
+            "Meters. Huber delta for robust sequence-wise sensor-to-target translation averaging "
+            "in `multi_sensor_rig_fused`."
+        ),
+    )
+    parser.add_argument(
+        "--rig-mean-huber-rot-delta-deg",
+        type=float,
+        default=10.0,
+        help=(
+            "Degrees. Huber delta for robust sequence-wise sensor-to-target rotation averaging "
+            "in `multi_sensor_rig_fused`."
+        ),
+    )
+    parser.add_argument(
+        "--rig-mean-max-iters",
+        type=int,
+        default=20,
+        help="Max IRLS iterations for robust rig transform averaging in `multi_sensor_rig_fused`.",
     )
     parser.add_argument("--pelvis-index", type=int, default=0, help="Pelvis joint index for centering.")
     parser.add_argument(
@@ -1059,36 +1517,27 @@ def main():
             projection_info.append(f"[INFO] Dropped samples without per-sequence refs: {dropped_no_seq_ref}")
     else:
         if len(fusion_modalities) == 0:
-            raise ValueError("`--fusion-modalities` must contain at least one modality for `multi_sensor` mode.")
-        required_modalities = sorted(set(fusion_modalities + [target_modality]))
-        pred_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
-        gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
-        seq_meta_by_modality: Dict[str, Tuple[Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]] = {}
+            raise ValueError("`--fusion-modalities` must contain at least one modality for multi-sensor modes.")
 
-        for mod in required_modalities:
-            fb_idx = modality_fallback_indices.get(mod, None)
-            pred_seq_cam_enc = None
-            pred_seq_meta = {}
-            gt_seq_cam_enc = None
-            gt_seq_meta = {}
-            try:
-                pred_seq_cam_enc, pred_seq_meta = _build_sequence_reference_cameras_for_modality(
-                    data=data,
-                    camera_key=pred_camera_key,
-                    sample_ids=sample_ids,
-                    num_samples=num_samples,
-                    modality=mod,
-                    fallback_modality_idx=fb_idx,
-                    sensor_idx=modality_sensor_indices.get(mod, 0),
-                    show_progress=show_progress,
-                )
-            except ValueError:
+        required_modalities = sorted(set(fusion_modalities + [target_modality]))
+        reliability_source = str(args.reliability_source).lower()
+        fusion_mode = str(args.fusion_mode).lower()
+
+        if projection_mode == "multi_sensor":
+            pred_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
+            gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {}
+            seq_meta_by_modality: Dict[str, Tuple[Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]] = {}
+
+            for mod in required_modalities:
+                fb_idx = modality_fallback_indices.get(mod, None)
                 pred_seq_cam_enc = None
-            if mod == target_modality:
+                pred_seq_meta = {}
+                gt_seq_cam_enc = None
+                gt_seq_meta = {}
                 try:
-                    gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
+                    pred_seq_cam_enc, pred_seq_meta = _build_sequence_reference_cameras_for_modality(
                         data=data,
-                        camera_key=gt_camera_key,
+                        camera_key=pred_camera_key,
                         sample_ids=sample_ids,
                         num_samples=num_samples,
                         modality=mod,
@@ -1097,163 +1546,381 @@ def main():
                         show_progress=show_progress,
                     )
                 except ValueError:
-                    gt_seq_cam_enc = None
+                    pred_seq_cam_enc = None
+                if mod == target_modality:
+                    try:
+                        gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
+                            data=data,
+                            camera_key=gt_camera_key,
+                            sample_ids=sample_ids,
+                            num_samples=num_samples,
+                            modality=mod,
+                            fallback_modality_idx=fb_idx,
+                            sensor_idx=modality_sensor_indices.get(mod, 0),
+                            show_progress=show_progress,
+                        )
+                    except ValueError:
+                        gt_seq_cam_enc = None
 
-            if pred_seq_cam_enc is not None:
-                pred_seq_extr_by_modality[mod] = {
-                    seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
-                    for seq, cam_enc in pred_seq_cam_enc.items()
-                }
-            if gt_seq_cam_enc is not None:
-                gt_seq_extr_by_modality[mod] = {
-                    seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
-                    for seq, cam_enc in gt_seq_cam_enc.items()
-                }
-            seq_meta_by_modality[mod] = (pred_seq_meta, gt_seq_meta)
+                if pred_seq_cam_enc is not None:
+                    pred_seq_extr_by_modality[mod] = {
+                        seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                        for seq, cam_enc in pred_seq_cam_enc.items()
+                    }
+                if gt_seq_cam_enc is not None:
+                    gt_seq_extr_by_modality[mod] = {
+                        seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                        for seq, cam_enc in gt_seq_cam_enc.items()
+                    }
+                seq_meta_by_modality[mod] = (pred_seq_meta, gt_seq_meta)
 
-        if target_modality not in gt_seq_extr_by_modality:
-            raise ValueError(
-                f"`multi_sensor` requires GT sequence refs for target modality `{target_modality}` "
-                f"from key `{gt_camera_key}`."
+            if target_modality not in gt_seq_extr_by_modality:
+                raise ValueError(
+                    f"`multi_sensor` requires GT sequence refs for target modality `{target_modality}` "
+                    f"from key `{gt_camera_key}`."
+                )
+
+            active_fusion_modalities = [
+                mod
+                for mod in fusion_modalities
+                if mod in pred_seq_extr_by_modality
+            ]
+            if len(active_fusion_modalities) == 0:
+                raise ValueError(
+                    "No fusion modalities have predicted sequence references. "
+                    f"Requested={fusion_modalities}"
+                )
+
+            temporal_reliability_by_modality: Dict[str, Dict[str, float]] = {}
+            if reliability_source in {"temporal", "hybrid"}:
+                temporal_reliability_by_modality = _build_temporal_reliability_by_sequence(
+                    data=data,
+                    camera_key=pred_camera_key,
+                    sample_ids=sample_ids,
+                    num_samples=num_samples,
+                    modalities=active_fusion_modalities,
+                    target_modality=target_modality,
+                    modality_fallback_indices=modality_fallback_indices,
+                    modality_sensor_indices=modality_sensor_indices,
+                    pose_encoding_type=args.pose_encoding_type,
+                    trans_tau=float(args.temporal_trans_tau),
+                    rot_tau_deg=float(args.temporal_rot_tau_deg),
+                    show_progress=show_progress,
+                )
+
+            projection_info.append(
+                f"[INFO] Multi-sensor projection (seq-fixed): target={target_modality}, "
+                f"requested_fusion={fusion_modalities}, active_fusion={active_fusion_modalities}"
             )
-
-        active_fusion_modalities = [
-            mod
-            for mod in fusion_modalities
-            if mod in pred_seq_extr_by_modality
-        ]
-        if len(active_fusion_modalities) == 0:
-            raise ValueError(
-                "No fusion modalities have predicted sequence references. "
-                f"Requested={fusion_modalities}"
+            projection_info.append(
+                f"[INFO] Fusion mode: {fusion_mode}, reliability: {reliability_source}"
             )
+            if fusion_mode == "hard_gate":
+                projection_info.append(f"[INFO] Hard gate ratio: {args.hard_gate_ratio:.3f}")
+            for mod in required_modalities:
+                pred_count = len(pred_seq_extr_by_modality.get(mod, {}))
+                gt_count = len(gt_seq_extr_by_modality.get(mod, {}))
+                projection_info.append(
+                    f"[INFO] Sequence refs `{mod}`: pred={pred_count}, gt={gt_count}"
+                )
+                pred_meta, gt_meta = seq_meta_by_modality.get(mod, ({}, {}))
+                example_seq = sorted(set(pred_meta.keys()) & set(gt_meta.keys()))
+                if len(example_seq) > 0:
+                    seq0 = example_seq[0]
+                    p_idx, p_m = pred_meta[seq0]
+                    g_idx, g_m = gt_meta[seq0]
+                    projection_info.append(
+                        f"[INFO] Example seq `{seq0}` refs `{mod}`: "
+                        f"pred(sample_idx={p_idx}, camera_idx={p_m}), "
+                        f"gt(sample_idx={g_idx}, camera_idx={g_m})"
+                    )
+            if reliability_source in {"temporal", "hybrid"}:
+                for mod in active_fusion_modalities:
+                    vals = list(temporal_reliability_by_modality.get(mod, {}).values())
+                    if len(vals) == 0:
+                        continue
+                    projection_info.append(
+                        f"[INFO] Temporal reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                        f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
+                    )
 
-        temporal_reliability_by_modality: Dict[str, Dict[str, float]] = {}
-        reliability_source = str(args.reliability_source).lower()
-        fusion_mode = str(args.fusion_mode).lower()
-        if reliability_source in {"temporal", "hybrid"}:
-            temporal_reliability_by_modality = _build_temporal_reliability_by_sequence(
+            used_modality_counts = []
+            rel_values_by_modality: Dict[str, List[float]] = {mod: [] for mod in active_fusion_modalities}
+            dropped_no_camera_projection = 0
+            for i in _iter_with_progress(
+                range(num_samples),
+                desc="transform keypoints",
+                total=num_samples,
+                enabled=show_progress,
+            ):
+                pred_kps = _get_sample_keypoints(pred_all, i)
+                gt_kps = _get_sample_keypoints(gt_all, i)
+                if pred_kps is None or gt_kps is None:
+                    continue
+                pred_kps = _to_numpy_maybe(pred_kps)
+                gt_kps = _to_numpy_maybe(gt_kps)
+                if pred_kps is None or gt_kps is None:
+                    continue
+                if pred_kps.shape != gt_kps.shape:
+                    continue
+                if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
+                    continue
+                if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
+                    continue
+
+                seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+                pred_proj, gt_proj, used_mods, reliability_scores = _project_multisensor_to_target_frame_seqfixed(
+                    seq_name=seq_name,
+                    pred_points=pred_kps.astype(np.float32),
+                    gt_points=gt_kps.astype(np.float32),
+                    target_modality=target_modality,
+                    fusion_modalities=active_fusion_modalities,
+                    pred_seq_extr_by_modality=pred_seq_extr_by_modality,
+                    gt_seq_extr_by_modality=gt_seq_extr_by_modality,
+                    temporal_reliability_by_modality=temporal_reliability_by_modality,
+                    reliability_source=reliability_source,
+                    fusion_mode=fusion_mode,
+                    cross_sensor_tau=float(args.cross_sensor_tau),
+                    hard_gate_ratio=float(args.hard_gate_ratio),
+                )
+                if pred_proj is None or gt_proj is None:
+                    dropped_no_camera_projection += 1
+                    continue
+
+                pred_new.append(pred_proj)
+                gt_new.append(gt_proj)
+                used_modality_counts.append(int(used_mods))
+                for mod, val in reliability_scores.items():
+                    if mod in rel_values_by_modality:
+                        rel_values_by_modality[mod].append(float(val))
+                kept_seq_names.append(seq_name)
+                kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
+                kept += 1
+
+            if len(used_modality_counts) > 0:
+                projection_info.append(
+                    f"[INFO] Modalities used per sample: mean={np.mean(used_modality_counts):.2f}, "
+                    f"min={np.min(used_modality_counts)}, max={np.max(used_modality_counts)}"
+                )
+            for mod in active_fusion_modalities:
+                vals = rel_values_by_modality.get(mod, [])
+                if len(vals) == 0:
+                    continue
+                projection_info.append(
+                    f"[INFO] Reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                    f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
+                )
+            if dropped_no_camera_projection > 0:
+                projection_info.append(
+                    f"[INFO] Dropped samples without valid multi-sensor camera projection: "
+                    f"{dropped_no_camera_projection}"
+                )
+        else:
+            fb_idx = modality_fallback_indices.get(target_modality, None)
+            pred_target_seq_cam_enc, pred_target_seq_meta = _build_sequence_reference_cameras_for_modality(
                 data=data,
                 camera_key=pred_camera_key,
                 sample_ids=sample_ids,
                 num_samples=num_samples,
-                modalities=active_fusion_modalities,
-                target_modality=target_modality,
+                modality=target_modality,
+                fallback_modality_idx=fb_idx,
+                sensor_idx=modality_sensor_indices.get(target_modality, 0),
+                show_progress=show_progress,
+            )
+            pred_target_seq_extr = {
+                seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                for seq, cam_enc in pred_target_seq_cam_enc.items()
+            }
+            gt_seq_cam_enc, gt_seq_meta = _build_sequence_reference_cameras_for_modality(
+                data=data,
+                camera_key=gt_camera_key,
+                sample_ids=sample_ids,
+                num_samples=num_samples,
+                modality=target_modality,
+                fallback_modality_idx=fb_idx,
+                sensor_idx=modality_sensor_indices.get(target_modality, 0),
+                show_progress=show_progress,
+            )
+            gt_seq_extr_by_modality: Dict[str, Dict[str, np.ndarray]] = {
+                target_modality: {
+                    seq: _pose_encoding_to_extrinsic(cam_enc, args.pose_encoding_type)
+                    for seq, cam_enc in gt_seq_cam_enc.items()
+                }
+            }
+
+            pred_extr_by_modality = _build_pred_extrinsics_by_sample_for_modalities(
+                data=data,
+                camera_key=pred_camera_key,
+                sample_ids=sample_ids,
+                num_samples=num_samples,
+                modalities=required_modalities,
                 modality_fallback_indices=modality_fallback_indices,
                 modality_sensor_indices=modality_sensor_indices,
                 pose_encoding_type=args.pose_encoding_type,
-                trans_tau=float(args.temporal_trans_tau),
-                rot_tau_deg=float(args.temporal_rot_tau_deg),
+                show_progress=show_progress,
+            )
+            seq_rig_extr_by_modality = _estimate_seq_rig_transforms_from_predicted_cameras(
+                sample_ids=sample_ids,
+                pred_extr_by_modality=pred_extr_by_modality,
+                target_modality=target_modality,
+                modalities=required_modalities,
+                huber_trans_delta=float(args.rig_mean_huber_trans_delta),
+                huber_rot_delta_deg=float(args.rig_mean_huber_rot_delta_deg),
+                max_iters=int(args.rig_mean_max_iters),
                 show_progress=show_progress,
             )
 
-        projection_info.append(
-            f"[INFO] Multi-sensor projection (seq-fixed): target={target_modality}, "
-            f"requested_fusion={fusion_modalities}, active_fusion={active_fusion_modalities}"
-        )
-        projection_info.append(
-            f"[INFO] Fusion mode: {fusion_mode}, reliability: {reliability_source}"
-        )
-        if fusion_mode == "hard_gate":
-            projection_info.append(f"[INFO] Hard gate ratio: {args.hard_gate_ratio:.3f}")
-        for mod in required_modalities:
-            pred_count = len(pred_seq_extr_by_modality.get(mod, {}))
-            gt_count = len(gt_seq_extr_by_modality.get(mod, {}))
-            projection_info.append(
-                f"[INFO] Sequence refs `{mod}`: pred={pred_count}, gt={gt_count}"
-            )
-            pred_meta, gt_meta = seq_meta_by_modality.get(mod, ({}, {}))
-            example_seq = sorted(set(pred_meta.keys()) & set(gt_meta.keys()))
-            if len(example_seq) > 0:
-                seq0 = example_seq[0]
-                p_idx, p_m = pred_meta[seq0]
-                g_idx, g_m = gt_meta[seq0]
-                projection_info.append(
-                    f"[INFO] Example seq `{seq0}` refs `{mod}`: "
-                    f"pred(sample_idx={p_idx}, camera_idx={p_m}), "
-                    f"gt(sample_idx={g_idx}, camera_idx={g_m})"
+            active_fusion_modalities = [
+                mod
+                for mod in fusion_modalities
+                if len(seq_rig_extr_by_modality.get(mod, {})) > 0
+            ]
+            if len(active_fusion_modalities) == 0:
+                raise ValueError(
+                    "No fusion modalities have valid sequence rig transforms. "
+                    f"Requested={fusion_modalities}"
                 )
-        if reliability_source in {"temporal", "hybrid"}:
+
+            temporal_reliability_by_modality: Dict[str, Dict[str, float]] = {}
+            if reliability_source in {"temporal", "hybrid"}:
+                temporal_reliability_by_modality = _build_temporal_reliability_from_projected_cameras_by_sequence(
+                    sample_ids=sample_ids,
+                    pred_extr_by_modality=pred_extr_by_modality,
+                    seq_rig_extr_by_modality=seq_rig_extr_by_modality,
+                    target_modality=target_modality,
+                    modalities=active_fusion_modalities,
+                    trans_tau=float(args.temporal_trans_tau),
+                    rot_tau_deg=float(args.temporal_rot_tau_deg),
+                    show_progress=show_progress,
+                )
+
+            projection_info.append(
+                f"[INFO] Multi-sensor projection (rig-fused): target={target_modality}, "
+                f"requested_fusion={fusion_modalities}, active_fusion={active_fusion_modalities}"
+            )
+            projection_info.append(
+                f"[INFO] Fusion mode: {fusion_mode}, reliability: {reliability_source}"
+            )
+            projection_info.append(
+                f"[INFO] Rig mean IRLS: trans_delta={float(args.rig_mean_huber_trans_delta):.4f} m, "
+                f"rot_delta={float(args.rig_mean_huber_rot_delta_deg):.2f} deg, "
+                f"max_iters={int(args.rig_mean_max_iters)}"
+            )
+            if fusion_mode == "hard_gate":
+                projection_info.append(f"[INFO] Hard gate ratio: {args.hard_gate_ratio:.3f}")
+            for mod in required_modalities:
+                pred_valid = int(sum(1 for e in pred_extr_by_modality.get(mod, []) if e is not None))
+                rig_count = len(seq_rig_extr_by_modality.get(mod, {}))
+                gt_count = len(gt_seq_extr_by_modality.get(mod, {}))
+                projection_info.append(
+                    f"[INFO] Cameras `{mod}`: pred_valid_frames={pred_valid}, "
+                    f"seq_rig_refs={rig_count}, gt_seq_refs={gt_count}"
+                )
+            projection_info.append(
+                f"[INFO] Target fixed refs `{target_modality}`: pred_seq_refs={len(pred_target_seq_extr)}, "
+                f"gt_seq_refs={len(gt_seq_extr_by_modality.get(target_modality, {}))}"
+            )
+            if len(pred_target_seq_meta) > 0:
+                seq0p = sorted(pred_target_seq_meta.keys())[0]
+                p_idx, p_m = pred_target_seq_meta[seq0p]
+                projection_info.append(
+                    f"[INFO] Example seq `{seq0p}` Pred target ref: "
+                    f"sample_idx={p_idx}, camera_idx={p_m}"
+                )
+            if len(gt_seq_meta) > 0:
+                seq0 = sorted(gt_seq_meta.keys())[0]
+                g_idx, g_m = gt_seq_meta[seq0]
+                projection_info.append(
+                    f"[INFO] Example seq `{seq0}` GT target ref: "
+                    f"sample_idx={g_idx}, camera_idx={g_m}"
+                )
+            if reliability_source in {"temporal", "hybrid"}:
+                for mod in active_fusion_modalities:
+                    vals = list(temporal_reliability_by_modality.get(mod, {}).values())
+                    if len(vals) == 0:
+                        continue
+                    projection_info.append(
+                        f"[INFO] Temporal reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                        f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
+                    )
+
+            used_modality_counts = []
+            rel_values_by_modality: Dict[str, List[float]] = {mod: [] for mod in active_fusion_modalities}
+            dropped_no_camera_projection = 0
+            for i in _iter_with_progress(
+                range(num_samples),
+                desc="transform keypoints",
+                total=num_samples,
+                enabled=show_progress,
+            ):
+                pred_kps = _get_sample_keypoints(pred_all, i)
+                gt_kps = _get_sample_keypoints(gt_all, i)
+                if pred_kps is None or gt_kps is None:
+                    continue
+                pred_kps = _to_numpy_maybe(pred_kps)
+                gt_kps = _to_numpy_maybe(gt_kps)
+                if pred_kps is None or gt_kps is None:
+                    continue
+                if pred_kps.shape != gt_kps.shape:
+                    continue
+                if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
+                    continue
+                if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
+                    continue
+
+                seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
+                pred_sample_extr_by_modality = {
+                    mod: pred_extr_by_modality.get(mod, [None] * num_samples)[i]
+                    for mod in active_fusion_modalities
+                }
+                pred_proj, gt_proj, used_mods, reliability_scores = _project_multisensor_to_target_frame_rigfused(
+                    seq_name=seq_name,
+                    pred_points=pred_kps.astype(np.float32),
+                    gt_points=gt_kps.astype(np.float32),
+                    target_modality=target_modality,
+                    fusion_modalities=active_fusion_modalities,
+                    pred_sample_extr_by_modality=pred_sample_extr_by_modality,
+                    pred_target_seq_extr=pred_target_seq_extr,
+                    seq_rig_extr_by_modality=seq_rig_extr_by_modality,
+                    gt_seq_extr_by_modality=gt_seq_extr_by_modality,
+                    temporal_reliability_by_modality=temporal_reliability_by_modality,
+                    reliability_source=reliability_source,
+                    fusion_mode=fusion_mode,
+                    cross_sensor_tau=float(args.cross_sensor_tau),
+                    hard_gate_ratio=float(args.hard_gate_ratio),
+                )
+                if pred_proj is None or gt_proj is None:
+                    dropped_no_camera_projection += 1
+                    continue
+
+                pred_new.append(pred_proj)
+                gt_new.append(gt_proj)
+                used_modality_counts.append(int(used_mods))
+                for mod, val in reliability_scores.items():
+                    if mod in rel_values_by_modality:
+                        rel_values_by_modality[mod].append(float(val))
+                kept_seq_names.append(seq_name)
+                kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
+                kept += 1
+
+            if len(used_modality_counts) > 0:
+                projection_info.append(
+                    f"[INFO] Modalities used per sample: mean={np.mean(used_modality_counts):.2f}, "
+                    f"min={np.min(used_modality_counts)}, max={np.max(used_modality_counts)}"
+                )
             for mod in active_fusion_modalities:
-                vals = list(temporal_reliability_by_modality.get(mod, {}).values())
+                vals = rel_values_by_modality.get(mod, [])
                 if len(vals) == 0:
                     continue
                 projection_info.append(
-                    f"[INFO] Temporal reliability `{mod}`: mean={np.mean(vals):.4f}, "
+                    f"[INFO] Reliability `{mod}`: mean={np.mean(vals):.4f}, "
                     f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
                 )
-
-        used_modality_counts = []
-        rel_values_by_modality: Dict[str, List[float]] = {mod: [] for mod in active_fusion_modalities}
-        dropped_no_camera_projection = 0
-        for i in _iter_with_progress(
-            range(num_samples),
-            desc="transform keypoints",
-            total=num_samples,
-            enabled=show_progress,
-        ):
-            pred_kps = _get_sample_keypoints(pred_all, i)
-            gt_kps = _get_sample_keypoints(gt_all, i)
-            if pred_kps is None or gt_kps is None:
-                continue
-            pred_kps = _to_numpy_maybe(pred_kps)
-            gt_kps = _to_numpy_maybe(gt_kps)
-            if pred_kps is None or gt_kps is None:
-                continue
-            if pred_kps.shape != gt_kps.shape:
-                continue
-            if pred_kps.ndim != 2 or pred_kps.shape[-1] != 3:
-                continue
-            if not np.isfinite(pred_kps).all() or not np.isfinite(gt_kps).all():
-                continue
-
-            seq_name = _seq_name_from_sample_id(sample_ids[i] if i < len(sample_ids) else None)
-            pred_proj, gt_proj, used_mods, reliability_scores = _project_multisensor_to_target_frame_seqfixed(
-                seq_name=seq_name,
-                pred_points=pred_kps.astype(np.float32),
-                gt_points=gt_kps.astype(np.float32),
-                target_modality=target_modality,
-                fusion_modalities=active_fusion_modalities,
-                pred_seq_extr_by_modality=pred_seq_extr_by_modality,
-                gt_seq_extr_by_modality=gt_seq_extr_by_modality,
-                temporal_reliability_by_modality=temporal_reliability_by_modality,
-                reliability_source=reliability_source,
-                fusion_mode=fusion_mode,
-                cross_sensor_tau=float(args.cross_sensor_tau),
-                hard_gate_ratio=float(args.hard_gate_ratio),
-            )
-            if pred_proj is None or gt_proj is None:
-                dropped_no_camera_projection += 1
-                continue
-
-            pred_new.append(pred_proj)
-            gt_new.append(gt_proj)
-            used_modality_counts.append(int(used_mods))
-            for mod, val in reliability_scores.items():
-                if mod in rel_values_by_modality:
-                    rel_values_by_modality[mod].append(float(val))
-            kept_seq_names.append(seq_name)
-            kept_frame_indices.append(_frame_index_from_sample_id(sample_ids[i] if i < len(sample_ids) else None))
-            kept += 1
-
-        if len(used_modality_counts) > 0:
-            projection_info.append(
-                f"[INFO] Modalities used per sample: mean={np.mean(used_modality_counts):.2f}, "
-                f"min={np.min(used_modality_counts)}, max={np.max(used_modality_counts)}"
-            )
-        for mod in active_fusion_modalities:
-            vals = rel_values_by_modality.get(mod, [])
-            if len(vals) == 0:
-                continue
-            projection_info.append(
-                f"[INFO] Reliability `{mod}`: mean={np.mean(vals):.4f}, "
-                f"min={np.min(vals):.4f}, max={np.max(vals):.4f}"
-            )
-        if dropped_no_camera_projection > 0:
-            projection_info.append(
-                f"[INFO] Dropped samples without valid multi-sensor camera projection: "
-                f"{dropped_no_camera_projection}"
-            )
+            if dropped_no_camera_projection > 0:
+                projection_info.append(
+                    f"[INFO] Dropped samples without valid multi-sensor camera projection: "
+                    f"{dropped_no_camera_projection}"
+                )
 
     if kept == 0:
         raise RuntimeError("No valid samples found for evaluation.")

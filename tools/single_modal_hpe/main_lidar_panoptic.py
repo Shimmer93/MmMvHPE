@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.single_modal_hpe.dataset import HummanDepthToLidarDataset, build_depth_to_lidar_pipeline
+from tools.single_modal_hpe.dataset import PanopticDepthToLidarDataset, build_depth_to_lidar_pipeline
 from tools.single_modal_hpe.train_eval import (
     evaluate,
     export_predictions_as_mmpose_json,
@@ -27,12 +27,17 @@ from tools.single_modal_hpe.train_eval import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/test a simple LiDAR-only HPE model.")
-    parser.add_argument("--data-root", type=str, required=True, help="Preprocessed HuMMan root path.")
+    parser = argparse.ArgumentParser(description="Train/test a simple LiDAR-only HPE model on Panoptic.")
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default="/root/autodl-tmp/panoptic",
+        help="Preprocessed Panoptic root path.",
+    )
     parser.add_argument(
         "--split-config",
         type=str,
-        default="configs/datasets/humman_split_config.yml",
+        default="configs/datasets/panoptic_split_config.yml",
         help="Optional split config yaml.",
     )
     parser.add_argument("--split-to-use", type=str, default="random_split")
@@ -48,6 +53,7 @@ def parse_args() -> argparse.Namespace:
         help="Use causal target selection (matches main config default).",
     )
     parser.add_argument("--unit", type=str, default="m", choices=["m", "mm"])
+    parser.add_argument("--gt-unit", type=str, default="cm", choices=["m", "cm", "mm"])
     parser.add_argument("--num-points", type=int, default=1024)
     parser.add_argument(
         "--train-random-rot-deg",
@@ -76,7 +82,7 @@ def parse_args() -> argparse.Namespace:
         help="Use in-place progress logs instead of printing a new line each update.",
     )
 
-    parser.add_argument("--num-joints", type=int, default=24)
+    parser.add_argument("--num-joints", type=int, default=19)
     parser.add_argument("--encoder-dim", type=int, default=512)
     parser.add_argument("--head-hidden-dim", type=int, default=1024)
     parser.add_argument("--radius", type=float, default=0.1)
@@ -89,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drop-path", type=float, default=0.1)
     parser.add_argument("--mode", type=str, default="xyz", choices=["xyz", "d", "all", "only_h"])
 
-    parser.add_argument("--output-dir", type=str, default="logs/single_modal_hpe")
+    parser.add_argument("--output-dir", type=str, default="logs/single_modal_hpe_panoptic")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--test-only", action="store_true")
     parser.add_argument("--pred-file", type=str, default="test_predictions.npz")
@@ -113,6 +119,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Comma-separated GPU ids for DP (e.g., 0,1,2). Defaults to all visible GPUs.",
+    )
+    parser.add_argument(
+        "--panoptic-toolbox-root",
+        type=str,
+        default=None,
+        help="Optional Panoptic Toolbox root for calibration_<seq>.json extrinsics.",
+    )
+    parser.add_argument(
+        "--use-panoptic-calibration-extrinsics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Prefer Panoptic calibration extrinsics when available.",
     )
     return parser.parse_args()
 
@@ -248,13 +266,14 @@ def main() -> None:
 
     common_pipeline = build_depth_to_lidar_pipeline(num_points=args.num_points)
 
-    train_dataset = HummanDepthToLidarDataset(
+    train_dataset = PanopticDepthToLidarDataset(
         data_root=args.data_root,
         pipeline=common_pipeline,
         split=args.train_split,
         split_config=split_config,
         split_to_use=args.split_to_use,
         unit=args.unit,
+        gt_unit=args.gt_unit,
         depth_cameras=args.depth_cameras,
         seq_len=args.seq_len,
         seq_step=args.seq_step,
@@ -262,17 +281,21 @@ def main() -> None:
         causal=args.causal,
         use_all_pairs=False,
         test_mode=False,
+        output_num_joints=args.num_joints,
+        panoptic_toolbox_root=args.panoptic_toolbox_root,
+        use_panoptic_calibration_extrinsics=args.use_panoptic_calibration_extrinsics,
         random_lidar_rotation_deg=args.train_random_rot_deg,
         random_lidar_rotation_seed=args.seed,
         random_lidar_rotation_ratio=args.train_random_rot_ratio,
     )
-    test_dataset = HummanDepthToLidarDataset(
+    test_dataset = PanopticDepthToLidarDataset(
         data_root=args.data_root,
         pipeline=common_pipeline,
         split=args.test_split,
         split_config=split_config,
         split_to_use=args.split_to_use,
         unit=args.unit,
+        gt_unit=args.gt_unit,
         depth_cameras=args.depth_cameras,
         seq_len=args.seq_len,
         seq_step=args.seq_step,
@@ -280,6 +303,9 @@ def main() -> None:
         causal=args.causal,
         use_all_pairs=False,
         test_mode=True,
+        output_num_joints=args.num_joints,
+        panoptic_toolbox_root=args.panoptic_toolbox_root,
+        use_panoptic_calibration_extrinsics=args.use_panoptic_calibration_extrinsics,
         random_lidar_rotation_deg=0.0,
         random_lidar_rotation_seed=args.seed,
         random_lidar_rotation_ratio=0.0,
@@ -386,13 +412,14 @@ def main() -> None:
             print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
             print(f"Predictions saved to: {pred_path}")
         if export_json_path is not None:
-            export_dataset = HummanDepthToLidarDataset(
+            export_dataset = PanopticDepthToLidarDataset(
                 data_root=args.data_root,
                 pipeline=common_pipeline,
                 split="all",
                 split_config=None,
                 split_to_use=args.split_to_use,
                 unit=args.unit,
+                gt_unit=args.gt_unit,
                 depth_cameras=None,
                 seq_len=1,
                 seq_step=1,
@@ -400,6 +427,9 @@ def main() -> None:
                 causal=True,
                 use_all_pairs=False,
                 test_mode=True,
+                output_num_joints=args.num_joints,
+                panoptic_toolbox_root=args.panoptic_toolbox_root,
+                use_panoptic_calibration_extrinsics=args.use_panoptic_calibration_extrinsics,
                 random_lidar_rotation_deg=0.0,
                 random_lidar_rotation_seed=args.seed,
                 random_lidar_rotation_ratio=0.0,
@@ -420,8 +450,8 @@ def main() -> None:
                 dataloader=export_loader,
                 device=device,
                 save_path=export_json_path,
-                input_dir=os.path.join(args.data_root, "depth"),
-                config="tools/single_modal_hpe/main_lidar.py",
+                input_dir=args.data_root,
+                config="tools/single_modal_hpe/main_lidar_panoptic.py",
                 checkpoint=ckpt,
                 device_str=args.device,
                 log_interval=args.log_interval,
@@ -530,13 +560,14 @@ def main() -> None:
         print(f"Test elapsed: {test_metrics['elapsed_sec']:.1f}s")
         print(f"Predictions saved to: {pred_path}")
         if export_json_path is not None:
-            export_dataset = HummanDepthToLidarDataset(
+            export_dataset = PanopticDepthToLidarDataset(
                 data_root=args.data_root,
                 pipeline=common_pipeline,
                 split="all",
                 split_config=None,
                 split_to_use=args.split_to_use,
                 unit=args.unit,
+                gt_unit=args.gt_unit,
                 depth_cameras=None,
                 seq_len=1,
                 seq_step=1,
@@ -544,6 +575,9 @@ def main() -> None:
                 causal=True,
                 use_all_pairs=False,
                 test_mode=True,
+                output_num_joints=args.num_joints,
+                panoptic_toolbox_root=args.panoptic_toolbox_root,
+                use_panoptic_calibration_extrinsics=args.use_panoptic_calibration_extrinsics,
                 random_lidar_rotation_deg=0.0,
                 random_lidar_rotation_seed=args.seed,
                 random_lidar_rotation_ratio=0.0,
@@ -563,8 +597,8 @@ def main() -> None:
                 dataloader=export_loader,
                 device=device,
                 save_path=export_json_path,
-                input_dir=os.path.join(args.data_root, "depth"),
-                config="tools/single_modal_hpe/main_lidar.py",
+                input_dir=args.data_root,
+                config="tools/single_modal_hpe/main_lidar_panoptic.py",
                 checkpoint=best_ckpt_path,
                 device_str=args.device,
                 log_interval=args.log_interval,

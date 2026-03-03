@@ -256,12 +256,18 @@ class PCCenterWithKeypoints():
         keys: List[str] = ['input_lidar'],
         keypoints_key: str = 'gt_keypoints',
         shifted_keypoints_suffix: str = '_pc_centered',
+        root_joint_indices: List[int] = [0, 2],
+        centered_root_tol: float = 1e-4,
     ):
         assert center_type in ['mean', 'median'], "center_type must be 'mean' or 'median'"
         self.center_type = center_type
         self.keys = keys
         self.keypoints_key = keypoints_key
         self.shifted_keypoints_suffix = shifted_keypoints_suffix
+        if not isinstance(root_joint_indices, (list, tuple)) or len(root_joint_indices) == 0:
+            raise ValueError("root_joint_indices must be a non-empty list/tuple of ints.")
+        self.root_joint_indices = [int(i) for i in root_joint_indices]
+        self.centered_root_tol = float(centered_root_tol)
 
     @staticmethod
     def _modality_from_key(key: str) -> str:
@@ -334,15 +340,33 @@ class PCCenterWithKeypoints():
         return out
 
     @staticmethod
-    def _is_pelvis_centered(keypoints):
+    def _is_pelvis_centered(keypoints, root_joint_indices: List[int], tol: float):
         if isinstance(keypoints, np.ndarray):
-            if keypoints.shape[-1] != 3 or keypoints.size < 3:
+            if keypoints.ndim < 2 or keypoints.shape[-1] != 3:
                 return False
-            return np.linalg.norm(keypoints.reshape(-1, 3)[0]) < 1e-4
+            num_joints = keypoints.shape[-2]
+            if num_joints <= 0:
+                return False
+            leading = (0,) * (keypoints.ndim - 2)
+            for root_idx in root_joint_indices:
+                if 0 <= root_idx < num_joints:
+                    root = keypoints[leading + (root_idx, slice(None))]
+                    if np.linalg.norm(root) < tol:
+                        return True
+            return False
         if isinstance(keypoints, torch.Tensor):
-            if keypoints.shape[-1] != 3 or keypoints.numel() < 3:
+            if keypoints.dim() < 2 or keypoints.shape[-1] != 3:
                 return False
-            return torch.linalg.norm(keypoints.reshape(-1, 3)[0]).item() < 1e-4
+            num_joints = int(keypoints.shape[-2])
+            if num_joints <= 0:
+                return False
+            leading = (0,) * (keypoints.dim() - 2)
+            for root_idx in root_joint_indices:
+                if 0 <= root_idx < num_joints:
+                    root = keypoints[leading + (root_idx, slice(None))]
+                    if torch.linalg.norm(root).item() < tol:
+                        return True
+            return False
         return False
 
     @staticmethod
@@ -454,7 +478,11 @@ class PCCenterWithKeypoints():
                     shifted_views = []
                     for extrinsic_before in extrinsic_before_list:
                         keypoints_for_pc = keypoints
-                        if self._is_pelvis_centered(keypoints):
+                        if self._is_pelvis_centered(
+                            keypoints,
+                            root_joint_indices=self.root_joint_indices,
+                            tol=self.centered_root_tol,
+                        ):
                             keypoints_for_pc = self._apply_extrinsic(keypoints_for_pc, extrinsic_before)
                         shifted_views.append(self._subtract_center(keypoints_for_pc, center))
                     if len(shifted_views) == 1:

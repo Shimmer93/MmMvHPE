@@ -6,15 +6,21 @@ sync_batchnorm: false
 clip_grad: null
 precision: 16
 epochs: &epochs 20
-monitor: 'val_mpjpe'
-monitor_mode: 'min'
+monitor: 'val_cam_pose_auc_30_rgb'
+monitor_mode: 'max'
 # --------------------------------------
 # Dataset parameters
 # --------------------------------------
 train_dataset:
-  name: 'PanopticPreprocessedDatasetV1'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
-    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    data_root: &data_root '/root/autodl-tmp/panoptic'
+    rgb_skeleton_json: &rgb_skeleton_json '/root/autodl-tmp/panoptic/skl_rgb.json'
+    lidar_skeleton_json: &lidar_skeleton_json '/root/autodl-tmp/panoptic/skl_lidar.json'
+    lidar_skeleton_coord: 'lidar'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
@@ -34,16 +40,20 @@ train_dataset:
     causal: true
     use_all_pairs: false
     colocated: false
-    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose1", "171204_pose2", "171204_pose3", "171204_pose4", "171204_pose5", "171204_pose6"]
+    sequence_allowlist: &sequence_allowlist ["171026_pose1", "171026_pose2", "171204_pose3", "171204_pose4"]
     strict_validation: true
-    apply_to_new_world: true
-    remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
 val_dataset:
-  name: 'PanopticPreprocessedDatasetV1'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    lidar_skeleton_json: *lidar_skeleton_json
+    lidar_skeleton_coord: 'lidar'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
@@ -65,14 +75,18 @@ val_dataset:
     colocated: false
     sequence_allowlist: *sequence_allowlist
     strict_validation: true
-    apply_to_new_world: true
-    remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
 test_dataset:
-  name: 'PanopticPreprocessedDatasetV1'
+  name: 'PanopticPreprocessedDatasetV2'
   params:
     data_root: *data_root
+    rgb_skeleton_json: *rgb_skeleton_json
+    lidar_skeleton_json: *lidar_skeleton_json
+    lidar_skeleton_coord: 'lidar'
+    lidar_skeleton_is_pc_centered: true
+    lidar_skeleton_key: 'pred_keypoints_pc_centered_input_lidar_json'
+    rgb_skeleton_image_size_hw: [512, 512]
     unit: 'm'
     gt_unit: 'cm'
     output_num_joints: 19
@@ -94,8 +108,6 @@ test_dataset:
     colocated: false
     sequence_allowlist: *sequence_allowlist
     strict_validation: true
-    apply_to_new_world: true
-    remove_root_rotation: true
     root_rotation_fallback: 'skip'
     max_skip_invalid_samples: 256
 # --------------------------------------
@@ -103,29 +115,31 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0002
+  lr: &lr 0.0001
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
 # --------------------------------------
 sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
-  warmup_epochs: 2
+  warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00002
-  eta_min: 0.00002
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
 # --------------------------------------
 # Model parameters
 # --------------------------------------
 model_name: HummanVIBEToken
 backbone_rgb:
   name: 'TimmWrapper'
+  eval: true
   params:
     model_name: 'vit_small_patch16_dinov3'
     pretrained: true
   has_temporal: false
 backbone_lidar:
   name: 'MAMBA4DEncoder'
+  eval: true
   params:
     radius: 0.1
     nsamples: 16
@@ -146,6 +160,7 @@ backbone_lidar:
   has_temporal: true
 aggregator:
   name: 'TransformerAggregatorV4'
+  eval: true
   params:
     input_dims: [384, 384, 512, 512]
     embed_dim: 512
@@ -166,6 +181,7 @@ aggregator:
     gcn_norm_type: 'gn'
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
+  eval: true
   params:
     emb_size: 1024
     num_joints: 19
@@ -174,12 +190,33 @@ keypoint_head:
     max_modalities: 4
     last_n_layers: 4
     pose_encoding_type: "absT_quaR_FoV"
+    losses: []
+camera_head:
+  name: 'KeypointCameraGCNHeadV5'
+  params:
+    num_joints: 19
+    hidden_dim: 256
+    num_layers: 4
+    dropout: 0.1
+    use_layernorm: true
+    use_modality_embedding: true
+    detach_inputs: true
+    use_gt_ratio: 0.5
+    num_iterations: 4
+    pose_encoding_type: "absT_quaR_FoV"
+    proj_loss_weight_rgb: 0.1
+    proj_loss_weight_lidar: 0.1
+    proj_loss_type: "l1"
+    gcn_depth: 3
+    input_2d_skeleton_format: "coco"
+    input_3d_skeleton_format: "panoptic_coco19"
+    train_branch: "both"
     losses:
-      - name: 'KeypointLoss'
+      - name: 'CameraLoss'
         params:
-          loss_type: 'MSE'
+          loss_type: 'l1'
+          weights: [1.0, 1.0, 0]
         weight: 1.0
-        alias: 'KeypointMSELoss'
 # --------------------------------------
 # Metrics parameters
 # --------------------------------------
@@ -192,6 +229,32 @@ metrics:
     params:
       use_smpl: false
       root_joint_idx: 0
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'rgb'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_rgb'
+  - name: 'CameraPoseAUC'
+    params:
+      modality: 'lidar'
+      max_threshold: 30
+    alias: 'CameraPoseAUC_lidar'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'rgb'
+    alias: 'CameraTransL2_rgb'
+  - name: 'CameraTranslationL2Error'
+    params:
+      modality: 'lidar'
+    alias: 'CameraTransL2_lidar'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'rgb'
+    alias: 'CameraRotAngle_rgb'
+  - name: 'CameraRotationAngleError'
+    params:
+      modality: 'lidar'
+    alias: 'CameraRotAngle_lidar'
 # --------------------------------------
 # Augmentation parameters
 # --------------------------------------
@@ -215,8 +278,27 @@ train_pipeline: &train_pipeline
       keys: ['input_lidar']
   - name: ToTensor
     params: null
-val_pipeline: *train_pipeline
-test_pipeline: *train_pipeline
+val_pipeline: &val_pipeline
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: PCCenterWithKeypoints
+    params:
+      center_type: 'mean'
+      keys: ['input_lidar']
+      keypoints_key: 'gt_keypoints'
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+test_pipeline: *val_pipeline
 vis_skl_format: 'panoptic_coco19'
 vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]
