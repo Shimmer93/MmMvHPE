@@ -538,3 +538,70 @@ class PAMPJPE:
 
         pampjpe = pampjpe_func(pred_keypoints, target_keypoints, reduce=True)
         return pampjpe
+
+
+class PCMPJPE:
+    def __init__(
+        self,
+        affix=None,
+        use_smpl=False,
+        skeleton_name="smpl",
+        pelvis_idx=None,
+        neck_idx=None,
+        bodycenter_idx=None,
+        lhip_idx=None,
+        rhip_idx=None,
+        pred_key=None,
+        target_key='gt_keypoints',
+        sensor_idx=0,
+    ):
+        self.affix = affix
+        self.use_smpl = use_smpl
+        self.skeleton_name = skeleton_name
+        self.pelvis_idx = pelvis_idx
+        self.neck_idx = neck_idx
+        self.bodycenter_idx = bodycenter_idx
+        self.lhip_idx = lhip_idx
+        self.rhip_idx = rhip_idx
+        self.pred_key = pred_key
+        self.target_key = target_key
+        self.sensor_idx = int(sensor_idx)
+        if self.sensor_idx < 0:
+            raise ValueError(f"sensor_idx must be >= 0, got {self.sensor_idx}.")
+        self.name = f'pcmpjpe_{affix}' if affix is not None else 'pcmpjpe'
+
+    def __call__(self, preds, targets):
+        default_pred_key = 'pred_smpl_keypoints' if self.use_smpl else 'pred_keypoints'
+        pred_key = self.pred_key or default_pred_key
+        pred_keypoints, target_keypoints = _resolve_keypoints(
+            preds,
+            targets,
+            pred_key=pred_key,
+            target_key=self.target_key,
+            sensor_idx=self.sensor_idx,
+        )
+        if pred_keypoints.shape[0] == 0:
+            return np.nan
+
+        pelvis_idx, neck_idx, bodycenter_idx, lhip_idx, rhip_idx = _resolve_pcmpjpe_indices(
+            skeleton_name=self.skeleton_name,
+            pelvis_idx=self.pelvis_idx,
+            neck_idx=self.neck_idx,
+            bodycenter_idx=self.bodycenter_idx,
+            lhip_idx=self.lhip_idx,
+            rhip_idx=self.rhip_idx,
+        )
+
+        pcmpjpe = pcmpjpe_func(
+            pred_keypoints,
+            target_keypoints,
+            pelvis_idx=pelvis_idx,
+            neck_idx=neck_idx,
+            bodycenter_idx=bodycenter_idx,
+            lhip_idx=lhip_idx,
+            rhip_idx=rhip_idx,
+            pred_root_rot=None,
+            gt_root_rot=None,
+            reduce=True,
+        )
+        return pcmpjpe
