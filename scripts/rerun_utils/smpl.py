@@ -3,16 +3,28 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from misc.skeleton import COCOSkeleton, H36MSkeleton, SMPLSkeleton
+from misc.skeleton import COCOSkeleton, H36MSkeleton, PanopticCOCO19Skeleton, SMPLSkeleton
 
 
 def get_skeleton_class(skeleton_format: str):
+    if skeleton_format is None:
+        return SMPLSkeleton
+    key = str(skeleton_format).strip().lower().replace("-", "_")
+    key_compact = key.replace("_", "")
     skeleton_map = {
         "smpl": SMPLSkeleton,
         "h36m": H36MSkeleton,
         "coco": COCOSkeleton,
+        "panoptic_coco19": PanopticCOCO19Skeleton,
+        "panopticcoco19": PanopticCOCO19Skeleton,
+        "panopticcoco19": PanopticCOCO19Skeleton,
     }
-    return skeleton_map.get(skeleton_format, SMPLSkeleton)
+    if key in skeleton_map:
+        return skeleton_map[key]
+    if key_compact in skeleton_map:
+        return skeleton_map[key_compact]
+    valid = ", ".join(sorted(set(skeleton_map.keys())))
+    raise ValueError(f"Unknown skeleton_format={skeleton_format}. Supported: {valid}")
 
 
 def load_smpl_model(smpl_model_path: str, device: str = "cuda"):
@@ -82,4 +94,3 @@ def split_smpl_params(smpl_params_vector):
         "betas": betas,
         "transl": zeros,
     }
-

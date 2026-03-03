@@ -15,7 +15,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from misc.utils import load_cfg, merge_args_cfg
 from misc.registry import create_dataset
-from misc.skeleton import SMPLSkeleton
 from rerun_utils.camera import resolve_view_extrinsics, transform_points_to_camera
 from rerun_utils.geometry import align_keypoints_to_joints_scale, rotate_points_180_y
 from rerun_utils.image import process_image_for_display
@@ -26,12 +25,20 @@ from rerun_utils.layout import (
 )
 from rerun_utils.logging3d import log_mesh_3d, log_skeleton_views
 from rerun_utils.session import init_rerun_session, init_world_axes, set_frame_timeline
-from rerun_utils.smpl import load_smpl_model, smpl_params_to_mesh, split_smpl_params
+from rerun_utils.smpl import (
+    get_skeleton_class,
+    load_smpl_model,
+    smpl_params_to_mesh,
+    split_smpl_params,
+)
 from rerun_utils.temporal import select_sample_frame_steps
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SAM-3D-Body rerun visualization")
+    parser = argparse.ArgumentParser(
+        description="SAM-3D-Body rerun visualization",
+        allow_abbrev=False,
+    )
     parser.add_argument("-c", "--cfg", required=True, help="Config path")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Dataset split")
     parser.add_argument("--sample-idx", type=int, default=0, help="Sample index in selected split")
@@ -48,6 +55,22 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-root",
         default="/opt/data/SAM_3dbody_checkpoints",
         help="SAM-3D-Body checkpoint root",
+    )
+    parser.add_argument(
+        "--segmentor-name",
+        default="none",
+        choices=["none", "sam2", "sam3"],
+        help="Optional human segmentor backend. Use `sam3` to enable SAM3 masks.",
+    )
+    parser.add_argument(
+        "--segmentor-path",
+        default="/opt/data/sam3_checkpoints",
+        help="Segmentor checkpoint path. For `sam3`, pass a `.pt` file or a directory containing `sam3.pt`.",
+    )
+    parser.add_argument(
+        "--use-mask",
+        action="store_true",
+        help="Enable mask-conditioned SAM-3D-Body inference (requires `--segmentor-name` != `none`).",
     )
     parser.add_argument(
         "--render-mode",
@@ -71,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         help="Ground-truth 3D coordinate space: `canonical` or `camera`. "
         "When omitted, uses `gt_coordinate_space` from config or `canonical`.",
     )
+    parser.add_argument(
+        "--skeleton-format",
+        default=None,
+        help="Skeleton format for GT keypoint visualization. "
+        "When omitted, uses config `vis_skl_format` (fallback: `smpl`).",
+    )
     return parser.parse_args()
 
 
@@ -83,6 +112,12 @@ def _resolve_dataset_cfg(hparams, split: str):
 
 
 def _check_checkpoint_paths(checkpoint_root: Path) -> tuple[Path, Path, Path]:
+    if checkpoint_root.is_file():
+        raise FileNotFoundError(
+            f"`--checkpoint-root` must be a directory, got file: {checkpoint_root}\n"
+            "Do not pass your model checkpoint (.ckpt) here; this script expects the SAM-3D-Body "
+            "checkpoint root directory containing model_config.yaml, model.ckpt, and mhr_model.pt."
+        )
     cfg_path = checkpoint_root / "model_config.yaml"
     ckpt_path = checkpoint_root / "model.ckpt"
     # Prefer assets layout for mhr_model.pt, keep root-level fallback for compatibility.
@@ -204,23 +239,36 @@ def _draw_overlay(
     return canvas
 
 
-def _load_sam3d_estimator(checkpoint_root: Path, device: str):
+def _load_sam3d_estimator(
+    checkpoint_root: Path,
+    device: str,
+    segmentor_name: str,
+    segmentor_path: str,
+):
     _, ckpt_path, mhr_path = _check_checkpoint_paths(checkpoint_root)
 
     sam3d_root = REPO_ROOT / "third_party" / "sam-3d-body"
     sys.path.insert(0, str(sam3d_root))
     from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
+    from tools.build_sam import HumanSegmentor
 
     model, model_cfg = load_sam_3d_body(
         checkpoint_path=str(ckpt_path),
         device=device,
         mhr_path=str(mhr_path),
     )
+    human_segmentor = None
+    if segmentor_name != "none":
+        human_segmentor = HumanSegmentor(
+            name=segmentor_name,
+            device=device,
+            path=segmentor_path,
+        )
     estimator = SAM3DBodyEstimator(
         sam_3d_body_model=model,
         model_cfg=model_cfg,
         human_detector=None,
-        human_segmentor=None,
+        human_segmentor=human_segmentor,
         fov_estimator=None,
     )
     return estimator
@@ -242,6 +290,7 @@ def _log_gt_outputs(
     source_frame_idx: int,
     gt_coordinate_space: str,
     view_extrinsic: np.ndarray | None,
+    gt_skeleton_class,
 ) -> tuple[bool, bool]:
     gt_kpts_ok = False
     gt_mesh_ok = False
@@ -323,7 +372,7 @@ def _log_gt_outputs(
         log_skeleton_views(
             "ground_truth",
             gt_keypoints,
-            SMPLSkeleton,
+            gt_skeleton_class,
             color=(0, 255, 100),
             radius=0.02,
             side_transform=_side_view_transform,
@@ -369,7 +418,7 @@ def _log_sam3d_outputs(
         log_skeleton_views(
             "prediction",
             keypoints_front,
-            SMPLSkeleton,
+            skeleton_class=None,
             color=(0, 200, 255),
             radius=0.02,
             bones=skeleton_edges,
@@ -387,6 +436,8 @@ def main() -> None:
         args.device = "cpu"
     if args.num_frames < 1:
         raise ValueError(f"--num-frames must be >= 1, got {args.num_frames}")
+    if args.use_mask and args.segmentor_name == "none":
+        raise ValueError("`--use-mask` requires `--segmentor-name` to be `sam2` or `sam3`.")
 
     cfg = load_cfg(args.cfg)
     class MockArgs:
@@ -417,6 +468,11 @@ def main() -> None:
         )
     # Single mode per run for clarity and deterministic comparisons.
     assert isinstance(gt_coordinate_space, str)
+    skeleton_format = args.skeleton_format
+    if skeleton_format is None:
+        skeleton_format = getattr(hparams, "vis_skl_format", "smpl")
+    gt_skeleton_class = get_skeleton_class(skeleton_format)
+    print(f"[SAM3D-RERUN] using GT skeleton format: {skeleton_format}")
 
     dataset_cfg, pipeline_cfg = _resolve_dataset_cfg(hparams, args.split)
     dataset, _ = create_dataset(dataset_cfg["name"], dataset_cfg["params"], pipeline_cfg)
@@ -429,7 +485,12 @@ def main() -> None:
     blueprint = create_rerun_blueprint(input_layout)
     expected_views = {item["modality"]: item["num_views"] for item in input_layout}
 
-    estimator = _load_sam3d_estimator(Path(args.checkpoint_root), args.device)
+    estimator = _load_sam3d_estimator(
+        Path(args.checkpoint_root),
+        args.device,
+        args.segmentor_name,
+        args.segmentor_path,
+    )
     sam_edges, sam_edge_colors = _sam3d_skeleton()
 
     smpl_model = None
@@ -524,7 +585,7 @@ def main() -> None:
             rr.log(f"world/inputs/rgb/view_{view_idx}/image", rr.Image(rgb_image))
 
             if view_idx == center_view_idx:
-                outputs = estimator.process_one_image(rgb_image)
+                outputs = estimator.process_one_image(rgb_image, use_mask=args.use_mask)
                 overlay = _draw_overlay(rgb_image, outputs, skeleton_edges=sam_edges)
                 if args.debug_image_stats:
                     _log_image_stats(f"sample_{step_sample_idx}/frame_{safe_idx}/rgb/view_{view_idx}/overlay", overlay)
@@ -544,6 +605,7 @@ def main() -> None:
                     source_frame_idx=safe_idx,
                     gt_coordinate_space=gt_coordinate_space,
                     view_extrinsic=None if cached_view_extrinsics is None else cached_view_extrinsics[view_idx],
+                    gt_skeleton_class=gt_skeleton_class,
                 )
                 rr.log("world/info/gt_keypoints_available", rr.TextLog(str(gt_keypoints_ok)))
                 rr.log("world/info/gt_mesh_available", rr.TextLog(str(gt_mesh_ok)))

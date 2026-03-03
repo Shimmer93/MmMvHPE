@@ -197,6 +197,35 @@ def _infer_image_hw(sample: dict) -> tuple[int, int]:
     return (224, 224)
 
 
+def _extract_gt_pelvis(sample: dict, frame_idx: int, center_idx: int) -> np.ndarray | None:
+    """Return GT pelvis position in world space for a given frame, using the dataset center index."""
+    gt_kpts = sample.get('gt_keypoints_seq', sample.get('gt_keypoints'))
+    if gt_kpts is not None:
+        if isinstance(gt_kpts, torch.Tensor):
+            gt_kpts = gt_kpts.cpu().numpy()
+        gt_kpts = _take_temporal(gt_kpts, frame_idx)
+        if gt_kpts.ndim >= 2 and gt_kpts.shape[-1] == 3 and gt_kpts.shape[-2] > center_idx:
+            return gt_kpts[center_idx]
+
+    gt_smpl = sample.get('gt_smpl')
+    if gt_smpl is not None and 'transl' in gt_smpl:
+        transl = gt_smpl['transl']
+        if isinstance(transl, torch.Tensor):
+            transl = transl.cpu().numpy()
+        transl = _take_temporal(transl, frame_idx)
+        if np.asarray(transl).shape[-1] == 3:
+            return transl
+
+    gt_joints = sample.get('gt_joints_seq', sample.get('gt_joints'))
+    if gt_joints is not None:
+        if isinstance(gt_joints, torch.Tensor):
+            gt_joints = gt_joints.cpu().numpy()
+        gt_joints = _take_temporal(gt_joints, frame_idx)
+        if gt_joints.ndim >= 2 and gt_joints.shape[-1] == 3 and gt_joints.shape[-2] > center_idx:
+            return gt_joints[center_idx]
+    return None
+
+
 def _take_temporal(x, frame_idx: int):
     arr = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
     if arr.ndim >= 3:
@@ -235,7 +264,7 @@ def main():
                         default=None,
                         help='Path to SMPL model weights')
     parser.add_argument('--skeleton_format', type=str, default=None,
-                        help='Skeleton format (smpl, h36m, coco). Auto-detected from config if not specified.')
+                        help='Skeleton format (smpl, h36m, coco, panoptic_coco19). Auto-detected from config if not specified.')
     parser.add_argument('--recording_name', type=str, default='inference_vis',
                         help='Rerun recording name')
     parser.add_argument('--save_rrd', type=str, default=None,
@@ -254,6 +283,12 @@ def main():
                         help='Visualize SMPL/keypoints in canonical space (zero global orient/transl).')
     parser.add_argument('--canonical_upright', action='store_true', default=True,
                         help='Rotate canonical visualization 180deg around X to avoid upside-down view.')
+    parser.add_argument(
+        '--use-gt-pose-for-pred-viz',
+        action='store_true',
+        help='When no camera head is present, place predicted keypoints using GT pelvis/world pose before visualization. '
+             'Ignored in canonical mode.',
+    )
     parser.add_argument(
         '--coord-space',
         type=str,
@@ -286,6 +321,8 @@ def main():
             raise ValueError(f"`--reference-view` must be >= 0, got {args.reference_view}.")
         if args.canonical:
             raise ValueError("`--canonical` is not supported in sensor mode.")
+    if args.use_gt_pose_for_pred_viz and args.canonical:
+        raise ValueError("`--use-gt-pose-for-pred-viz` is incompatible with `--canonical`.")
     
     # Check device
     if args.device == 'cuda' and not torch.cuda.is_available():
@@ -320,6 +357,7 @@ def main():
     if skeleton_format is None:
         skeleton_format = getattr(hparams, 'vis_skl_format', 'smpl')
     skeleton_class = get_skeleton_class(skeleton_format)
+    center_idx = getattr(skeleton_class, 'center', 0)
     print(f"Using skeleton format: {skeleton_format}")
     
     dataset_cfg, pipeline_cfg = _resolve_dataset_cfg(hparams, args.split)
@@ -502,6 +540,9 @@ def main():
             rr.log('world/info/reference_sensor', rr.TextLog(str(args.reference_sensor)))
             rr.log('world/info/reference_view', rr.TextLog(str(args.reference_view)))
             rr.log('world/info/source_frame_index', rr.TextLog(str(source_frame_idx)))
+            gt_pelvis = None
+            if args.use_gt_pose_for_pred_viz and pred_extrinsic is None:
+                gt_pelvis = _extract_gt_pelvis(sample, source_frame_idx, center_idx)
 
             # Log configured modality views
             if 'input_rgb' in sample:
@@ -623,6 +664,9 @@ def main():
                 vertices, joints, faces = smpl_params_to_mesh(
                     smpl_model, smpl_params, args.device
                 )
+                if args.use_gt_pose_for_pred_viz and pred_extrinsic is None and gt_pelvis is not None:
+                    vertices = vertices + gt_pelvis
+                    joints = joints + gt_pelvis
                 if sensor_mode:
                     pred_ref_extrinsic = pred_extrinsic if pred_extrinsic is not None else reference_extrinsic
                     vertices = transform_points_to_camera(vertices, pred_ref_extrinsic)
@@ -649,6 +693,8 @@ def main():
                 pred_kpts = _take_temporal(pred_dict['pred_keypoints'], source_frame_idx)
                 if pred_kpts.ndim == 3:
                     pred_kpts = pred_kpts[0]
+                if args.use_gt_pose_for_pred_viz and pred_extrinsic is None and gt_pelvis is not None:
+                    pred_kpts = pred_kpts + gt_pelvis
                 if sensor_mode:
                     pred_ref_extrinsic = pred_extrinsic if pred_extrinsic is not None else reference_extrinsic
                     pred_kpts = transform_points_to_camera(pred_kpts, pred_ref_extrinsic)
