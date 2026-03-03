@@ -48,6 +48,28 @@ Per sequence, outputs are written to:
 
 No frames are mixed across sequences.
 
+## Split Semantics (Preprocessed Dataset Loading)
+
+The preprocessed Panoptic dataset loader (`PanopticPreprocessedDatasetV1`) supports
+multiple split modes from `configs/datasets/panoptic_split_config.yml`.
+
+- `temporal_split`:
+  - preferred for sequence-preserving train/val splits;
+  - each selected sequence is split by synchronized frame order;
+  - train uses the first `floor(ratio * N)` frames and val/test uses the tail.
+- `cross_subject_split`:
+  - explicit sequence-level partition using configured `sequences` lists;
+  - use this when you want whole sequences assigned to train vs val/test.
+- `random_split`:
+  - legacy sequence-level deterministic random partition;
+  - kept for backward compatibility, but `temporal_split` + explicit
+    `cross_subject_split` is clearer and recommended for Panoptic.
+
+Migration from legacy Panoptic `random_split`:
+- if you want per-sequence temporal head/tail splitting, switch to `split_to_use: temporal_split`;
+- if you want whole-sequence partitioning, use `split_to_use: cross_subject_split`
+  and set explicit `train_dataset.sequences` / `val_dataset.sequences`.
+
 ## Commands
 
 Smoke test (`161029_piano2`, bounded frames):
@@ -69,4 +91,28 @@ uv run python tools/preprocess_panoptic_kinoptic.py \
   --out-dir /opt/data/panoptic_kinoptic_single_actor_cropped \
   --sequence-list /tmp/panoptic_single_actor_sequences.txt \
   --continue-on-error
+```
+
+Example: visualize with per-sequence temporal split:
+
+```bash
+uv run python scripts/visualize_inference_rerun.py \
+  --cfg configs/vis/panoptic_seq3_piano3.yml \
+  --checkpoint logs/occlusion/panoptic_seq3_20260302_191205/PanopticHPE-epoch=10-val_mpjpe=0.0811.ckpt \
+  --split train \
+  --num_samples 8 \
+  --device cuda \
+  --no_serve \
+  --save_rrd /tmp/panoptic_temporal_split.rrd \
+  --skeleton_format panopticcoco19
+```
+
+Example: use explicit sequence-level split (cross-subject lists in split config):
+
+```bash
+uv run python main.py \
+  -c configs/exp/panoptic/cross_camera_split/hpe.yml \
+  -g 1 -n 1 -w 4 -b 2 -e 1 -p 2 --pin_memory \
+  --exp_name panoptic_cross_subject_explicit \
+  --version smoke_$(date +'%Y%m%d_%H%M%S')
 ```

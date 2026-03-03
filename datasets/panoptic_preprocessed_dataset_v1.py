@@ -233,7 +233,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
 
     def _resolve_split_selection(self, available_sequences: List[str]) -> Dict[str, Any]:
         if self.split_config is None:
-            return {"sequences": list(available_sequences), "cameras": None}
+            return {
+                "sequences": list(available_sequences),
+                "cameras": None,
+                "split_mode": None,
+                "temporal_ratio": None,
+            }
 
         cfg_path = Path(self.split_config).expanduser().resolve()
         if not cfg_path.is_file():
@@ -247,6 +252,17 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         split_key = "val_dataset" if self.test_mode else "train_dataset"
         if split_key not in entry:
             raise ValueError(f"Missing key `{split_key}` under split `{self.split_to_use}` in {cfg_path}")
+        temporal_ratio: Optional[float] = None
+        if self.split_to_use == "temporal_split":
+            ratio = entry.get("ratio", None)
+            if ratio is None:
+                raise ValueError(
+                    "split_config requires top-level `ratio` for `temporal_split` "
+                    "(expected 0 < ratio < 1)."
+                )
+            temporal_ratio = float(ratio)
+            if not (0.0 < temporal_ratio < 1.0):
+                raise ValueError(f"Invalid ratio={ratio}. Expected 0 < ratio < 1.")
 
         target = entry[split_key] or {}
         camera_filter = target.get("cameras", None)
@@ -265,7 +281,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 raise ValueError(
                     f"split_config references unknown sequences ({len(missing)}): {missing[:10]}"
                 )
-            return {"sequences": sorted(requested), "cameras": normalized_cameras}
+            return {
+                "sequences": sorted(requested),
+                "cameras": normalized_cameras,
+                "split_mode": self.split_to_use,
+                "temporal_ratio": temporal_ratio,
+            }
 
         # 2) random_split fallback from sequence ratio.
         if self.split_to_use == "random_split":
@@ -285,7 +306,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             train_ids = [seqs[i] for i in order[:split_idx]]
             val_ids = [seqs[i] for i in order[split_idx:]]
             chosen = train_ids if split_key == "train_dataset" else val_ids
-            return {"sequences": sorted(chosen), "cameras": normalized_cameras}
+            return {
+                "sequences": sorted(chosen),
+                "cameras": normalized_cameras,
+                "split_mode": self.split_to_use,
+                "temporal_ratio": temporal_ratio,
+            }
 
         # 3) cross_* style filtering by subjects/actions (HuMMan-style config contract).
         subjects = target.get("subjects", None)
@@ -307,7 +333,12 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 f"Split `{self.split_to_use}` with `{split_key}` selected zero sequences. "
                 "Check `subjects`/`actions`/`sequences` entries against Panoptic sequence names."
             )
-        return {"sequences": selected, "cameras": normalized_cameras}
+        return {
+            "sequences": selected,
+            "cameras": normalized_cameras,
+            "split_mode": self.split_to_use,
+            "temporal_ratio": temporal_ratio,
+        }
 
     def _camera_extrinsic(self, cam: Dict[str, Any], modality: str) -> np.ndarray:
         m_world2sensor = np.asarray(cam["M_world2sensor"], dtype=np.float32)
@@ -335,6 +366,8 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         split_selection = self._resolve_split_selection(available_sequences)
         split_sequences = split_selection["sequences"]
         split_cameras = split_selection["cameras"]
+        split_mode = split_selection.get("split_mode", None)
+        temporal_ratio = split_selection.get("temporal_ratio", None)
 
         if user_sequences:
             missing = sorted(user_sequences - set(available_sequences))
@@ -459,6 +492,22 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                         common_ids &= set(depth_by_cam[cam].keys())
 
                 frame_ids = sorted(common_ids)
+                if split_mode == "temporal_split":
+                    if temporal_ratio is None:
+                        raise ValueError(
+                            "Internal split selection error: `temporal_split` requires a validated ratio."
+                        )
+                    split_idx = int(np.floor(float(temporal_ratio) * len(frame_ids)))
+                    if self.test_mode:
+                        frame_ids = frame_ids[split_idx:]
+                    else:
+                        frame_ids = frame_ids[:split_idx]
+                    if not frame_ids:
+                        raise ValueError(
+                            "Temporal split produced empty frame partition "
+                            f"for seq={seq_name} (total={len(common_ids)}, ratio={temporal_ratio}, "
+                            f"split={'val/test' if self.test_mode else 'train'})."
+                        )
                 if len(frame_ids) < self.seq_len and not self.pad_seq:
                     raise ValueError(
                         f"Not enough synchronized frames in {seq_name}: {len(frame_ids)} < seq_len={self.seq_len}"

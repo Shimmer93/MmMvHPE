@@ -12,6 +12,7 @@ The goal is practical:
 
 - `docs/config_guide.md`: how config-driven runs work (`main.py` + YAML).
 - `docs/data_pipeline.md`: datasets, transforms, sample format, and split logic.
+- `docs/panoptic_kinoptic_preprocess.md`: Panoptic Kinoptic preprocessing outputs and split semantics (`temporal_split` vs explicit sequence-level split).
 - `docs/model_pipeline.md`: model composition, heads, metrics, and extension points.
 - `docs/tools.md`: preprocessing and helper scripts with command-line examples.
 - `docs/rerun_visualization.md`: rerun inference visualization scripts and shared helper modules.

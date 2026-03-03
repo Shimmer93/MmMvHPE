@@ -26,7 +26,7 @@ train_dataset:
     convert_depth_to_lidar: true
     split: 'train'
     split_config: 'configs/datasets/panoptic_split_config.yml'
-    split_to_use: 'random_split'
+    split_to_use: 'temporal_split'
     test_mode: false
     seq_len: 3
     seq_step: 1
@@ -51,7 +51,7 @@ val_dataset:
     convert_depth_to_lidar: true
     split: 'test'
     split_config: 'configs/datasets/panoptic_split_config.yml'
-    split_to_use: 'random_split'
+    split_to_use: 'temporal_split'
     test_mode: true
     seq_len: 3
     seq_step: 1
@@ -76,7 +76,7 @@ test_dataset:
     convert_depth_to_lidar: true
     split: 'test'
     split_config: 'configs/datasets/panoptic_split_config.yml'
-    split_to_use: 'random_split'
+    split_to_use: 'temporal_split'
     test_mode: true
     seq_len: 3
     seq_step: 1
