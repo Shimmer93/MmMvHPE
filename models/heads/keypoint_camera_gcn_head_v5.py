@@ -11,6 +11,7 @@ from misc.skeleton import (
     get_adjacency_matrix,
     COCOSkeleton,
     SimpleCOCOSkeleton,
+    PanopticCOCO19Skeleton,
     MMBodySkeleton,
     H36MSkeleton,
     MiliPointSkeleton,
@@ -690,6 +691,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return MMBodySkeleton
         if sf in {"h36m", "mmfi"}:
             return H36MSkeleton
+        if sf in {"panoptic_coco19", "panoptic19"}:
+            return PanopticCOCO19Skeleton
         if sf in {"coco"}:
             return COCOSkeleton
         if sf in {"simple_coco", "simplecoco"}:
@@ -711,6 +714,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return "mmbody"
         if j == H36MSkeleton.num_joints:
             return "h36m"
+        if j == PanopticCOCO19Skeleton.num_joints:
+            return "panoptic_coco19"
         if j == COCOSkeleton.num_joints:
             return "coco"
         if j == SimpleCOCOSkeleton.num_joints:
@@ -733,8 +738,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
             raise ValueError(
                 f"Unknown source skeleton format '{sf}' (configured: '{source_format}') "
                 f"for points shape {tuple(points.shape)}. "
-                "Supported formats: ['smpl', 'mmbody', 'h36m', 'mmfi', 'coco', 'simple_coco', "
-                "'simplecoco', 'milipoint', 'auto']."
+                "Supported formats: ['smpl', 'mmbody', 'h36m', 'mmfi', 'panoptic_coco19', "
+                "'panoptic19', 'coco', 'simple_coco', 'simplecoco', 'milipoint', 'auto']."
             )
 
         if not hasattr(source_skeleton, "to_simple_coco"):

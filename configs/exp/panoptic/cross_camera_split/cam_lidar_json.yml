@@ -209,7 +209,7 @@ camera_head:
     proj_loss_type: "l1"
     gcn_depth: 3
     input_2d_skeleton_format: "coco"
-    input_3d_skeleton_format: "coco"
+    input_3d_skeleton_format: "panoptic_coco19"
     train_branch: "both"
     losses:
       - name: 'CameraLoss'

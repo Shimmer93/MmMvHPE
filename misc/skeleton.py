@@ -244,6 +244,9 @@ class PanopticCOCO19Skeleton:
     left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
     center = 2
 
+    def to_simple_coco(joints):
+        return panopticcoco192simplecoco(joints)
+
 def coco2simplecoco(joints):
     return joints[..., [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], :]
 
@@ -258,6 +261,13 @@ def milipoint2simplecoco(joints):
 
 def smpl2simplecoco(joints):
     return joints[..., [15, 16, 17, 18, 19, 20, 21, 1, 2, 4, 5, 7, 8], :]
+
+def panopticcoco192simplecoco(joints):
+    # SimpleCOCO: [nose, l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist, r_wrist,
+    #              l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle]
+    # PanopticCOCO19: [nose, neck, r_shoulder, r_elbow, r_wrist, l_shoulder, l_elbow, l_wrist,
+    #                  mid_hip, r_hip, r_knee, r_ankle, l_hip, l_knee, l_ankle, r_eye, l_eye, r_ear, l_ear]
+    return joints[..., [0, 5, 2, 6, 3, 7, 4, 12, 9, 13, 10, 14, 11], :]
 
 def itop2simplecoco(joints):
     return joints[..., [0, 3, 2, 5, 4, 7, 6, 10, 9, 12, 11, 14, 13], :]
