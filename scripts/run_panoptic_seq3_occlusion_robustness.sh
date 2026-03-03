@@ -8,7 +8,7 @@ TRAIN_CFG="${TRAIN_CFG:-${REPO_ROOT}/configs/baseline/occlusion_robustness/panop
 TEST_CFG_OCC="${TEST_CFG_OCC:-${REPO_ROOT}/configs/baseline/occlusion_robustness/panoptic_seq3_panoptic_test_occluded.yml}"
 TEST_CFG_UNOCC="${TEST_CFG_UNOCC:-${REPO_ROOT}/configs/baseline/occlusion_robustness/panoptic_seq3_panoptic_test_unoccluded.yml}"
 
-GPUS="${GPUS:-1}"
+GPUS="${GPUS:-2}"
 NUM_NODES="${NUM_NODES:-1}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
