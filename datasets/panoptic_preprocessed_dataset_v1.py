@@ -21,6 +21,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
     Expected layout per sequence under data_root:
       <seq>/rgb/kinect_X/*.jpg
       <seq>/depth/kinect_X/*.png
+      <seq>/depth_fg/kinect_X/*.png (optional foreground-only depth)
       <seq>/gt3d/*.npy
       <seq>/meta/sync_map.json
       <seq>/meta/cameras_kinect_cropped.json
@@ -76,6 +77,9 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         max_skip_invalid_samples: int = 64,
         panoptic_toolbox_root: Optional[str] = None,
         use_panoptic_calibration_extrinsics: bool = False,
+        use_foreground_depth: bool = False,
+        foreground_depth_subdir: str = "depth_fg",
+        anchor_key: Optional[str] = None,
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = osp.abspath(osp.expanduser(data_root))
@@ -123,6 +127,9 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                 f"max_skip_invalid_samples must be > 0, got {self.max_skip_invalid_samples}"
             )
         self.use_panoptic_calibration_extrinsics = bool(use_panoptic_calibration_extrinsics)
+        self.use_foreground_depth = bool(use_foreground_depth)
+        self.foreground_depth_subdir = str(foreground_depth_subdir).strip().strip("/")
+        self.anchor_key = str(anchor_key).strip() if anchor_key is not None else None
 
         if self.gt_unit not in {"m", "cm", "mm"}:
             raise ValueError(f"Unsupported gt_unit={gt_unit}. Expected one of {{'m','cm','mm'}}.")
@@ -130,6 +137,25 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             raise ValueError(f"Unsupported unit={unit}. Expected one of {{'m','mm'}}.")
         if self.output_num_joints <= 0:
             raise ValueError(f"output_num_joints must be > 0, got {self.output_num_joints}")
+        if not self.foreground_depth_subdir:
+            raise ValueError("foreground_depth_subdir must be a non-empty relative path.")
+        fg_subdir_path = Path(self.foreground_depth_subdir)
+        if fg_subdir_path.is_absolute() or ".." in fg_subdir_path.parts:
+            raise ValueError(
+                "foreground_depth_subdir must be a relative path under each sequence directory."
+            )
+        valid_anchor_keys = []
+        if "rgb" in self.modality_names:
+            valid_anchor_keys.append("input_rgb")
+        if "depth" in self.modality_names:
+            valid_anchor_keys.append("input_depth")
+        if "lidar" in self.modality_names or self.convert_depth_to_lidar:
+            valid_anchor_keys.append("input_lidar")
+        if self.anchor_key is not None and self.anchor_key not in set(valid_anchor_keys):
+            raise ValueError(
+                f"Invalid anchor_key={self.anchor_key}. Must be one of {valid_anchor_keys} "
+                f"for modality_names={self.modality_names}, convert_depth_to_lidar={self.convert_depth_to_lidar}."
+            )
 
         self.rgb_cameras = self._normalize_camera_list(rgb_cameras)
         self.depth_cameras = self._normalize_camera_list(depth_cameras)
@@ -223,6 +249,25 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if not root.is_dir():
             raise FileNotFoundError(f"Panoptic preprocessed data_root not found: {root}")
         return sorted([p.name for p in root.iterdir() if p.is_dir()])
+
+    def _resolve_depth_rel_path_for_loading(self, depth_rel: str, seq_name: str) -> Path:
+        rel = Path(depth_rel)
+        if not self.use_foreground_depth:
+            return rel
+        if len(rel.parts) < 3:
+            raise ValueError(
+                f"Invalid depth_path format in sync_map for sequence {seq_name}: {depth_rel}"
+            )
+        fg_parts = Path(self.foreground_depth_subdir).parts
+        if rel.parts[: len(fg_parts)] == fg_parts:
+            return rel
+        src_root = rel.parts[0]
+        if src_root != "depth":
+            raise ValueError(
+                f"Expected sync_map depth_path to start with `depth/` when use_foreground_depth=True, "
+                f"got `{depth_rel}` for sequence {seq_name}."
+            )
+        return Path(self.foreground_depth_subdir).joinpath(*rel.parts[1:])
 
     @staticmethod
     def _split_sequence_tokens(seq_name: str) -> Tuple[str, str]:
@@ -418,12 +463,13 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                             raise ValueError(f"sync_map row must be dict, got {type(row).__name__}")
                         body_frame_id = int(row["body_frame_id"])
                         rgb_rel = row.get("rgb_path")
-                        depth_rel = row.get("depth_path")
-                        if not isinstance(rgb_rel, str) or not isinstance(depth_rel, str):
+                        depth_rel_raw = row.get("depth_path")
+                        if not isinstance(rgb_rel, str) or not isinstance(depth_rel_raw, str):
                             raise ValueError(f"sync_map row missing rgb_path/depth_path in sequence {seq_name}")
+                        depth_rel = self._resolve_depth_rel_path_for_loading(depth_rel_raw, seq_name)
 
                         rgb_parts = Path(rgb_rel).parts
-                        depth_parts = Path(depth_rel).parts
+                        depth_parts = depth_rel.parts
                         if len(rgb_parts) < 3 or len(depth_parts) < 3:
                             raise ValueError(f"Invalid rgb/depth path format in sync_map for sequence {seq_name}")
 
@@ -777,6 +823,17 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         return (pts - pel).astype(np.float32)
 
     @staticmethod
+    def _points_world_to_camera(points: np.ndarray, extrinsic: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points, dtype=np.float32)
+        ext = np.asarray(extrinsic, dtype=np.float32)
+        if ext.shape != (3, 4):
+            raise ValueError(f"Extrinsic must be (3,4), got {ext.shape}")
+        r = ext[:, :3]
+        t = ext[:, 3]
+        bias = t.reshape((1,) * max(0, pts.ndim - 1) + (3,))
+        return (pts @ r.T + bias).astype(np.float32)
+
+    @staticmethod
     def _world_to_new_world_rot(
         points: np.ndarray,
         pelvis: np.ndarray,
@@ -812,6 +869,80 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         t_new = r_wc @ pel + t_wc
         out["extrinsic"] = np.hstack((r_new, t_new)).astype(np.float32)
         return out
+
+    @staticmethod
+    def _camera_to_anchor_world(
+        camera: Dict[str, np.ndarray],
+        anchor_extrinsic: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        out = dict(camera)
+        ext = np.asarray(camera["extrinsic"], dtype=np.float32)
+        anc = np.asarray(anchor_extrinsic, dtype=np.float32)
+        if ext.shape != (3, 4):
+            raise ValueError(f"Camera extrinsic must be (3,4), got {ext.shape}")
+        if anc.shape != (3, 4):
+            raise ValueError(f"Anchor extrinsic must be (3,4), got {anc.shape}")
+        r_wc = ext[:, :3]
+        t_wc = ext[:, 3:4]
+        r_aw = anc[:, :3]
+        t_aw = anc[:, 3:4]
+        r_rel = r_wc @ np.linalg.inv(r_aw)
+        t_rel = t_wc - r_rel @ t_aw
+        out["extrinsic"] = np.hstack((r_rel, t_rel)).astype(np.float32)
+        return out
+
+    @staticmethod
+    def _as_camera_list(
+        camera_entry: Any,
+        field_name: str,
+    ) -> Tuple[List[Dict[str, np.ndarray]], bool]:
+        if isinstance(camera_entry, dict):
+            return [camera_entry], True
+        if isinstance(camera_entry, list):
+            if not all(isinstance(c, dict) for c in camera_entry):
+                raise ValueError(f"{field_name} must be dict or list[dict], got mixed list.")
+            return camera_entry, False
+        raise ValueError(f"{field_name} must be dict or list[dict], got {type(camera_entry).__name__}.")
+
+    def _apply_anchor_coordinates(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        if self.anchor_key is None:
+            return sample
+
+        anchor_field = f"{self.anchor_key.replace('input_', '')}_camera"
+        if anchor_field not in sample:
+            raise ValueError(
+                f"anchor_key={self.anchor_key} requires `{anchor_field}` in sample; "
+                f"available keys={sorted(sample.keys())}"
+            )
+        anchor_cams, _ = self._as_camera_list(sample[anchor_field], anchor_field)
+        if not anchor_cams:
+            raise ValueError(f"{anchor_field} is empty for anchor_key={self.anchor_key}.")
+        anchor_extrinsic = np.asarray(anchor_cams[0]["extrinsic"], dtype=np.float32)
+        if anchor_extrinsic.shape != (3, 4):
+            raise ValueError(
+                f"Anchor extrinsic must be (3,4), got {anchor_extrinsic.shape} for {anchor_field}."
+            )
+
+        for cam_field in ("rgb_camera", "depth_camera", "lidar_camera"):
+            if cam_field not in sample:
+                continue
+            cams, single = self._as_camera_list(sample[cam_field], cam_field)
+            out = [self._camera_to_anchor_world(cam, anchor_extrinsic) for cam in cams]
+            sample[cam_field] = out[0] if single else out
+
+        if "gt_keypoints" in sample:
+            sample["gt_keypoints"] = self._points_world_to_camera(
+                sample["gt_keypoints"], anchor_extrinsic
+            )
+        if "gt_keypoints_seq" in sample:
+            sample["gt_keypoints_seq"] = self._points_world_to_camera(
+                sample["gt_keypoints_seq"], anchor_extrinsic
+            )
+        if "gt_pelvis" in sample:
+            sample["gt_pelvis"] = self._points_world_to_camera(
+                sample["gt_pelvis"], anchor_extrinsic
+            )
+        return sample
 
     @staticmethod
     def _normalize_vec(v: np.ndarray, eps: float = 1e-6) -> np.ndarray:
@@ -1052,6 +1183,9 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
                         for cam in depth_cameras
                     ]
                 sample["depth_camera"] = self._maybe_single(depth_cameras)
+
+        if self.anchor_key is not None:
+            sample = self._apply_anchor_coordinates(sample)
 
         sample = self.pipeline(sample)
         return sample

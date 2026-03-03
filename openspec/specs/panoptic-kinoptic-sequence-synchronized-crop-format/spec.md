@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the expected sequence-preserving, synchronized, and cropped output contract for preprocessed Panoptic Kinoptic data consumed by MMHPE datasets.
+
+## Requirements
 
 ### Requirement: Sequence-preserving output layout
 Preprocessed Panoptic Kinoptic outputs SHALL remain grouped by sequence and SHALL NOT mix frames from different sequences.
@@ -30,3 +34,12 @@ Each processed sequence SHALL include metadata files describing synchronized fra
 #### Scenario: Metadata presence
 - **WHEN** a sequence finishes preprocessing
 - **THEN** sequence-local metadata files include synchronized frame mapping and crop parameter records
+
+### Requirement: Foreground depth compatibility for preprocessed Panoptic loading
+Preprocessed Panoptic sequence layout SHALL support optional foreground-only depth loading without requiring sync-map regeneration.
+
+#### Scenario: Foreground depth subdirectory remapping
+- **WHEN** dataset loading enables foreground depth mode with a configured subdirectory name
+- **THEN** depth frame resolution uses synchronized frame IDs from `meta/sync_map.json`
+- **AND** depth files are resolved from `<sequence>/<foreground_depth_subdir>/kinect_X/<frame_id>.png`
+- **AND** missing remapped files fail fast with explicit file-path errors

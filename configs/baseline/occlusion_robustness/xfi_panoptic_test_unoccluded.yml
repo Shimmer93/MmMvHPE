@@ -1,0 +1,203 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 32
+epochs: &epochs 20
+detect_anomaly: true
+debug_log_interval: 200
+unoccluded_seqs: &unoccluded_seqs [161029_flute1, 170307_dance5, 171026_pose1, 171026_pose2, 171204_pose1, 171204_pose2, 171204_pose3, 171204_pose4, 171204_pose5, 171204_pose6]
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    rgb_cameras_per_sample: 1
+    depth_cameras_per_sample: 1
+    lidar_cameras_per_sample: 1
+    split: "test"
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    convert_depth_to_lidar: true
+    use_foreground_depth: true
+    foreground_depth_subdir: 'depth_fg'
+    anchor_key: 'input_rgb'
+    sequence_allowlist: *unoccluded_seqs
+    strict_validation: true
+val_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    rgb_cameras_per_sample: 1
+    depth_cameras_per_sample: 1
+    lidar_cameras_per_sample: 1
+    split: "test"
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    convert_depth_to_lidar: true
+    use_foreground_depth: true
+    foreground_depth_subdir: 'depth_fg'
+    anchor_key: 'input_rgb'
+    sequence_allowlist: *unoccluded_seqs
+    strict_validation: true
+test_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    depth_cameras: ['kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'kinect_010']
+    rgb_cameras_per_sample: 1
+    depth_cameras_per_sample: 1
+    lidar_cameras_per_sample: 1
+    split: "test"
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    convert_depth_to_lidar: true
+    use_foreground_depth: true
+    foreground_depth_subdir: 'depth_fg'
+    anchor_key: 'input_rgb'
+    sequence_allowlist: *unoccluded_seqs
+    strict_validation: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0005
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 4
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: XFi
+backbone_rgb:
+  name: 'XFiResNet'
+  params:
+    block_type: 'Block'
+    layer_list: [2, 2, 2, 2]
+    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/RGB_Resnet18.pt'
+  has_temporal: false
+backbone_lidar:
+  name: 'XFiPointTransformerEncoderLidar'
+  params:
+    input_dim: 3
+    nblocks: 5
+    nneighbor: 16
+    transformer_dim: 512
+    n_points: 1024
+    # pretrained: '/home/zpengac/mmhpe/X-Fi/MMFi_HPE/backbones/lidar_all_random.pt'
+  has_temporal: false
+aggregator:
+  name: 'XFiAggregator'
+  params:
+    active_modalities: ['rgb', 'lidar']
+    input_dim: 512
+    output_dim: 512
+    num_modalities: 4
+    dim_expansion: 2
+    hidden_dim: 512
+    num_heads: 8
+    dim_heads: 64
+    model_depth: 4
+keypoint_head:
+  name: 'XFiRegressionHead'
+  params:
+    emb_size: 512
+    num_classes: 57  # 19 joints * 3 coordinates
+    losses:
+      - name: 'MSELoss'
+        params: null
+        weight: 1.0
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      affix: null
+  - name: 'PAMPJPE'
+    params:
+      affix: null
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: VideoResize
+    params:
+      size: [480, 640]
+      keep_ratio: false
+      keys: ['input_rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'panoptic_coco19'  # Skeleton format for visualization
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]  # ImageNet mean in 0-255 range
+  rgb_std: [58.395, 57.12, 57.375]      # ImageNet std in 0-255 range
+  depth_mean: [0.0]
+  depth_std: [255.0]  # zero_one normalization: (x - 0) / 255
