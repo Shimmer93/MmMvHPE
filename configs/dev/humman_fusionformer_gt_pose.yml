@@ -1,0 +1,148 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 32
+epochs: &epochs 50
+
+detect_anomaly: true
+debug_log_interval: 200
+
+# --------------------------------------
+# Dataset parameters
+# --------------------------------------
+train_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: &data_root '/opt/data/humman'
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    split: "train"
+    seq_len: 8
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    return_keypoints_sequence: true
+val_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    split: "test"
+    seq_len: 8
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    return_keypoints_sequence: true
+test_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+    depth_cameras: ['kinect_000', 'kinect_001', 'kinect_002', 'kinect_003', 'kinect_004', 'kinect_005', 'kinect_006', 'kinect_007', 'kinect_008', 'kinect_009', 'iphone']
+      split: "test"
+    seq_len: 8
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    return_keypoints_sequence: true
+# --------------------------------------
+# Optimizer parameters
+# --------------------------------------
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0001
+  weight_decay: 0.00001
+# --------------------------------------
+# Learning rate scheduler parameters
+# --------------------------------------
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 1
+  max_epochs: *epochs
+  warmup_start_lr: 0.00001
+  eta_min: 0.00001
+# --------------------------------------
+# Model parameters
+# --------------------------------------
+model_name: FusionFormerModalityBaseline
+rgb_input_key: input_pose2d_rgb
+depth_input_key: input_pose3d_depth
+backbone_rgb:
+  name: 'Pose2DBackbone'
+  params: {}
+  has_temporal: true
+backbone_depth:
+  name: 'Pose3DBackbone'
+  params: {}
+  has_temporal: true
+aggregator:
+  name: 'FusionFormerModalityAggregator'
+  params:
+    num_joints: 24
+    joint_embed_dim: 128
+    pose_embed_dim: 256
+    depth: 2
+    num_heads: 4
+    mlp_ratio: 4.0
+    num_blocks: 2
+    seq_len: 1
+    max_modalities: 2
+keypoint_head:
+  name: 'DirectKeypointHead'
+  params:
+    losses:
+      - name: 'KeypointLoss'
+        params:
+          loss_type: 'MSE'
+          root_joint_idx: 0
+        weight: 1.0
+        alias: 'KeypointMSELoss'
+# --------------------------------------
+# Metrics parameters
+# --------------------------------------
+metrics:
+  - name: 'MPJPE'
+    params:
+      use_smpl: false
+      root_joint_idx: 0
+  - name: 'PAMPJPE'
+    params:
+      use_smpl: false
+      root_joint_idx: 0
+# --------------------------------------
+# Augmentation parameters
+# --------------------------------------
+train_pipeline: &train_pipeline
+  - name: AttachGTPoseInputs
+    params:
+      use_rgb: true
+      use_depth: true
+      rgb_key: 'input_pose2d_rgb'
+      depth_key: 'input_pose3d_depth'
+      drop_raw_inputs: true
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'smpl'
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0]
+  depth_std: [1.0]

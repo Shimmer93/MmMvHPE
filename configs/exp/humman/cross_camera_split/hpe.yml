@@ -68,7 +68,7 @@ test_dataset:
 # --------------------------------------
 optim_name: AdamW
 optim_params:
-  lr: &lr 0.0001
+  lr: &lr 0.0002
   weight_decay: 0.00001
 # --------------------------------------
 # Learning rate scheduler parameters
@@ -77,8 +77,8 @@ sched_name: LinearWarmupCosineAnnealingLR
 sched_params:
   warmup_epochs: 4
   max_epochs: *epochs
-  warmup_start_lr: 0.00001
-  eta_min: 0.00001
+  warmup_start_lr: 0.00002
+  eta_min: 0.00002
 # --------------------------------------
 # Model parameters
 # --------------------------------------
@@ -128,6 +128,7 @@ aggregator:
     ffn_bias: true
     qk_norm: true
     init_values: 0.01
+    gcn_norm_type: 'gn'
 keypoint_head:
   name: 'RegressionKeypointHeadV5'
   params:

@@ -8,10 +8,140 @@ import shutil
 import tempfile
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+import cdflib
 
 import sys
 import os.path as osp
 sys.path.append(osp.dirname(osp.dirname(osp.abspath(__file__))))
+from datasets.h36m_metadata import load_h36m_metadata
+
+
+H36M_JOINTS_TO_REMOVE = [4, 5, 9, 10, 11, 16, 20, 21, 22, 23, 24, 28, 29, 30, 31]
+
+
+def _load_h36m_pose_sequence(h36m_root, metadata, subject, action, subaction, camera_idx):
+    basename = metadata.get_base_filename(
+        subject,
+        "{:d}".format(action),
+        "{:d}".format(subaction),
+        metadata.camera_ids[camera_idx - 1],
+    )
+    annotname = basename + ".cdf"
+    pose_file = osp.join(
+        h36m_root,
+        "extracted",
+        subject,
+        "MyPoseFeatures",
+        "D3_Positions_mono_universal",
+        annotname,
+    )
+    if not osp.exists(pose_file):
+        raise FileNotFoundError(f"Pose file not found: {pose_file}")
+    cdf = cdflib.CDF(pose_file)
+    pose_data = np.array(cdf.varget("Pose"))
+    if len(pose_data.shape) == 3 and pose_data.shape[2] == 96:
+        pose_data = pose_data.transpose(1, 0, 2).reshape(pose_data.shape[1], 32, 3)
+    elif len(pose_data.shape) == 3:
+        pass
+    else:
+        pose_data = pose_data.reshape(-1, 32, 3)
+    return pose_data
+
+
+def _process_single_h36m_sequence(args):
+    seq_dir, subject, action_id, subaction_id, camera_id, out_dir, rgb_out_size, unit, max_frames = args
+    frame_files = sorted(glob(osp.join(seq_dir, "*.jpg")))
+    if max_frames is not None:
+        frame_files = frame_files[:max_frames]
+    if not frame_files:
+        return
+
+    metadata = load_h36m_metadata(osp.join(osp.dirname(osp.dirname(seq_dir)), "metadata.xml"))
+    pose_data = _load_h36m_pose_sequence(
+        osp.dirname(osp.dirname(seq_dir)),
+        metadata,
+        subject,
+        action_id,
+        subaction_id,
+        camera_id,
+    )
+
+    rgb_out_dir = osp.join(out_dir, "rgb")
+    gt_out_dir = osp.join(out_dir, "gt3d")
+    os.makedirs(rgb_out_dir, exist_ok=True)
+    os.makedirs(gt_out_dir, exist_ok=True)
+
+    for frame_path in frame_files:
+        basename = osp.basename(frame_path).split(".")[0]
+        frame_idx = int(basename.split("_")[-1]) - 1
+        if frame_idx < 0 or frame_idx >= pose_data.shape[0]:
+            continue
+        out_rgb_fn = osp.join(rgb_out_dir, basename + ".jpg")
+        out_gt_fn = osp.join(gt_out_dir, basename + ".npy")
+
+        if os.path.exists(out_rgb_fn) and os.path.exists(out_gt_fn):
+            continue
+
+        rgb_img = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+        if rgb_img is None:
+            continue
+        rgb_img = cv2.resize(rgb_img, rgb_out_size)
+        cv2.imwrite(out_rgb_fn, rgb_img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+
+        joints = pose_data[frame_idx]
+        joints = np.delete(joints, H36M_JOINTS_TO_REMOVE, axis=0)
+        if unit == "m":
+            joints = joints / 1000.0
+        np.save(out_gt_fn, joints.astype(np.float16))
+
+
+def preprocess_h36m(
+    root_dir,
+    out_dir="/opt/data/h36m_preprocessed",
+    rgb_out_size=(640, 480),
+    num_workers=None,
+    unit="m",
+    max_frames=None,
+    max_sequences=None,
+):
+    images_root = osp.join(root_dir, "images")
+    metadata_path = osp.join(root_dir, "metadata.xml")
+    camera_path = osp.join(root_dir, "camera-parameters.json")
+
+    if num_workers is None or num_workers <= 0:
+        num_workers = max(1, cpu_count() - 1)
+
+    os.makedirs(out_dir, exist_ok=True)
+    for subdir in ["rgb", "gt3d"]:
+        os.makedirs(osp.join(out_dir, subdir), exist_ok=True)
+
+    if osp.exists(metadata_path):
+        shutil.copyfile(metadata_path, osp.join(out_dir, "metadata.xml"))
+    if osp.exists(camera_path):
+        shutil.copyfile(camera_path, osp.join(out_dir, "camera-parameters.json"))
+
+    seq_dirs = glob(osp.join(images_root, "s_*_act_*"))
+    args_list = []
+    for seq_dir in seq_dirs:
+        seq_name = osp.basename(seq_dir)
+        parts = seq_name.split("_")
+        if len(parts) < 7:
+            continue
+        subject_id = parts[1]
+        action_id = int(parts[3])
+        subaction_id = int(parts[5])
+        camera_id = int(parts[7] if len(parts) > 7 else parts[6])
+        subject = f"S{int(subject_id)}"
+        args_list.append(
+            (seq_dir, subject, action_id, subaction_id, camera_id, out_dir, rgb_out_size, unit, max_frames)
+        )
+
+    if max_sequences is not None:
+        args_list = args_list[:max_sequences]
+
+    with Pool(processes=num_workers) as pool:
+        for _ in tqdm(pool.imap_unordered(_process_single_h36m_sequence, args_list), total=len(args_list)):
+            pass
 
 def _process_single_sample_mmfi(args):
     """Worker function to process one RGB/Depth/LiDAR/mmWave sample."""
@@ -699,21 +829,46 @@ def preprocess_humman_cropped(
             )
             shutil.rmtree(stage_root, ignore_errors=True)
 if __name__ == '__main__':
-    # root_dir = '/data/shared/MMFi_Dataset'
-    # rgb_dir = '/data/shared/MMFi_Defaced_RGB'
-    # out_dir = 'data/mmfi'
-    # rgb_out_size = (256, 192)
-    # depth_out_size = (256, 192)
+    import argparse
 
-    # preprocess_mmfi(root_dir, rgb_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16)
+    parser = argparse.ArgumentParser(description="Preprocess datasets for SSD-friendly loading.")
+    parser.add_argument('--dataset', type=str, default='humman_cropped',
+                        choices=['mmfi', 'humman', 'humman_cropped', 'h36m'])
+    parser.add_argument('--root_dir', type=str, default=None)
+    parser.add_argument('--rgb_dir', type=str, default=None)
+    parser.add_argument('--out_dir', type=str, default=None)
+    parser.add_argument('--rgb_w', type=int, default=640)
+    parser.add_argument('--rgb_h', type=int, default=480)
+    parser.add_argument('--depth_w', type=int, default=224)
+    parser.add_argument('--depth_h', type=int, default=224)
+    parser.add_argument('--num_workers', type=int, default=16)
+    parser.add_argument('--max_frames', type=int, default=None,
+                        help='Limit frames per sequence for dry runs.')
+    parser.add_argument('--max_sequences', type=int, default=None,
+                        help='Limit number of sequences for dry runs.')
+    args = parser.parse_args()
 
-    root_dir = '/data/shared/humman_release_v1.0_point'
-    out_dir = '/opt/data/humman_cropped'
-    rgb_out_size = (224, 224)
-    depth_out_size = (224, 224)
-    # rgb_out_size = (320, 180)
-    # depth_out_size = (320, 288)
-
-    # preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir=None)
-    # preprocess_humman(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')
-    preprocess_humman_cropped(root_dir, out_dir, rgb_out_size, depth_out_size, num_workers=16, staging_dir='data/temp')
+    if args.dataset == 'mmfi':
+        root_dir = args.root_dir or '/data/shared/MMFi_Dataset'
+        rgb_dir = args.rgb_dir or '/data/shared/MMFi_Defaced_RGB'
+        out_dir = args.out_dir or 'data/mmfi'
+        preprocess_mmfi(root_dir, rgb_dir, out_dir, (args.rgb_w, args.rgb_h), (args.depth_w, args.depth_h), num_workers=args.num_workers)
+    elif args.dataset == 'humman':
+        root_dir = args.root_dir or '/data/shared/humman_release_v1.0_point'
+        out_dir = args.out_dir or '/opt/data/humman'
+        preprocess_humman(root_dir, out_dir, (args.rgb_w, args.rgb_h), (args.depth_w, args.depth_h), num_workers=args.num_workers, staging_dir=None)
+    elif args.dataset == 'humman_cropped':
+        root_dir = args.root_dir or '/data/shared/humman_release_v1.0_point'
+        out_dir = args.out_dir or '/opt/data/humman_cropped'
+        preprocess_humman_cropped(root_dir, out_dir, (args.rgb_w, args.rgb_h), (args.depth_w, args.depth_h), num_workers=args.num_workers, staging_dir='data/temp')
+    elif args.dataset == 'h36m':
+        root_dir = args.root_dir or '/data/shared/H36M-Toolbox'
+        out_dir = args.out_dir or '/opt/data/h36m_preprocessed'
+        preprocess_h36m(
+            root_dir,
+            out_dir,
+            (args.rgb_w, args.rgb_h),
+            num_workers=args.num_workers,
+            max_frames=args.max_frames,
+            max_sequences=args.max_sequences,
+        )

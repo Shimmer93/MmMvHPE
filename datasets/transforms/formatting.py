@@ -26,12 +26,15 @@ class ToTensor():
             if key.endswith('_affine') or key in ['gt_keypoints', 'gt_smpl_params'] or key.startswith('gt_keypoints'):
                 sample[key] = self._array_to_tensor(sample[key])
             elif key.startswith('input_'):
-                sample[key] = self._as_tensor_input(sample[key])
+                if isinstance(sample[key], np.ndarray):
+                    sample[key] = self._array_to_tensor(sample[key])
+                else:
+                    sample[key] = self._list_to_tensor(sample[key])
                 if key.startswith('input_rgb'):
-                    if sample[key].ndim == 4:  # T H W C
-                        sample[key] = sample[key].permute(0, 3, 1, 2)  # T C H W
-                    elif sample[key].ndim == 5:  # V T H W C
-                        sample[key] = sample[key].permute(0, 1, 4, 2, 3)  # V T C H W
+                    if sample[key].ndim == 4:
+                        sample[key] = sample[key].permute(0, 3, 1, 2)  # T H W C -> T C H W
+                    elif sample[key].ndim == 5:
+                        sample[key] = sample[key].permute(0, 1, 4, 2, 3)  # V T H W C -> V T C H W
                 elif key.startswith('input_depth'):
                     # Single-camera grayscale: T H W -> T C H W
                     if sample[key].ndim == 3:

@@ -221,6 +221,29 @@ class SMPLSkeleton:
     def to_simple_coco(joints):
         return smpl2simplecoco(joints)
 
+
+class PanopticCOCO19Skeleton:
+    # Panoptic body19 (OpenPose-style): Nose/Neck/Shoulders/Elbows/Wrists/MidHip/Hips/Knees/Ankles/Eyes/Ears
+    joint_names = [
+        "nose", "neck", "right_shoulder", "right_elbow", "right_wrist",
+        "left_shoulder", "left_elbow", "left_wrist", "mid_hip", "right_hip",
+        "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle",
+        "right_eye", "left_eye", "right_ear", "left_ear",
+    ]
+    # Match Panoptic toolbox glViewer SMC19 connectivity exactly (g_connMat_smc19, zero-based).
+    bones = [
+        [0, 1], [0, 3], [3, 4], [4, 5], [0, 2], [2, 6], [6, 7], [7, 8],
+        [2, 12], [12, 13], [13, 14], [0, 9], [9, 10], [10, 11],
+        [1, 15], [15, 16], [1, 17], [17, 18],
+    ]
+    left_indices = [5, 6, 7, 12, 13, 14, 16, 18]
+    right_indices = [2, 3, 4, 9, 10, 11, 15, 17]
+
+    num_joints = len(joint_names)
+    flip_indices = get_flip_indices(num_joints, left_indices, right_indices)
+    left_bones, right_bones = get_left_right_bones(bones, left_indices, right_indices, flip_indices)
+    center = 2
+
 def coco2simplecoco(joints):
     return joints[..., [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], :]
 

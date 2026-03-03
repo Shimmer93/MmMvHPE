@@ -1,9 +1,16 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import torch
 from matplotlib.collections import PolyCollection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from .skeleton import JOINT_COLOR_MAP, H36MSkeleton, COCOSkeleton, SMPLSkeleton
+from .skeleton import (
+    JOINT_COLOR_MAP,
+    H36MSkeleton,
+    COCOSkeleton,
+    SMPLSkeleton,
+    PanopticCOCO19Skeleton,
+)
 
 # SMPL model color constants
 SMPL_MESH_COLOR = [0.65, 0.75, 0.85]  # Light blue for mesh
@@ -60,12 +67,24 @@ def _split_smpl_params(smpl_params):
 def _get_pelvis_from_keypoints(keypoints, skl_format):
     if keypoints is None or keypoints.shape[0] == 0:
         return None
+    if skl_format == 'panoptic_coco19':
+        if keypoints.shape[0] > 2:
+            return keypoints[2]
     if skl_format == 'coco':
         left_hip = 11
         right_hip = 12
         if keypoints.shape[0] > right_hip:
             return 0.5 * (keypoints[left_hip] + keypoints[right_hip])
     return keypoints[0]
+
+
+def _slice_keypoints_for_format(keypoints, skl_format):
+    if keypoints is None:
+        return None
+    arr = np.asarray(keypoints)
+    if skl_format == 'panoptic_coco19' and arr.shape[0] >= 19:
+        return arr[:19]
+    return arr
 
 def _get_pelvis_from_smpl_joints(joints, skl_format):
     if joints is None or joints.shape[0] == 0:
@@ -96,6 +115,8 @@ def _extract_last_frame(seq):
             seq = seq[0]
         frame = seq[-1]
         if isinstance(frame, torch.Tensor):
+            if frame.dim() == 4:  # T, C, H, W
+                frame = frame[-1]
             if frame.dim() == 3 and frame.shape[0] in (1, 3):
                 frame = frame.permute(1, 2, 0)
             return frame.cpu().numpy()
@@ -398,16 +419,22 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     """
     # Lazy load SMPL model if needed
     smpl_model = None
-    print("[DEBUG]: The smpl_model_path of visualize_multimodal_sample is:", smpl_model_path)
     # needs_smpl = ('pred_smpl' in pred_dict or 
     #               ('gt_smpl' in batch and 'gt_vertices' not in batch))
     needs_smpl = ('pred_smpl_params' in pred_dict) or ('gt_smpl_params' in batch)
     
     if needs_smpl:
-        from models.smpl import SMPL
-        smpl_model = SMPL(model_path=smpl_model_path)
-        smpl_model = smpl_model.to(device)
-        smpl_model.eval()
+        if smpl_model_path is None:
+            smpl_model_path = 'weights/smpl/SMPL_NEUTRAL.pkl'
+        if os.path.exists(smpl_model_path):
+            from models.smpl import SMPL
+            smpl_model = SMPL(model_path=smpl_model_path)
+            smpl_model = smpl_model.to(device)
+            smpl_model.eval()
+        else:
+            print(
+                f"[WARN] Skipping SMPL mesh visualization because SMPL model was not found at: {smpl_model_path}"
+            )
     
     # Plot the following subplots:
     # Row 1: RGB, Depth, LiDAR, mmWave (if not available, leave blank)
@@ -422,6 +449,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         bones = COCOSkeleton.bones
     elif skl_format == 'smpl':
         bones = SMPLSkeleton.bones
+    elif skl_format == 'panoptic_coco19':
+        bones = PanopticCOCO19Skeleton.bones
 
     fig = plt.figure(figsize=(16, 16))
     axes = []
@@ -508,6 +537,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         gt_keypoints_3d = gt_keypoints_3d.cpu().numpy()
     else:
         gt_keypoints_3d = np.asarray(gt_keypoints_3d)
+    gt_keypoints_3d = _slice_keypoints_for_format(gt_keypoints_3d, skl_format)
     
     # Load predicted keypoints - handle both SMPL head and keypoint head
     pred_keypoints_3d = None
@@ -525,6 +555,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             pred_keypoints_3d = pred_keypoints_3d.cpu().numpy()
         else:
             pred_keypoints_3d = np.asarray(pred_keypoints_3d)
+    pred_keypoints_3d = _slice_keypoints_for_format(pred_keypoints_3d, skl_format)
     
     
     if pred_keypoints_3d is None:
@@ -732,11 +763,11 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     if pred_keypoints_available and rgb_image is not None and 'rgb_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['rgb_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
-            gt_keypoints_cam = _to_camera_coords(gt_keypoints_centered.copy(), extrinsic)
+            gt_keypoints_cam = _to_camera_coords(gt_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(gt_keypoints_cam, intrinsic)
 
-            if gt_vertices_centered is not None and gt_faces is not None:
-                gt_vertices_cam = _to_camera_coords(gt_vertices_centered.copy(), extrinsic)
+            if gt_vertices is not None and gt_faces is not None:
+                gt_vertices_cam = _to_camera_coords(gt_vertices.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     rgb_image.copy(),
@@ -757,7 +788,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     if pred_keypoints_available and depth_image is not None and 'depth_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['depth_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
-            gt_keypoints_cam = _to_camera_coords(gt_keypoints_centered.copy(), extrinsic)
+            gt_keypoints_cam = _to_camera_coords(gt_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(gt_keypoints_cam, intrinsic)
 
             depth_for_overlay = depth_image.copy()
@@ -774,8 +805,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 depth_image_norm = depth_for_overlay.astype(np.uint8)
             depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
 
-            if gt_vertices_centered is not None and gt_faces is not None:
-                gt_vertices_cam = _to_camera_coords(gt_vertices_centered.copy(), extrinsic)
+            if gt_vertices is not None and gt_faces is not None:
+                gt_vertices_cam = _to_camera_coords(gt_vertices.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     depth_image_rgb,
@@ -796,11 +827,11 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     if rgb_image is not None and 'rgb_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['rgb_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
-            pred_keypoints_cam = _to_camera_coords(pred_keypoints_centered.copy(), extrinsic)
+            pred_keypoints_cam = _to_camera_coords(pred_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(pred_keypoints_cam, intrinsic)
 
-            if pred_vertices_centered is not None and pred_faces is not None:
-                pred_vertices_cam = _to_camera_coords(pred_vertices_centered.copy(), extrinsic)
+            if pred_vertices is not None and pred_faces is not None:
+                pred_vertices_cam = _to_camera_coords(pred_vertices.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     rgb_image.copy(),
@@ -822,7 +853,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
     if depth_image is not None and 'depth_camera' in batch:
         intrinsic, extrinsic = _get_camera_matrices(batch['depth_camera'][sample_idx])
         if intrinsic is not None and extrinsic is not None:
-            pred_keypoints_cam = _to_camera_coords(pred_keypoints_centered.copy(), extrinsic)
+            pred_keypoints_cam = _to_camera_coords(pred_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(pred_keypoints_cam, intrinsic)
 
             depth_for_overlay = depth_image.copy()
@@ -839,8 +870,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 depth_image_norm = depth_for_overlay.astype(np.uint8)
             depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
 
-            if pred_vertices_centered is not None and pred_faces is not None:
-                pred_vertices_cam = _to_camera_coords(pred_vertices_centered.copy(), extrinsic)
+            if pred_vertices is not None and pred_faces is not None:
+                pred_vertices_cam = _to_camera_coords(pred_vertices.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     depth_image_rgb,

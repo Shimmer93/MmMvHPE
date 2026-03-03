@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
+import warnings
+
+CANONICAL_MODALITIES = ("rgb", "depth", "mmwave", "lidar")
 
 def index_points(points, idx):
     """
@@ -92,47 +95,45 @@ class linear_projector(nn.Module):
             nn.BatchNorm1d(output_dim),
             nn.ReLU(),
         )
-    def forward(self, feature_list, lidar_points, modality_list):
-        # example:
-        # feature_list = [rgb_feature, mmwave_feature, lidar_feature]
-        # modality_list = [True, False, True, True]
-        feature_flag = 0
-        for i in range(len(modality_list)):
-            if modality_list[i] == True:
-                if i == 0:
-                    rgb_feature = feature_list[feature_flag]
-                elif i == 1:
-                    depth_feature = feature_list[feature_flag]
-                elif i == 2:
-                    mmwave_feature = feature_list[feature_flag]
-                elif i == 3:
-                    lidar_feature = feature_list[feature_flag]
-                feature_flag += 1
+    def forward(self, feature_map, lidar_points, active_modalities):
+        if not active_modalities:
+            raise ValueError("At least one modality should be selected.")
+
+        projected_feature_list = []
+        for modality in active_modalities:
+            feature = feature_map.get(modality, None)
+            if feature is None:
+                raise RuntimeError(
+                    f"Missing prepared feature for modality '{modality}' during projection."
+                )
+            if modality == "rgb":
+                projected_feature_list.append(self.rgb_linear_projection(feature.permute(0, 2, 1)))
+            elif modality == "depth":
+                projected_feature_list.append(self.depth_linear_projection(feature.permute(0, 2, 1)))
+            elif modality == "mmwave":
+                projected_feature_list.append(self.mmwave_linear_projection(feature.permute(0, 2, 1)))
+            elif modality == "lidar":
+                projected_feature_list.append(self.lidar_linear_projection(feature.permute(0, 2, 1)))
             else:
-                continue
-        if sum (modality_list) == 0:
-            raise ValueError("At least one modality should be selected")
-        else:
-            projected_feature_list = []
-            if modality_list[0] == True:
-                projected_feature_list.append(self.rgb_linear_projection(rgb_feature.permute(0, 2, 1)))
-            if modality_list[1] == True:
-                projected_feature_list.append(self.depth_linear_projection(depth_feature.permute(0, 2, 1)))
-            if modality_list[2] == True:
-                projected_feature_list.append(self.mmwave_linear_projection(mmwave_feature.permute(0, 2, 1)))
-            if modality_list[3] == True:
-                projected_feature_list.append(self.lidar_linear_projection(lidar_feature.permute(0, 2, 1)))
-            projected_feature = torch.cat(projected_feature_list, dim=2).permute(0, 2, 1)
-            "projected_feature shape: B, 32*n, 512"
-            if modality_list[3] == True:
-                feature_shape = projected_feature.shape
-                new_xyz = selective_pos_enc(lidar_points, feature_shape[1])
-                'new_xyz shape: B, 32, 3'
-                pos_enc = self.pos_enc_layer(new_xyz.permute(0, 2, 1)).permute(0, 2, 1)
-                'pos_enc shape: B, 32, 512'
-                projected_feature += pos_enc
-            else:
-                pass
+                raise ValueError(f"Unsupported modality '{modality}'.")
+
+        projected_feature = torch.cat(projected_feature_list, dim=2).permute(0, 2, 1)
+        # projected_feature shape: B, 32*n, 512
+        if "lidar" in active_modalities:
+            if lidar_points is None:
+                raise RuntimeError(
+                    "LiDAR positional encoding requires `input_lidar`, but it is missing."
+                )
+            if lidar_points.dim() != 3 or lidar_points.shape[-1] != 3:
+                raise RuntimeError(
+                    f"`input_lidar` for positional encoding must be shape [BT, N, 3], got {tuple(lidar_points.shape)}."
+                )
+            feature_shape = projected_feature.shape
+            new_xyz = selective_pos_enc(lidar_points, feature_shape[1])
+            # new_xyz shape: B, 32*n, 3
+            pos_enc = self.pos_enc_layer(new_xyz.permute(0, 2, 1)).permute(0, 2, 1)
+            # pos_enc shape: B, 32*n, 512
+            projected_feature += pos_enc
         return projected_feature
     
 class MultiHeadAttention(nn.Module):
@@ -323,58 +324,153 @@ class X_Fusion(nn.Module):
         return feature_embedding
 
 class XFiAggregator(nn.Module):
-    def __init__(self, input_dim, output_dim, num_modalities=4, dim_expansion=2, hidden_dim=1024, num_heads=8, dim_heads=64, model_depth=2):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        num_modalities=4,
+        dim_expansion=2,
+        hidden_dim=1024,
+        num_heads=8,
+        dim_heads=64,
+        model_depth=2,
+        active_modalities=None,
+    ):
         super(XFiAggregator, self).__init__()
+        if int(num_modalities) != len(CANONICAL_MODALITIES):
+            raise ValueError(
+                f"XFiAggregator expects num_modalities={len(CANONICAL_MODALITIES)} "
+                f"for canonical mapping {CANONICAL_MODALITIES}, got {num_modalities}."
+            )
         self.input_dim = input_dim
+        self.canonical_modalities = tuple(CANONICAL_MODALITIES)
+        self._warned_implicit_modalities = False
+        self.active_modalities = self._validate_and_canonicalize_active_modalities(active_modalities)
         self.linear_projector = linear_projector(input_dim, output_dim)
-        self.x_fusion = X_Fusion(num_modalities, output_dim, dim_expansion, hidden_dim, num_feature=32, num_heads=num_heads, dim_heads=dim_heads, model_depth=model_depth)
+        self.x_fusion = X_Fusion(
+            len(self.canonical_modalities),
+            output_dim,
+            dim_expansion,
+            hidden_dim,
+            num_feature=32,
+            num_heads=num_heads,
+            dim_heads=dim_heads,
+            model_depth=model_depth,
+        )
+
+    def _validate_and_canonicalize_active_modalities(self, active_modalities):
+        if active_modalities is None:
+            return None
+        if not isinstance(active_modalities, (list, tuple)):
+            raise ValueError(
+                "`active_modalities` must be a list/tuple of modality names, "
+                f"got {type(active_modalities).__name__}."
+            )
+        requested = [str(x).strip().lower() for x in active_modalities]
+        if len(requested) == 0:
+            raise ValueError("`active_modalities` cannot be empty.")
+        duplicates = [m for m in set(requested) if requested.count(m) > 1]
+        if duplicates:
+            raise ValueError(
+                f"`active_modalities` contains duplicates: {sorted(duplicates)}."
+            )
+        unknown = [m for m in requested if m not in self.canonical_modalities]
+        if unknown:
+            raise ValueError(
+                f"Unsupported modalities in `active_modalities`: {sorted(unknown)}. "
+                f"Supported: {list(self.canonical_modalities)}."
+            )
+        # Always convert to canonical order internally.
+        requested_set = set(requested)
+        return [m for m in self.canonical_modalities if m in requested_set]
+
+    def _resolve_active_modalities(self, feature_map):
+        if self.active_modalities is not None:
+            return list(self.active_modalities)
+        inferred = [m for m in self.canonical_modalities if feature_map.get(m, None) is not None]
+        if not inferred:
+            raise RuntimeError(
+                "Failed to infer active modalities because all modality features are None. "
+                "Set `aggregator.params.active_modalities` explicitly."
+            )
+        if not self._warned_implicit_modalities:
+            warnings.warn(
+                "XFiAggregator inferred active_modalities from non-None features. "
+                "Please set `aggregator.params.active_modalities` explicitly in config."
+            )
+            self._warned_implicit_modalities = True
+        return inferred
+
+    def _prepare_image_feature(self, feature, modality):
+        if feature is None:
+            return None
+        if feature.dim() != 5:
+            raise RuntimeError(
+                f"{modality} feature must be 5D [B, T, C, H, W], got {tuple(feature.shape)}."
+            )
+        b, t, c, h, w = feature.shape
+        if c % self.input_dim != 0:
+            raise RuntimeError(
+                f"{modality} feature channel dimension ({c}) must be divisible by input_dim ({self.input_dim})."
+            )
+        feature = feature.reshape(b * t, self.input_dim, c // self.input_dim, h, w)
+        return rearrange(feature, "bt d c h w -> bt (c h w) d")
+
+    @staticmethod
+    def _prepare_point_feature(feature, modality):
+        if feature is None:
+            return None
+        if feature.dim() != 4:
+            raise RuntimeError(
+                f"{modality} feature must be 4D [B, T, N, C], got {tuple(feature.shape)}."
+            )
+        return rearrange(feature, "b t n c -> (b t) n c")
+
+    @staticmethod
+    def _prepare_lidar_points(lidar_points):
+        if lidar_points is None:
+            return None
+        if lidar_points.dim() != 4 or lidar_points.shape[-1] != 3:
+            raise RuntimeError(
+                f"`input_lidar` must be shape [B, T, N, 3], got {tuple(lidar_points.shape)}."
+            )
+        return rearrange(lidar_points, "b t n c -> (b t) n c")
     
     def forward(self, features, **kwargs):
         # features_rgb: B T C H W
         # features_depth: B T C H W
         # features_mmwave: B T N_mm C_mm
         # features_lidar: B T N_ld C_ld
+        if not isinstance(features, (list, tuple)) or len(features) != 4:
+            raise ValueError(
+                "XFiAggregator expects `features` as (rgb, depth, lidar, mmwave)."
+            )
 
+        # model_api extract_features returns: (rgb, depth, lidar, mmwave)
         features_rgb, features_depth, features_lidar, features_mmwave = features
 
-        feature_list = []
-        modality_list = []
-        if features_rgb is not None:
-            b, t, c, h, w = features_rgb.shape
-            features_rgb = features_rgb.reshape(b * t, self.input_dim, c // self.input_dim, h, w)
-            features_rgb = rearrange(features_rgb, 'bt d c h w -> bt (c h w) d')
-            feature_list.append(features_rgb)
-            modality_list.append(True)
-        else:
-            feature_list.append(None)
-            modality_list.append(False)
-        if features_depth is not None:
-            b, t, c, h, w = features_depth.shape
-            features_depth = features_depth.reshape(b * t, self.input_dim, c // self.input_dim, h, w)
-            features_depth = rearrange(features_depth, 'bt d c h w -> bt (c h w) d')
-            feature_list.append(features_depth)
-            modality_list.append(True)
-        else:
-            feature_list.append(None)
-            modality_list.append(False)
-        if features_lidar is not None:
-            features_lidar = rearrange(features_lidar, 'b t n c -> (b t) n c')
-            feature_list.append(features_lidar)
-            modality_list.append(True)
-        else:
-            feature_list.append(None)
-            modality_list.append(False)
-        if features_mmwave is not None:
-            features_mmwave = rearrange(features_mmwave, 'b t n c -> (b t) n c')
-            feature_list.append(features_mmwave)
-            modality_list.append(True)
-        else:
-            feature_list.append(None)
-            modality_list.append(False)
-        lidar_points = kwargs.get('input_lidar', None)
-        if lidar_points is not None:
-            lidar_points = rearrange(lidar_points, 'b t n c -> (b t) n c')
-        projected_feature = self.linear_projector(feature_list, lidar_points, modality_list)
+        feature_map = {
+            "rgb": self._prepare_image_feature(features_rgb, "rgb"),
+            "depth": self._prepare_image_feature(features_depth, "depth"),
+            "mmwave": self._prepare_point_feature(features_mmwave, "mmwave"),
+            "lidar": self._prepare_point_feature(features_lidar, "lidar"),
+        }
+        active_modalities = self._resolve_active_modalities(feature_map)
+        missing_modalities = [m for m in active_modalities if feature_map[m] is None]
+        if missing_modalities:
+            present = [m for m in self.canonical_modalities if feature_map[m] is not None]
+            raise RuntimeError(
+                "Configured active modalities are missing features at aggregation time. "
+                f"Missing={missing_modalities}, Present={present}, Active={active_modalities}."
+            )
+
+        modality_list = [m in active_modalities for m in self.canonical_modalities]
+        lidar_points = self._prepare_lidar_points(kwargs.get("input_lidar", None))
+        if "lidar" in active_modalities and lidar_points is None:
+            raise RuntimeError(
+                "Configured active modalities include 'lidar' but batch is missing `input_lidar`."
+            )
+        projected_feature = self.linear_projector(feature_map, lidar_points, active_modalities)
         fused_feature = self.x_fusion(projected_feature, modality_list)
         return fused_feature
     
@@ -390,5 +486,5 @@ if __name__ == '__main__':
     input_lidar = torch.randn(batch_size, time_steps, 1024, 3)
 
     aggregator = XFiAggregator(input_dim=512, output_dim=512, num_modalities=4, dim_expansion=2, hidden_dim=512, num_heads=8, dim_heads=64, model_depth=4)
-    fused_feature = aggregator((rgb_feature, depth_feature, mmwave_feature, lidar_feature), input_lidar=input_lidar)
+    fused_feature = aggregator((rgb_feature, depth_feature, lidar_feature, mmwave_feature), input_lidar=input_lidar)
     print(f"Fused feature shape: {fused_feature.shape}")
