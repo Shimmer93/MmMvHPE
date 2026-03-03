@@ -11,10 +11,12 @@ TEST_CFG_UNOCC="${TEST_CFG_UNOCC:-${REPO_ROOT}/configs/baseline/occlusion_robust
 GPUS="${GPUS:-1}"
 NUM_NODES="${NUM_NODES:-1}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
-BATCH_SIZE_EVA="${BATCH_SIZE_EVA:-2}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
+BATCH_SIZE_EVA="${BATCH_SIZE_EVA:-32}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 PIN_MEMORY="${PIN_MEMORY:-1}"
+USE_WANDB="${USE_WANDB:-1}"
+WANDB_OFFLINE="${WANDB_OFFLINE:-0}"
 EXP_NAME="${EXP_NAME:-occlusion_robustness_xfi}"
 VERSION="${VERSION:-$(date +'%Y%m%d_%H%M%S')_train}"
 
@@ -28,6 +30,12 @@ MAIN_ARGS=(
 )
 if [[ "${PIN_MEMORY}" == "1" ]]; then
   MAIN_ARGS+=(--pin_memory)
+fi
+if [[ "${USE_WANDB}" == "1" ]]; then
+  MAIN_ARGS+=(--use_wandb)
+  if [[ "${WANDB_OFFLINE}" == "1" ]]; then
+    MAIN_ARGS+=(--wandb_offline)
+  fi
 fi
 MAIN_ARGS+=("$@")
 

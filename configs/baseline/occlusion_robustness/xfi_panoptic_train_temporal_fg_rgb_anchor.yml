@@ -5,7 +5,7 @@ pretrained: false
 sync_batchnorm: false
 clip_grad: null
 precision: 32
-epochs: &epochs 20
+epochs: &epochs 10
 detect_anomaly: true
 debug_log_interval: 200
 non_piano_seqs: &non_piano_seqs [161029_flute1, 170307_dance5, 170407_office2, 170915_office1, 171026_cello3, 171026_pose1, 171026_pose2, 171204_pose1, 171204_pose2, 171204_pose3, 171204_pose4, 171204_pose5, 171204_pose6]
