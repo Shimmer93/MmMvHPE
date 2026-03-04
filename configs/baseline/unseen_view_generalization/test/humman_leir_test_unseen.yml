@@ -22,7 +22,7 @@ train_dataset:
     depth_cameras: [kinect_000, kinect_002, kinect_003, kinect_004, kinect_005, kinect_006, kinect_008]
     split: "train"
     split_config: 'configs/datasets/humman_split_config.yml'
-    split_to_use: 'cross_subject_split'
+    split_to_use: 'cross_camera_split'
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -30,6 +30,8 @@ train_dataset:
     use_all_pairs: false
     colocated: true
     convert_depth_to_lidar: false
+    apply_to_new_world: false
+    remove_root_rotation: false
 val_dataset:
   name: 'HummanPreprocessedDatasetV2'
   params:
@@ -40,7 +42,7 @@ val_dataset:
     depth_cameras: [ kinect_001, kinect_007, kinect_009]
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
-    split_to_use: 'cross_subject_split'
+    split_to_use: 'cross_camera_split'
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -48,6 +50,8 @@ val_dataset:
     use_all_pairs: false
     colocated: true
     convert_depth_to_lidar: false
+    apply_to_new_world: false
+    remove_root_rotation: false
 test_dataset:
   name: 'HummanPreprocessedDatasetV2'
   params:
@@ -58,7 +62,7 @@ test_dataset:
     depth_cameras: [ kinect_001, kinect_007, kinect_009]
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
-    split_to_use: 'cross_subject_split'
+    split_to_use: 'cross_camera_split'
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -66,6 +70,29 @@ test_dataset:
     use_all_pairs: false
     colocated: true
     convert_depth_to_lidar: false
+    apply_to_new_world: false
+    remove_root_rotation: false
+predict_dataset:
+  name: 'HummanPreprocessedDatasetV2'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    modality_names: ['rgb', 'depth']
+    rgb_cameras: [ kinect_001, kinect_007, kinect_009]
+    depth_cameras: [ kinect_001, kinect_007, kinect_009]
+    split: "test"
+    split_config: 'configs/datasets/humman_split_config.yml'
+    split_to_use: 'cross_camera_split'
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: true
+    convert_depth_to_lidar: false
+    apply_to_new_world: false
+    remove_root_rotation: false
+predict_pipeline: *train_pipeline
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
