@@ -1,8 +1,5 @@
-# pelvis-centered-pose-metrics Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-pcmpjpe-metrics. Update Purpose after archive.
-## Requirements
 ### Requirement: SMPL pelvis-centered MPJPE metric
 The system SHALL provide `SMPL_PCMPJPE` in `metrics/smpl_metrics.py` that computes mean per-joint position error after pelvis translation alignment between prediction and GT for each sample.
 
@@ -29,5 +26,5 @@ The system SHALL provide `PCMPJPE` in `metrics/mpjpe.py` that computes MPJPE aft
 The system SHALL allow `PCMPJPE` and `SMPL_PCMPJPE` to be declared in experiment config metric lists without changing existing metric names or evaluation wiring.
 
 #### Scenario: Existing MPJPE metrics remain available
-- **WHEN** a config includes existing metrics plus the new pelvis-centered metrics
+- **WHEN** a config includes existing metrics plus the pelvis-centered metrics
 - **THEN** evaluation computes and logs both existing and pelvis-centered metrics in the same run outputs under `logs/`

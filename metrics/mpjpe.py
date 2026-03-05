@@ -214,6 +214,25 @@ def _resolve_pcmpjpe_indices(
     return int(pelvis_idx), int(neck_idx), int(bodycenter_idx), int(lhip_idx), int(rhip_idx)
 
 
+def _resolve_pelvis_idx(skeleton_name, pelvis_idx=None):
+    if pelvis_idx is not None:
+        return int(pelvis_idx)
+    skeleton_class = _get_skeleton_class(skeleton_name)
+    pelvis_idx = int(getattr(skeleton_class, "center", -1))
+    if pelvis_idx >= 0:
+        return pelvis_idx
+    joint_names = [str(x).lower() for x in skeleton_class.joint_names]
+    name_to_idx = {name: idx for idx, name in enumerate(joint_names)}
+    return int(
+        _first_joint_index(
+            name_to_idx,
+            ["pelvis", "mid_hip", "bodycenter", "body_center", "waist", "spine", "spine1"],
+            "pelvis",
+            skeleton_name,
+        )
+    )
+
+
 def _axis_angle_to_matrix(axis_angle, eps=1e-8):
     axis_angle = np.asarray(axis_angle, dtype=np.float32)
     if axis_angle.shape[-1] != 3:
@@ -271,38 +290,7 @@ def pcmpjpe_func(
 
     pred_centered = pred_samples - pred_samples[:, pelvis_idx:pelvis_idx + 1, :]
     gt_centered = gt_samples - gt_samples[:, pelvis_idx:pelvis_idx + 1, :]
-
-    if pred_root_rot is None or gt_root_rot is None:
-        if None in (neck_idx, bodycenter_idx, lhip_idx, rhip_idx):
-            raise ValueError(
-                "neck_idx/bodycenter_idx/lhip_idx/rhip_idx must be provided when root rotations are not provided."
-            )
-        pred_rot = _estimate_root_rotation_from_keypoints(
-            pred_samples,
-            neck_idx=neck_idx,
-            bodycenter_idx=bodycenter_idx,
-            lhip_idx=lhip_idx,
-            rhip_idx=rhip_idx,
-        )
-        gt_rot = _estimate_root_rotation_from_keypoints(
-            gt_samples,
-            neck_idx=neck_idx,
-            bodycenter_idx=bodycenter_idx,
-            lhip_idx=lhip_idx,
-            rhip_idx=rhip_idx,
-        )
-    else:
-        pred_rot = _to_rotmat(pred_root_rot, "pred_root_rot").reshape(-1, 3, 3)
-        gt_rot = _to_rotmat(gt_root_rot, "gt_root_rot").reshape(-1, 3, 3)
-        if pred_rot.shape[0] != pred_centered.shape[0] or gt_rot.shape[0] != gt_centered.shape[0]:
-            raise ValueError(
-                f"Root rotation batch mismatch: pred={pred_rot.shape[0]}, gt={gt_rot.shape[0]}, "
-                f"samples={pred_centered.shape[0]}"
-            )
-
-    align_rot = np.matmul(gt_rot, np.swapaxes(pred_rot, -1, -2))
-    pred_aligned = np.einsum("bij,bkj->bki", align_rot, pred_centered)
-    error = np.sqrt(np.sum(np.square(pred_aligned - gt_centered), axis=-1))
+    error = np.sqrt(np.sum(np.square(pred_centered - gt_centered), axis=-1))
     error = error.reshape(original_shape[:-1])
     return np.mean(error) if reduce else error
 
@@ -583,25 +571,12 @@ class PCMPJPE:
         if pred_keypoints.shape[0] == 0:
             return np.nan
 
-        pelvis_idx, neck_idx, bodycenter_idx, lhip_idx, rhip_idx = _resolve_pcmpjpe_indices(
-            skeleton_name=self.skeleton_name,
-            pelvis_idx=self.pelvis_idx,
-            neck_idx=self.neck_idx,
-            bodycenter_idx=self.bodycenter_idx,
-            lhip_idx=self.lhip_idx,
-            rhip_idx=self.rhip_idx,
-        )
+        pelvis_idx = _resolve_pelvis_idx(self.skeleton_name, self.pelvis_idx)
 
         pcmpjpe = pcmpjpe_func(
             pred_keypoints,
             target_keypoints,
             pelvis_idx=pelvis_idx,
-            neck_idx=neck_idx,
-            bodycenter_idx=bodycenter_idx,
-            lhip_idx=lhip_idx,
-            rhip_idx=rhip_idx,
-            pred_root_rot=None,
-            gt_root_rot=None,
             reduce=True,
         )
         return pcmpjpe
