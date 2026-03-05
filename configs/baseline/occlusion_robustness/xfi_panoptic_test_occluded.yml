@@ -170,6 +170,11 @@ metrics:
   - name: 'MPJPE'
     params:
       affix: null
+  - name: 'PCMPJPE'
+    params:
+      affix: null
+      skeleton_name: 'panoptic_coco19'
+      pelvis_idx: 2
   - name: 'PAMPJPE'
     params:
       affix: null
