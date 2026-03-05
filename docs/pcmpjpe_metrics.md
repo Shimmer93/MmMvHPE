@@ -9,28 +9,15 @@ This document describes pelvis-centered MPJPE metrics added to MMHPE.
 
 Both metrics do the following before computing MPJPE:
 - align pelvis translation (prediction pelvis to GT pelvis)
-- align pelvis orientation (root rotation) so articulated pose error is measured in a matched root frame
+- keep rotation mismatch (root/global orientation differences still contribute to error)
 
 ## Orientation Convention
 
 ### Non-SMPL (`PCMPJPE`)
 
-`PCMPJPE` derives root orientation from keypoints using the same convention as
-`PanopticPreprocessedDatasetV1._estimate_root_rotation_from_joints19`:
-
-- `x` axis: right hip minus left hip
-- `y` seed: neck minus body center
-- `z` axis: cross(`x`, `y_seed`)
-- re-orthogonalized `y` axis: cross(`z`, `x`)
-
-Default indices:
-- neck: 0
-- body center: 2
-- left hip: 6
-- right hip: 12
-
-The metric resolves these joints from `misc/skeleton.py` via `skeleton_name` and raises
-explicit `ValueError` if required joints are missing or vectors are degenerate.
+`PCMPJPE` is translation-only centered and does not apply orientation alignment.
+`skeleton_name` and optional torso-joint index parameters are accepted for config compatibility,
+but they do not affect metric computation.
 
 Supported `skeleton_name` values include:
 - `smpl`
@@ -50,17 +37,7 @@ You can override inferred indices explicitly with:
 
 ### SMPL (`SMPL_PCMPJPE`)
 
-`SMPL_PCMPJPE` uses explicit root rotation (`global_orient`) from SMPL outputs.
-
-Priority for prediction root rotation:
-1. `preds['pred_smpl']['global_orient']`
-2. first 3 dims of `preds['pred_smpl_params']`
-
-Priority for GT root rotation:
-1. `targets['gt_smpl']['global_orient']`
-2. first 3 dims of `targets['gt_smpl_params']`
-
-If required fields are unavailable, the metric fails fast with an explicit error.
+`SMPL_PCMPJPE` is also translation-only centered and does not require root orientation fields.
 
 ## Config Example
 
