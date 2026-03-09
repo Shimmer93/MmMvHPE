@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 import lightning as L
 import os
+import json
 import pickle
 from einops import rearrange
 import matplotlib.pyplot as plt
@@ -353,6 +354,7 @@ class LitModel(L.LightningModule):
             log_dict[f'test_{metric.name}'] = metric(pred_dict, batch)
 
         self.log_dict(log_dict, prog_bar=True, on_epoch=True, sync_dist=True)
+        self._debug_log_test_batch(batch, batch_idx)
 
         num_batches = sum(self.trainer.num_test_batches) # list of ints
         visualize_interval = max(1, num_batches // 5)
@@ -409,6 +411,38 @@ class LitModel(L.LightningModule):
                     'gt_smpl_params': torch2numpy(batch['gt_smpl_params'][i]) if 'gt_smpl_params' in batch else None,
                     'gt_keypoints': torch2numpy(batch['gt_keypoints'][i]) if 'gt_keypoints' in batch else None
                 })
+
+    def _debug_log_test_batch(self, batch, batch_idx):
+        if os.environ.get('MmMvHPE_DEBUG', '0') != '1':
+            return
+
+        log_interval = max(1, int(getattr(self.hparams, 'debug_log_interval', 1)))
+        if batch_idx % log_interval != 0:
+            return
+
+        sample_ids = batch.get('sample_id', None)
+        if not isinstance(sample_ids, (list, tuple)) or not sample_ids:
+            return
+
+        selected_cameras = batch.get('selected_cameras', None)
+        rank = getattr(self, 'global_rank', 0)
+        for sample_idx, sample_id in enumerate(sample_ids):
+            camera_info = None
+            if isinstance(selected_cameras, (list, tuple)):
+                if sample_idx < len(selected_cameras) and isinstance(selected_cameras[sample_idx], dict):
+                    camera_info = selected_cameras[sample_idx]
+            elif isinstance(selected_cameras, dict):
+                camera_info = {}
+                for modality, values in selected_cameras.items():
+                    if isinstance(values, (list, tuple)) and sample_idx < len(values):
+                        camera_info[modality] = values[sample_idx]
+                    else:
+                        camera_info[modality] = None
+            camera_repr = json.dumps(camera_info, sort_keys=True) if camera_info is not None else "null"
+            print(
+                f"[DEBUG][test][rank={rank}][batch={batch_idx}] "
+                f"sample_id={sample_id} selected_cameras={camera_repr}"
+            )
 
     def predict_step(self, batch, batch_idx):
         feats = self.extract_features(batch)

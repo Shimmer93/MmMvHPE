@@ -119,6 +119,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         else:
             self.depth_cameras = list(depth_cameras)
 
+        self._validate_camera_names(self.rgb_cameras, modality="rgb")
+        self._validate_camera_names(self.depth_cameras, modality="depth")
+
         self.lidar_cameras = list(self.depth_cameras)
         self.rgb_cameras_per_sample = max(1, int(rgb_cameras_per_sample))
         self.depth_cameras_per_sample = max(1, int(depth_cameras_per_sample))
@@ -436,6 +439,15 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         while len(sampled) < num_samples:
             sampled.append(random.choice(camera_pool))
         return sampled
+
+    def _validate_camera_names(self, camera_names: Sequence[str], modality: str) -> None:
+        valid_cameras = set(self.available_kinect_cameras + self.available_iphone_cameras)
+        invalid = sorted({camera_name for camera_name in camera_names if camera_name not in valid_cameras})
+        if invalid:
+            raise ValueError(
+                f"Invalid {modality} camera names: {invalid}. "
+                f"Expected names from {sorted(valid_cameras)}."
+            )
 
     @staticmethod
     def _camera_name_to_key(camera_name: str, modality: str) -> str:
