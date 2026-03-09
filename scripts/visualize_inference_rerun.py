@@ -226,6 +226,37 @@ def _extract_gt_pelvis(sample: dict, frame_idx: int, center_idx: int) -> np.ndar
     return None
 
 
+def _affine_translation(sample: dict, key: str, view_index: int = 0) -> np.ndarray | None:
+    affine = sample.get(key)
+    if affine is None:
+        return None
+    arr = affine.detach().cpu().numpy() if isinstance(affine, torch.Tensor) else np.asarray(affine)
+    if arr.shape == (4, 4):
+        return arr[:3, 3].astype(np.float32)
+    if arr.ndim == 3 and arr.shape[-2:] == (4, 4):
+        if view_index < 0 or view_index >= arr.shape[0]:
+            raise ValueError(f"{key} view_index out of range: {view_index} for shape {arr.shape}")
+        return arr[view_index, :3, 3].astype(np.float32)
+    raise ValueError(f"Unsupported affine shape for {key}: {arr.shape}")
+
+
+def _uncenter_points(points: np.ndarray, affine_translation: np.ndarray | None) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float32)
+    if affine_translation is None:
+        return pts
+    return pts - affine_translation.reshape(1, 3)
+
+
+def _uncenter_extrinsic(extrinsic: np.ndarray, affine_translation: np.ndarray | None) -> np.ndarray:
+    ext = np.asarray(extrinsic, dtype=np.float32).copy()
+    if ext.shape != (3, 4):
+        raise ValueError(f"Expected extrinsic with shape (3,4), got {ext.shape}.")
+    if affine_translation is None:
+        return ext
+    ext[:, 3] = ext[:, 3] - affine_translation.reshape(3)
+    return ext
+
+
 def _take_temporal(x, frame_idx: int):
     arr = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
     if arr.ndim >= 3:
@@ -496,6 +527,7 @@ def main():
             if isinstance(sample_id, (list, tuple)):
                 sample_id = sample_id[0]
         reference_extrinsic = None
+        lidar_affine_translation = None
         image_hw = None
         temporal_len = _infer_temporal_length(sample)
         if cross_sample_mode:
@@ -508,6 +540,11 @@ def main():
                 sensor_label=args.reference_sensor,
                 view_index=int(args.reference_view),
             )
+            if str(args.reference_sensor).lower() == "lidar":
+                lidar_affine_translation = _affine_translation(
+                    sample, "input_lidar_affine", int(args.reference_view)
+                )
+                reference_extrinsic = _uncenter_extrinsic(reference_extrinsic, lidar_affine_translation)
         
         # Run inference
         try:
@@ -526,6 +563,8 @@ def main():
                 sensor_label=args.reference_sensor,
                 image_hw=image_hw,
             )
+            if pred_extrinsic is not None and str(args.reference_sensor).lower() == "lidar":
+                pred_extrinsic = _uncenter_extrinsic(pred_extrinsic, lidar_affine_translation)
             if pred_extrinsic is None:
                 rr.log(
                     "world/info/pred_camera_status",
@@ -571,6 +610,8 @@ def main():
                             depth_pc = depth_pc.cpu().numpy()
                         if depth_pc.ndim == 3:
                             depth_pc = depth_pc[source_frame_idx]
+                        if sensor_mode and str(args.reference_sensor).lower() == "lidar":
+                            depth_pc = _uncenter_points(depth_pc, lidar_affine_translation)
                         if not sensor_mode:
                             depth_pc = rotate_points_180_y(depth_pc)
                         log_point_cloud_3d(
@@ -612,6 +653,8 @@ def main():
                         lidar_data = lidar_data.cpu().numpy()
                     if lidar_data.ndim == 3:
                         lidar_data = lidar_data[source_frame_idx]
+                    if sensor_mode and str(args.reference_sensor).lower() == "lidar":
+                        lidar_data = _uncenter_points(lidar_data, lidar_affine_translation)
                     if not sensor_mode:
                         lidar_data = rotate_points_180_y(lidar_data)
                     log_point_cloud_3d(

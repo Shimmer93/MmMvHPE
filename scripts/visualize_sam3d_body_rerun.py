@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import rerun as rr
 import torch
+from tqdm.auto import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -544,13 +545,24 @@ def main() -> None:
         raise RuntimeError("No visualization steps were generated from the provided frame arguments.")
     rr.log("world/info/num_visualized_frames", rr.TextLog(str(len(steps))))
     rr.log("world/info/gt_coordinate_space", rr.TextLog(gt_coordinate_space))
+    print(
+        f"[SAM3D-RERUN] generating {len(steps)} frame(s) from split={args.split} "
+        f"starting at sample_idx={sample_idx}"
+    )
 
     cached_step_idx = None
     cached_sample = None
     cached_rgb_sequences = None
     cached_view_extrinsics = None
 
-    for local_idx, (step_sample_idx, source_frame_idx) in enumerate(steps):
+    progress = tqdm(
+        steps,
+        desc="SAM3D frames",
+        unit="frame",
+        dynamic_ncols=True,
+    )
+    for local_idx, (step_sample_idx, source_frame_idx) in enumerate(progress):
+        progress.set_postfix(sample=step_sample_idx, frame=source_frame_idx)
         if cached_step_idx != step_sample_idx:
             cached_sample = dataset[step_sample_idx]
             if "input_rgb" not in cached_sample:
