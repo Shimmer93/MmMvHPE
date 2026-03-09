@@ -206,14 +206,23 @@ def reverse_affine_transform(points, affine_matrix):
     return transformed_points
 
 def get_bounds(points):
-    all_points = points[..., :3].reshape(-1, 3)
+    all_points = np.asarray(points[..., :3]).reshape(-1, 3)
+    finite_mask = np.isfinite(all_points).all(axis=1)
+    all_points = all_points[finite_mask]
+    if all_points.shape[0] == 0:
+        # Visualization should not break training if predictions are invalid.
+        return -1.0, 1.0, -1.0, 1.0, -1.0, 1.0
     mins = np.min(all_points, axis=0)
     maxs = np.max(all_points, axis=0)
     return mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2]
 
 def set_3d_ax_limits(ax, bounds, padding=0.1):
     min_x, max_x, min_y, max_y, min_z, max_z = bounds
+    bounds_arr = np.array([min_x, max_x, min_y, max_y, min_z, max_z], dtype=np.float32)
+    if not np.isfinite(bounds_arr).all():
+        return
     ranges = [max_x - min_x, max_y - min_y, max_z - min_z]
+    ranges = [r if np.isfinite(r) and r > 1e-8 else 1.0 for r in ranges]
     ax.set_box_aspect(ranges)
     ax.set_xlim(min_x - padding * ranges[0], max_x + padding * ranges[0])
     ax.set_ylim(min_y - padding * ranges[1], max_y + padding * ranges[1])
@@ -221,12 +230,15 @@ def set_3d_ax_limits(ax, bounds, padding=0.1):
 
 def set_2d_ax_limits(ax, bounds, dims=[0, 1], padding=0.1):
     min_x, max_x, min_y, max_y, min_z, max_z = bounds
-    bounds_arr = np.array([min_x, max_x, min_y, max_y, min_z, max_z])
+    bounds_arr = np.array([min_x, max_x, min_y, max_y, min_z, max_z], dtype=np.float32)
+    if not np.isfinite(bounds_arr).all():
+        return
     ax.set_aspect('equal')
     
     min_vals = bounds_arr[np.array(dims) * 2]
     max_vals = bounds_arr[np.array(dims) * 2 + 1]
     ranges = max_vals - min_vals
+    ranges = np.where(np.isfinite(ranges) & (ranges > 1e-8), ranges, 1.0)
     
     ax.set_xlim(min_vals[0] - padding * ranges[0], max_vals[0] + padding * ranges[0])
     ax.set_ylim(min_vals[1] - padding * ranges[1], max_vals[1] + padding * ranges[1])
