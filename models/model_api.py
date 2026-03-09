@@ -273,7 +273,7 @@ class LitModel(L.LightningModule):
                 pred_dict = {}
                 if self.with_keypoint_head:
                     with torch.no_grad():
-                        preds_keypoint = self.keypoint_head.predict(feats_agg)
+                        preds_keypoint = self._predict_keypoints(feats_agg, batch)
                         pred_dict["pred_keypoints"] = preds_keypoint
                         self._attach_keypoint_modalities(pred_dict, feats_agg, batch)
                 losses_camera = self.camera_head.loss(feats_agg, batch, pred_dict=pred_dict)
@@ -299,7 +299,7 @@ class LitModel(L.LightningModule):
             self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
-                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                preds_keypoint = self._predict_keypoints(feats_agg, batch)
                 pred_dict['pred_keypoints'] = preds_keypoint
             if self.with_smpl_head:
                 preds_smpl = self.smpl_head.predict(feats_agg)
@@ -333,7 +333,7 @@ class LitModel(L.LightningModule):
             self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
-                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                preds_keypoint = self._predict_keypoints(feats_agg, batch)
                 pred_dict['pred_keypoints'] = preds_keypoint
             if self.with_smpl_head:
                 preds_smpl = self.smpl_head.predict(feats_agg)
@@ -420,7 +420,7 @@ class LitModel(L.LightningModule):
             self._attach_camera_predictions(pred_dict, preds_camera, batch)
         else:
             if self.with_keypoint_head:
-                preds_keypoint = self.keypoint_head.predict(feats_agg)
+                preds_keypoint = self._predict_keypoints(feats_agg, batch)
                 pred_dict['pred_keypoints'] = preds_keypoint
             if self.with_smpl_head:
                 preds_smpl = self.smpl_head.predict(feats_agg)
@@ -439,6 +439,18 @@ class LitModel(L.LightningModule):
 
     def _predict_camera(self, feats_agg, batch, pred_dict):
         return self.camera_head.predict(feats_agg, data_batch=batch, pred_dict=pred_dict)
+
+    def _predict_keypoints(self, feats_agg, batch):
+        if not self.with_keypoint_head:
+            return None
+        try:
+            return self.keypoint_head.predict(
+                feats_agg,
+                modalities=batch.get("modalities", []),
+                data_batch=batch,
+            )
+        except TypeError:
+            return self.keypoint_head.predict(feats_agg)
 
     @staticmethod
     def _normalize_modalities(modalities):
@@ -606,27 +618,35 @@ class LitModel(L.LightningModule):
                 )
             return gt_camera[:, sensor_idx, -1, :]
 
-        if gt_camera.dim() == 3:  # [B, S, D]
-            if gt_camera.shape[0] != batch_size:
-                raise ValueError(
-                    f"Expected gt_camera shape [B,S,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
-                )
-            if sensor_idx != 0:
-                raise ValueError(
-                    f"Single-sensor gt_camera received sensor_idx={sensor_idx}."
-                )
-            return gt_camera[:, -1, :]
+        if gt_camera.dim() == 3:  # [B, S, D] or [V, S, D] when batch_size == 1
+            if gt_camera.shape[0] == batch_size:
+                if sensor_idx != 0:
+                    raise ValueError(
+                        "gt_camera with shape [B,S,D] represents a single sensor per sample; "
+                        f"received sensor_idx={sensor_idx}."
+                    )
+                return gt_camera[:, -1, :]
+            if batch_size == 1:
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                return gt_camera[view_idx : view_idx + 1, -1, :]
+            raise ValueError(
+                f"Expected gt_camera shape [B,S,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
+            )
 
-        if gt_camera.dim() == 2:  # [B, D]
-            if gt_camera.shape[0] != batch_size:
-                raise ValueError(
-                    f"Expected gt_camera shape [B,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
-                )
-            if sensor_idx != 0:
-                raise ValueError(
-                    f"Single-sensor gt_camera received sensor_idx={sensor_idx}."
-                )
-            return gt_camera
+        if gt_camera.dim() == 2:  # [B, D] or [V, D] when batch_size == 1
+            if gt_camera.shape[0] == batch_size:
+                if sensor_idx != 0:
+                    raise ValueError(
+                        "gt_camera with shape [B,D] represents a single sensor per sample; "
+                        f"received sensor_idx={sensor_idx}."
+                    )
+                return gt_camera
+            if batch_size == 1:
+                view_idx = min(sensor_idx, gt_camera.shape[0] - 1)
+                return gt_camera[view_idx : view_idx + 1, :]
+            raise ValueError(
+                f"Expected gt_camera shape [B,D] with B={batch_size}, got {tuple(gt_camera.shape)}."
+            )
 
         raise ValueError(
             f"Unsupported gt_camera shape {tuple(gt_camera.shape)}; expected [B,V,S,D], [B,S,D], or [B,D]."
@@ -840,6 +860,43 @@ class LitModel(L.LightningModule):
             smpl_path = self.hparams.smpl_head.get('params', {}).get('smpl_path', None)
 
         fig = visualize_multimodal_sample(batch, pred_dict, skl_format, vis_denorm_params, smpl_model_path=smpl_path)
+
+        # Save selected RGB overlay panels as standalone images.
+        # save_root = os.path.join(
+        #     "/root/autodl-tmp/logs",
+        #     self.hparams.exp_name,
+        #     self.hparams.version,
+        #     "visualizations",
+        #     stage,
+        # )
+        # if batch_idx is None:
+        #     save_root = os.path.join(save_root, f"step_{int(self.global_step):08d}")
+        # else:
+        #     save_root = os.path.join(save_root, f"batch_{int(batch_idx):06d}")
+        # os.makedirs(save_root, exist_ok=True)
+
+        # panel_title_to_name = {
+        #     "RGB + GT Overlay + Mesh": "rgb_gt_overlay_mesh.png",
+        #     "RGB + GT 2D Overlay": "rgb_gt_overlay_mesh.png",
+        #     "RGB + Pred Overlay + Mesh": "rgb_pred_overlay_mesh.png",
+        #     "RGB + Pred 2D Overlay": "rgb_pred_overlay_mesh.png",
+        # }
+        # fig.canvas.draw()
+        # renderer = fig.canvas.get_renderer()
+        # for ax in fig.axes:
+        #     out_name = panel_title_to_name.get(ax.get_title(), None)
+        #     if out_name is None:
+        #         continue
+        #     bbox = ax.get_tightbbox(renderer)
+        #     if bbox is None:
+        #         continue
+        #     bbox_inches = bbox.transformed(fig.dpi_scale_trans.inverted())
+        #     fig.savefig(
+        #         os.path.join(save_root, out_name),
+        #         bbox_inches=bbox_inches,
+        #         dpi=fig.dpi,
+        #         pad_inches=0.02,
+        #     )
 
         if batch_idx is None:
             tag = f"{stage}_visualization"

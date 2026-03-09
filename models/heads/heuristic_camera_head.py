@@ -6,6 +6,15 @@ from typing import Iterable, Optional, Tuple
 from .base_head import BaseHead
 from misc.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
 from misc.camera_batch import get_gt_camera_encoding
+from misc.skeleton import (
+    COCOSkeleton,
+    SimpleCOCOSkeleton,
+    PanopticCOCO19Skeleton,
+    MMBodySkeleton,
+    H36MSkeleton,
+    MiliPointSkeleton,
+    SMPLSkeleton,
+)
 
 
 class HeuristicCameraHead(BaseHead):
@@ -48,6 +57,8 @@ class HeuristicCameraHead(BaseHead):
         default_image_size: Tuple[int, int] = (224, 224),
         default_fov_deg: Optional[Tuple[float, float]] = None,
         pose_encoding_type: str = "absT_quaR_FoV",
+        input_2d_skeleton_format: str = "auto",
+        input_3d_skeleton_format: str = "auto",
         estimate_lidar_scale: bool = False,
         min_points_pnp: int = 6,
         min_points_3d: int = 3,
@@ -65,6 +76,10 @@ class HeuristicCameraHead(BaseHead):
         self.default_image_size = default_image_size
         self.default_fov_deg = default_fov_deg
         self.pose_encoding_type = pose_encoding_type
+        self.input_2d_skeleton_format = str(input_2d_skeleton_format).lower()
+        self.input_3d_skeleton_format = str(input_3d_skeleton_format).lower()
+        self.target_skeleton = SimpleCOCOSkeleton()
+        self.num_joints = self.target_skeleton.num_joints
         self.estimate_lidar_scale = estimate_lidar_scale
         self.min_points_pnp = min_points_pnp
         self.min_points_3d = min_points_3d
@@ -181,6 +196,12 @@ class HeuristicCameraHead(BaseHead):
         if keypoints is None:
             return None
         keypoints = keypoints[:, -1]
+        keypoints = self._convert_to_target_skeleton(
+            keypoints,
+            source_format=self.input_3d_skeleton_format,
+        )
+        if keypoints is None:
+            return None
         return keypoints
 
     def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype, batch_size):
@@ -190,6 +211,12 @@ class HeuristicCameraHead(BaseHead):
             pred = self._ensure_bstjc(pred, batch_size)
             if pred is not None:
                 pred = pred[:, -1]
+                pred = self._convert_to_target_skeleton(
+                    pred,
+                    source_format=self.input_2d_skeleton_format,
+                )
+                if pred is None:
+                    return None
                 valid = torch.isfinite(pred).all(dim=-1)
                 if valid.sum().item() >= self.min_points_pnp:
                     return pred
@@ -201,6 +228,12 @@ class HeuristicCameraHead(BaseHead):
         if keypoints is None:
             return None
         keypoints = keypoints[:, -1]
+        keypoints = self._convert_to_target_skeleton(
+            keypoints,
+            source_format=self.input_2d_skeleton_format,
+        )
+        if keypoints is None:
+            return None
         return keypoints
 
     def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype, batch_size):
@@ -210,6 +243,12 @@ class HeuristicCameraHead(BaseHead):
             pred = self._ensure_bstjc(pred, batch_size)
             if pred is not None:
                 pred = pred[:, -1]
+                pred = self._convert_to_target_skeleton(
+                    pred,
+                    source_format=self.input_3d_skeleton_format,
+                )
+                if pred is None:
+                    return None
                 valid = torch.isfinite(pred).all(dim=-1)
                 if valid.sum().item() >= self.min_points_3d:
                     return pred
@@ -221,7 +260,89 @@ class HeuristicCameraHead(BaseHead):
         if keypoints is None:
             return None
         keypoints = keypoints[:, -1]
+        keypoints = self._convert_to_target_skeleton(
+            keypoints,
+            source_format=self.input_3d_skeleton_format,
+        )
+        if keypoints is None:
+            return None
         return keypoints
+
+    @staticmethod
+    def _build_source_skeleton(source_format: str):
+        sf = str(source_format).lower()
+        if sf in {"smpl"}:
+            return SMPLSkeleton
+        if sf in {"mmbody"}:
+            return MMBodySkeleton
+        if sf in {"h36m", "mmfi"}:
+            return H36MSkeleton
+        if sf in {"panoptic_coco19", "panoptic19"}:
+            return PanopticCOCO19Skeleton
+        if sf in {"coco"}:
+            return COCOSkeleton
+        if sf in {"simple_coco", "simplecoco"}:
+            return SimpleCOCOSkeleton
+        if sf in {"milipoint"}:
+            return MiliPointSkeleton
+        return None
+
+    def _resolve_source_format(self, points, source_format: str) -> str:
+        sf = str(source_format).lower()
+        if sf == "simplecoco":
+            sf = "simple_coco"
+        if sf != "auto":
+            return sf
+        j = int(points.shape[-2])
+        if j == SMPLSkeleton.num_joints:
+            return "smpl"
+        if j == MMBodySkeleton.num_joints:
+            return "mmbody"
+        if j == H36MSkeleton.num_joints:
+            return "h36m"
+        if j == PanopticCOCO19Skeleton.num_joints:
+            return "panoptic_coco19"
+        if j == COCOSkeleton.num_joints:
+            return "coco"
+        if j == SimpleCOCOSkeleton.num_joints:
+            return "simple_coco"
+        if j == MiliPointSkeleton.num_joints:
+            return "milipoint"
+        return "unknown"
+
+    def _convert_to_target_skeleton(self, points, source_format: str):
+        if points is None:
+            return None
+        if not isinstance(points, torch.Tensor):
+            points = torch.as_tensor(points, dtype=torch.float32)
+        if points.dim() < 2:
+            return None
+
+        sf = self._resolve_source_format(points, source_format)
+        source_skeleton = self._build_source_skeleton(sf)
+        if source_skeleton is None:
+            raise ValueError(
+                f"Unknown source skeleton format '{sf}' (configured: '{source_format}') "
+                f"for points shape {tuple(points.shape)}. "
+                "Supported formats: ['smpl', 'mmbody', 'h36m', 'mmfi', 'panoptic_coco19', "
+                "'panoptic19', 'coco', 'simple_coco', 'simplecoco', 'milipoint', 'auto']."
+            )
+        if not hasattr(source_skeleton, "to_simple_coco"):
+            raise ValueError(
+                f"Skeleton format '{sf}' does not provide to_simple_coco conversion."
+            )
+
+        converted = source_skeleton.to_simple_coco(points)
+        if converted.shape[-2] > self.num_joints:
+            converted = converted[..., : self.num_joints, :]
+        elif converted.shape[-2] < self.num_joints:
+            pad_n = self.num_joints - converted.shape[-2]
+            pad = torch.zeros(
+                *converted.shape[:-2], pad_n, converted.shape[-1],
+                device=converted.device, dtype=converted.dtype
+            )
+            converted = torch.cat([converted, pad], dim=-2)
+        return converted
 
     def _get_intrinsics(self, data_batch, modality, device, dtype, batch_size):
         if self._fixed_intrinsics is not None:

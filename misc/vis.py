@@ -231,26 +231,46 @@ def set_2d_ax_limits(ax, bounds, dims=[0, 1], padding=0.1):
     ax.set_xlim(min_vals[0] - padding * ranges[0], max_vals[0] + padding * ranges[0])
     ax.set_ylim(min_vals[1] - padding * ranges[1], max_vals[1] + padding * ranges[1])
 
-def plot_2d_skeleton(ax, keypoints, dims=[0, 1], edges=None, color_map=JOINT_COLOR_MAP, linewidth=2, s=20):
+def plot_2d_skeleton(
+    ax,
+    keypoints,
+    dims=[0, 1],
+    edges=None,
+    color_map=JOINT_COLOR_MAP,
+    linewidth=2,
+    s=20,
+    line_alpha=0.45,
+    joint_alpha=0.55,
+):
     if edges is not None:
         for i, j in edges:
             ax.plot([keypoints[i, dims[0]], keypoints[j, dims[0]]],
-                    [keypoints[i, dims[1]], keypoints[j, dims[1]]], color='0.5', linewidth=linewidth)
+                    [keypoints[i, dims[1]], keypoints[j, dims[1]]], color='0.5', linewidth=linewidth, alpha=line_alpha)
     
     for i, (x, y) in enumerate(keypoints[:, dims]):
-        ax.scatter(x, y, color=color_map[i], marker='o', s=s)
+        ax.scatter(x, y, color=color_map[i], marker='o', s=s, alpha=joint_alpha)
 
-def plot_3d_skeleton(ax, keypoints, edges=None, color_map=JOINT_COLOR_MAP, linewidth=2, s=20):
+def plot_3d_skeleton(ax, keypoints, edges=None, color_map=JOINT_COLOR_MAP, linewidth=2, s=20, line_alpha=0.45, joint_alpha=0.55):
     if edges is not None:
         for i, j in edges:
             ax.plot([keypoints[i, 0], keypoints[j, 0]],
                     [keypoints[i, 1], keypoints[j, 1]],
-                    [keypoints[i, 2], keypoints[j, 2]], color='0.5', linewidth=linewidth)
+                    [keypoints[i, 2], keypoints[j, 2]], color='0.5', linewidth=linewidth, alpha=line_alpha)
     
     for i, (x, y, z) in enumerate(keypoints):
-        ax.scatter(x, y, z, color=color_map[i], marker='o', s=s)
+        ax.scatter(x, y, z, color=color_map[i], marker='o', s=s, alpha=joint_alpha)
 
-def plot_2d_skeleton_on_image(ax, image, keypoints_2d, edges=None, color_map=JOINT_COLOR_MAP, linewidth=2, s=50):
+def plot_2d_skeleton_on_image(
+    ax,
+    image,
+    keypoints_2d,
+    edges=None,
+    color_map=JOINT_COLOR_MAP,
+    linewidth=2,
+    s=50,
+    line_alpha=0.45,
+    joint_alpha=0.55,
+):
     """Plot 2D skeleton overlay on an image.
     
     Args:
@@ -270,12 +290,12 @@ def plot_2d_skeleton_on_image(ax, image, keypoints_2d, edges=None, color_map=JOI
         for i, j in edges:
             ax.plot([keypoints_2d[i, 0], keypoints_2d[j, 0]],
                     [keypoints_2d[i, 1], keypoints_2d[j, 1]], 
-                    color='lime', linewidth=linewidth, alpha=0.8)
+                    color='lime', linewidth=linewidth, alpha=line_alpha)
     
     # Plot joints
     for i, (x, y) in enumerate(keypoints_2d):
         ax.scatter(x, y, color=color_map[i], marker='o', s=s, 
-                  edgecolors='white', linewidths=1.5, zorder=10)
+                  edgecolors='white', linewidths=1.0, zorder=10, alpha=joint_alpha)
     
     ax.axis('off')
 
@@ -539,22 +559,32 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
         gt_keypoints_3d = np.asarray(gt_keypoints_3d)
     gt_keypoints_3d = _slice_keypoints_for_format(gt_keypoints_3d, skl_format)
     
-    # Load predicted keypoints - handle both SMPL head and keypoint head
+    # Load predicted keypoints.
+    # Prefer non-SMPL keypoints when both non-SMPL and SMPL keypoints exist.
     pred_keypoints_3d = None
     pred_keypoints_available = True
-    if 'pred_smpl_keypoints' in pred_dict:
-        # Direct keypoint prediction (keypoint_head)
-        pred_keypoints_3d = pred_dict['pred_smpl_keypoints'][sample_idx]
-        if hasattr(pred_keypoints_3d, 'cpu'):
-            pred_keypoints_3d = pred_keypoints_3d.cpu().numpy()
+    pred_keypoints_non_smpl = None
+    if 'pred_keypoints' in pred_dict and pred_dict['pred_keypoints'] is not None:
+        pred_keypoints_non_smpl = pred_dict['pred_keypoints'][sample_idx]
+        if hasattr(pred_keypoints_non_smpl, 'cpu'):
+            pred_keypoints_non_smpl = pred_keypoints_non_smpl.cpu().numpy()
         else:
-            pred_keypoints_3d = np.asarray(pred_keypoints_3d)
-    elif 'pred_keypoints' in pred_dict:
-        pred_keypoints_3d = pred_dict['pred_keypoints'][sample_idx]
-        if hasattr(pred_keypoints_3d, 'cpu'):
-            pred_keypoints_3d = pred_keypoints_3d.cpu().numpy()
+            pred_keypoints_non_smpl = np.asarray(pred_keypoints_non_smpl)
+        pred_keypoints_non_smpl = _slice_keypoints_for_format(pred_keypoints_non_smpl, skl_format)
+
+    pred_keypoints_smpl = None
+    if 'pred_smpl_keypoints' in pred_dict and pred_dict['pred_smpl_keypoints'] is not None:
+        pred_keypoints_smpl = pred_dict['pred_smpl_keypoints'][sample_idx]
+        if hasattr(pred_keypoints_smpl, 'cpu'):
+            pred_keypoints_smpl = pred_keypoints_smpl.cpu().numpy()
         else:
-            pred_keypoints_3d = np.asarray(pred_keypoints_3d)
+            pred_keypoints_smpl = np.asarray(pred_keypoints_smpl)
+        pred_keypoints_smpl = _slice_keypoints_for_format(pred_keypoints_smpl, skl_format)
+
+    if pred_keypoints_non_smpl is not None:
+        pred_keypoints_3d = pred_keypoints_non_smpl
+    elif pred_keypoints_smpl is not None:
+        pred_keypoints_3d = pred_keypoints_smpl
     pred_keypoints_3d = _slice_keypoints_for_format(pred_keypoints_3d, skl_format)
     
     
@@ -677,30 +707,41 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 smpl_model, global_orient, body_pose, betas, transl, device=device
             )
 
-    gt_keypoints_centered = gt_keypoints_3d.copy()
-    pred_keypoints_centered = pred_keypoints_3d.copy()
-    gt_vertices_centered = gt_vertices.copy() if gt_vertices is not None else None
-    pred_vertices_centered = pred_vertices.copy() if pred_vertices is not None else None
-
     gt_pelvis_kp = _get_pelvis_from_keypoints(gt_keypoints_3d, skl_format)
     pred_pelvis_kp = _get_pelvis_from_keypoints(pred_keypoints_3d, skl_format)
+    gt_pelvis_mesh = _get_pelvis_from_smpl_joints(gt_joints, skl_format)
+    pred_pelvis_mesh = _get_pelvis_from_smpl_joints(pred_joints, skl_format)
+    if pred_keypoints_smpl is not None:
+        pred_pelvis_mesh_from_smpl_kp = _get_pelvis_from_keypoints(pred_keypoints_smpl, skl_format)
+        if pred_pelvis_mesh_from_smpl_kp is not None:
+            pred_pelvis_mesh = pred_pelvis_mesh_from_smpl_kp
+
+    # Align SMPL mesh to the non-SMPL pelvis in original coordinates when both anchors exist.
+    gt_vertices_aligned = gt_vertices.copy() if gt_vertices is not None else None
+    pred_vertices_aligned = pred_vertices.copy() if pred_vertices is not None else None
+    if gt_vertices_aligned is not None and gt_pelvis_kp is not None and gt_pelvis_mesh is not None:
+        gt_vertices_aligned = gt_vertices_aligned + (gt_pelvis_kp - gt_pelvis_mesh)
+    if pred_vertices_aligned is not None and pred_pelvis_kp is not None and pred_pelvis_mesh is not None:
+        pred_vertices_aligned = pred_vertices_aligned + (pred_pelvis_kp - pred_pelvis_mesh)
+
+    gt_keypoints_centered = gt_keypoints_3d.copy()
+    pred_keypoints_centered = pred_keypoints_3d.copy()
+    gt_vertices_centered = gt_vertices_aligned.copy() if gt_vertices_aligned is not None else None
+    pred_vertices_centered = pred_vertices_aligned.copy() if pred_vertices_aligned is not None else None
 
     if gt_pelvis_kp is not None:
         gt_keypoints_centered = gt_keypoints_centered - gt_pelvis_kp
+        if gt_vertices_centered is not None:
+            gt_vertices_centered = gt_vertices_centered - gt_pelvis_kp
+    elif gt_pelvis_mesh is not None and gt_vertices_centered is not None:
+        gt_vertices_centered = gt_vertices_centered - gt_pelvis_mesh
+
     if pred_pelvis_kp is not None:
         pred_keypoints_centered = pred_keypoints_centered - pred_pelvis_kp
-
-    gt_pelvis_mesh = _get_pelvis_from_smpl_joints(gt_joints, skl_format)
-    pred_pelvis_mesh = _get_pelvis_from_smpl_joints(pred_joints, skl_format)
-
-    if gt_vertices_centered is not None:
-        pelvis_anchor = gt_pelvis_mesh if gt_pelvis_mesh is not None else gt_pelvis_kp
-        if pelvis_anchor is not None:
-            gt_vertices_centered = gt_vertices_centered - pelvis_anchor
-    if pred_vertices_centered is not None:
-        pelvis_anchor = pred_pelvis_mesh if pred_pelvis_mesh is not None else pred_pelvis_kp
-        if pelvis_anchor is not None:
-            pred_vertices_centered = pred_vertices_centered - pelvis_anchor
+        if pred_vertices_centered is not None:
+            pred_vertices_centered = pred_vertices_centered - pred_pelvis_kp
+    elif pred_pelvis_mesh is not None and pred_vertices_centered is not None:
+        pred_vertices_centered = pred_vertices_centered - pred_pelvis_mesh
 
     if pred_keypoints_available:
         bounds = get_bounds(np.concatenate([gt_keypoints_centered, pred_keypoints_centered], axis=0))
@@ -766,8 +807,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             gt_keypoints_cam = _to_camera_coords(gt_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(gt_keypoints_cam, intrinsic)
 
-            if gt_vertices is not None and gt_faces is not None:
-                gt_vertices_cam = _to_camera_coords(gt_vertices.copy(), extrinsic)
+            if gt_vertices_aligned is not None and gt_faces is not None:
+                gt_vertices_cam = _to_camera_coords(gt_vertices_aligned.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     rgb_image.copy(),
@@ -781,7 +822,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 axes[plot_idx].imshow(rgb_image.copy())
 
             plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
-            axes[plot_idx].set_title('RGB + GT Overlay + Mesh' if gt_vertices is not None else 'RGB + GT 2D Overlay')
+            axes[plot_idx].set_title('RGB + GT Overlay + Mesh' if gt_vertices_aligned is not None else 'RGB + GT 2D Overlay')
     plot_idx += 1
     
     # Depth image with GT projected 2D keypoints
@@ -805,8 +846,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 depth_image_norm = depth_for_overlay.astype(np.uint8)
             depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
 
-            if gt_vertices is not None and gt_faces is not None:
-                gt_vertices_cam = _to_camera_coords(gt_vertices.copy(), extrinsic)
+            if gt_vertices_aligned is not None and gt_faces is not None:
+                gt_vertices_cam = _to_camera_coords(gt_vertices_aligned.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     depth_image_rgb,
@@ -820,7 +861,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 axes[plot_idx].imshow(depth_image_rgb)
 
             plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
-            axes[plot_idx].set_title('Depth + GT Overlay + Mesh' if gt_vertices is not None else 'Depth + GT 2D Overlay')
+            axes[plot_idx].set_title('Depth + GT Overlay + Mesh' if gt_vertices_aligned is not None else 'Depth + GT 2D Overlay')
     plot_idx += 1
     
     # RGB image with Pred projected 2D keypoints
@@ -830,8 +871,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
             pred_keypoints_cam = _to_camera_coords(pred_keypoints_3d.copy(), extrinsic)
             keypoints_2d = project_3d_to_2d(pred_keypoints_cam, intrinsic)
 
-            if pred_vertices is not None and pred_faces is not None:
-                pred_vertices_cam = _to_camera_coords(pred_vertices.copy(), extrinsic)
+            if pred_vertices_aligned is not None and pred_faces is not None:
+                pred_vertices_cam = _to_camera_coords(pred_vertices_aligned.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     rgb_image.copy(),
@@ -846,7 +887,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 axes[plot_idx].imshow(rgb_image.copy())
 
             plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
-            axes[plot_idx].set_title('RGB + Pred Overlay + Mesh' if pred_vertices is not None else 'RGB + Pred 2D Overlay')
+            axes[plot_idx].set_title('RGB + Pred Overlay + Mesh' if pred_vertices_aligned is not None else 'RGB + Pred 2D Overlay')
     plot_idx += 1
     
     # Depth image with Pred projected 2D keypoints
@@ -870,8 +911,8 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 depth_image_norm = depth_for_overlay.astype(np.uint8)
             depth_image_rgb = np.stack([depth_image_norm, depth_image_norm, depth_image_norm], axis=-1)
 
-            if pred_vertices is not None and pred_faces is not None:
-                pred_vertices_cam = _to_camera_coords(pred_vertices.copy(), extrinsic)
+            if pred_vertices_aligned is not None and pred_faces is not None:
+                pred_vertices_cam = _to_camera_coords(pred_vertices_aligned.copy(), extrinsic)
                 plot_smpl_mesh_on_image(
                     axes[plot_idx],
                     depth_image_rgb,
@@ -886,7 +927,7 @@ def visualize_multimodal_sample(batch, pred_dict, skl_format=None, denorm_params
                 axes[plot_idx].imshow(depth_image_rgb)
 
             plot_2d_skeleton_on_image(axes[plot_idx], None, keypoints_2d, edges=bones)
-            axes[plot_idx].set_title('Depth + Pred Overlay + Mesh' if pred_vertices is not None else 'Depth + Pred 2D Overlay')
+            axes[plot_idx].set_title('Depth + Pred Overlay + Mesh' if pred_vertices_aligned is not None else 'Depth + Pred 2D Overlay')
     plot_idx += 1
 
     plt.tight_layout()

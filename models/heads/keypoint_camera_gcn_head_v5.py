@@ -228,19 +228,25 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
         for m_idx, (modality, sensor_idx) in enumerate(zip(stream_modalities, stream_sensor_indices)):
             modality_l = modality.lower()
+            expected_num_sensors = max(1, int(self._infer_sensor_count(data_batch, modality_l)))
             if modality_l in {"rgb", "depth"}:
-                kps = self._get_keypoints_2d(
+                kps, kps_sensor_selected = self._get_keypoints_2d(
                     data_batch, pred_dict, modality_l, device, dtype, sensor_idx=sensor_idx
                 )
             else:
-                kps = self._get_keypoints_3d(
+                kps, kps_sensor_selected = self._get_keypoints_3d(
                     data_batch, pred_dict, modality_l, device, dtype, sensor_idx=sensor_idx
                 )
             if kps is None:
                 continue
 
             kps = self._maybe_detach(kps)
-            kps = self._select_sensor_view(kps, sensor_idx=sensor_idx, batch_size=batch_size)
+            kps = self._select_sensor_view(
+                kps,
+                sensor_idx=sensor_idx,
+                batch_size=batch_size,
+                expected_num_sensors=1 if kps_sensor_selected else expected_num_sensors,
+            )
             kps = self._ensure_bstjc(kps, batch_size)
             if kps is None:
                 continue
@@ -400,20 +406,13 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
         if target_streams is not None:
             target_streams = int(max(0, target_streams))
-            if len(specs) > target_streams:
-                specs = specs[:target_streams]
-            elif len(specs) < target_streams:
-                base_modalities = modalities if modalities else ["rgb"]
-                counts = {}
-                for m, s in specs:
-                    counts[m] = max(counts.get(m, 0), s + 1)
-                cursor = 0
-                while len(specs) < target_streams:
-                    m = base_modalities[cursor % len(base_modalities)]
-                    s = counts.get(m, 0)
-                    specs.append((m, s))
-                    counts[m] = s + 1
-                    cursor += 1
+            if len(specs) != target_streams:
+                raise ValueError(
+                    "Stream count mismatch in KeypointCameraGCNHeadV5: "
+                    f"inferred {len(specs)} streams from modalities/selected_cameras "
+                    f"({specs}), but target_streams={target_streams}. "
+                    "Please fix batch metadata or upstream stream ordering."
+                )
 
         return [m for m, _ in specs], [s for _, s in specs]
 
@@ -464,9 +463,29 @@ class KeypointCameraGCNHeadV5(BaseHead):
         return None
 
     @staticmethod
-    def _select_sensor_view(tensor, sensor_idx, batch_size):
+    def _has_explicit_sensor_axis(tensor, batch_size, expected_num_sensors):
+        if not isinstance(tensor, torch.Tensor):
+            return False
+        expected_num_sensors = int(max(1, expected_num_sensors))
+        if expected_num_sensors <= 1:
+            return False
+        if tensor.dim() >= 5 and tensor.shape[1] == expected_num_sensors:
+            return True
+        if tensor.dim() == 4:
+            if tensor.shape[0] == batch_size and tensor.shape[1] == expected_num_sensors:
+                return True
+            if batch_size == 1 and tensor.shape[0] == expected_num_sensors:
+                return True
+        if tensor.dim() == 3:
+            if batch_size == 1 and tensor.shape[0] == expected_num_sensors:
+                return True
+        return False
+
+    @staticmethod
+    def _select_sensor_view(tensor, sensor_idx, batch_size, expected_num_sensors=1):
         if not isinstance(tensor, torch.Tensor):
             return tensor
+        expected_num_sensors = int(max(1, expected_num_sensors))
         if tensor.dim() == 5:
             if tensor.shape[0] == batch_size:
                 view_idx = min(sensor_idx, tensor.shape[1] - 1)
@@ -477,8 +496,14 @@ class KeypointCameraGCNHeadV5(BaseHead):
             return None
         if tensor.dim() == 4:
             if tensor.shape[0] == batch_size:
+                if expected_num_sensors > 1 and tensor.shape[1] == expected_num_sensors:
+                    view_idx = min(sensor_idx, tensor.shape[1] - 1)
+                    return tensor[:, view_idx]
                 return tensor
             if batch_size == 1:
+                if expected_num_sensors > 1 and tensor.shape[0] == expected_num_sensors:
+                    view_idx = min(sensor_idx, tensor.shape[0] - 1)
+                    return tensor[view_idx : view_idx + 1]
                 view_idx = min(sensor_idx, tensor.shape[0] - 1)
                 return tensor[view_idx : view_idx + 1]
             return None
@@ -506,11 +531,15 @@ class KeypointCameraGCNHeadV5(BaseHead):
 
     def _get_keypoints_2d(self, data_batch, pred_dict, modality, device, dtype, sensor_idx=0):
         pred = None
+        pred_is_sensor_specific = False
         if pred_dict is not None:
             pred = pred_dict.get(f"pred_keypoints_2d_{modality}_s{sensor_idx}")
-            if pred is None:
+            if pred is not None:
+                pred_is_sensor_specific = True
+            else:
                 pred = pred_dict.get(f"pred_keypoints_2d_{modality}")
         gt = data_batch.get(f"gt_keypoints_2d_{modality}")
+        gt_is_sensor_specific = False
         if modality == "rgb":
             # Prefer dataset-provided RGB 2D skeletons (e.g., JSON-loaded),
             # and only fall back to predicted RGB keypoints if unavailable.
@@ -518,39 +547,76 @@ class KeypointCameraGCNHeadV5(BaseHead):
         else:
             keypoints = self._mix_pred_gt(pred, gt)
         if keypoints is None:
-            return None
+            return None, False
+        keypoints_is_sensor_specific = (
+            pred_is_sensor_specific if keypoints is pred else gt_is_sensor_specific
+        )
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
-        return keypoints
+        return keypoints, bool(keypoints_is_sensor_specific)
 
     def _get_keypoints_3d(self, data_batch, pred_dict, modality, device, dtype, sensor_idx=0):
         if modality == "lidar":
-            json_pred = self._get_json_lidar_prediction(data_batch, sensor_idx=sensor_idx)
+            json_pred, json_key = self._get_json_lidar_prediction(data_batch, sensor_idx=sensor_idx)
             if json_pred is not None:
+                expected_num_sensors = max(1, int(self._infer_sensor_count(data_batch, modality)))
+                batch_size = self._infer_batch_size(data_batch)
                 keypoints = self._to_tensor(json_pred).to(device=device, dtype=dtype)
-                if self.training:
+                if batch_size is None and isinstance(keypoints, torch.Tensor) and keypoints.dim() >= 3:
+                    batch_size = int(keypoints.shape[0])
+                if (
+                    expected_num_sensors > 1
+                    and int(sensor_idx) > 0
+                    and json_key in {
+                        "pred_keypoints_pc_centered_input_lidar_json",
+                        "pred_keypoints_3d_lidar_json",
+                        "pred_keypoints_lidar_json",
+                        "pred_keypoints_json",
+                    }
+                    and not self._has_explicit_sensor_axis(
+                        keypoints,
+                        batch_size=1 if batch_size is None else int(batch_size),
+                        expected_num_sensors=expected_num_sensors,
+                    )
+                ):
+                    # For multi-sensor LiDAR, a shared non-suffixed JSON key without explicit
+                    # sensor axis would silently duplicate sensor-0 keypoints for other sensors.
+                    # Fall through to model predictions / GT mixing instead.
+                    json_pred = None
+                if json_pred is not None and self.training:
                     keypoints += torch.randn_like(keypoints) * 0.05
-                return keypoints
+                if json_pred is not None:
+                    json_is_sensor_specific = str(json_key).endswith(f"_s{int(sensor_idx)}")
+                    return keypoints, bool(json_is_sensor_specific)
 
         pred = None
+        pred_is_sensor_specific = False
         if pred_dict is not None:
             if modality == "lidar":
                 pred = pred_dict.get(f"pred_keypoints_pc_centered_input_lidar_s{sensor_idx}")
-                if pred is None:
+                if pred is not None:
+                    pred_is_sensor_specific = True
+                else:
                     pred = pred_dict.get("pred_keypoints_pc_centered_input_lidar")
             if pred is None:
                 pred = pred_dict.get(f"pred_keypoints_3d_{modality}_s{sensor_idx}")
+                if pred is not None:
+                    pred_is_sensor_specific = True
             if pred is None:
                 pred = pred_dict.get(f"pred_keypoints_3d_{modality}")
         gt = data_batch.get(f"gt_keypoints_{modality}")
         if gt is None and modality == "lidar":
             gt = data_batch.get("gt_keypoints_pc_centered_input_lidar")
+        gt_is_sensor_specific = False
         keypoints = self._mix_pred_gt(pred, gt)
         if keypoints is None:
-            return None
+            return None, False
+        keypoints_is_sensor_specific = (
+            pred_is_sensor_specific if keypoints is pred else gt_is_sensor_specific
+        )
         keypoints = self._to_tensor(keypoints).to(device=device, dtype=dtype)
         if self.training:
             keypoints += torch.randn_like(keypoints) * 0.05
-        return keypoints
+        return keypoints, bool(keypoints_is_sensor_specific)
 
     @staticmethod
     def _get_json_lidar_prediction(data_batch, sensor_idx=0):
@@ -565,8 +631,8 @@ class KeypointCameraGCNHeadV5(BaseHead):
         for key in keys:
             value = data_batch.get(key)
             if value is not None:
-                return value
-        return None
+                return value, key
+        return None, None
 
     @staticmethod
     def _to_tensor(x):

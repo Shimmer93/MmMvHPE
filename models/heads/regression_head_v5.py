@@ -69,6 +69,13 @@ class RegressionKeypointHeadV5(BaseHead):
             nn.Linear(emb_size // 2, 3),
         )
 
+    @staticmethod
+    def _canonical_modality(modality: str) -> str:
+        m = str(modality).lower()
+        if m in {"pc", "pointcloud"}:
+            return "lidar"
+        return m
+
     def forward(self, x, modalities=None, data_batch=None):
         x = self._select_layers(x)
         if x.dim() == 4:
@@ -209,7 +216,7 @@ class RegressionKeypointHeadV5(BaseHead):
         return self.global_mlp(feats)
 
     def _project_keypoints(self, pred, gt, modality, data_batch, sensor_idx=0):
-        modality = modality.lower()
+        modality = self._canonical_modality(modality)
         if modality in {"rgb", "depth"}:
             gt_proj = self._get_2d_keypoints(
                 gt, modality, data_batch, pred.device, sensor_idx=sensor_idx
@@ -238,6 +245,7 @@ class RegressionKeypointHeadV5(BaseHead):
         return gt_proj
 
     def _get_pc_centered_keypoints(self, data_batch, modality, device, sensor_idx=0):
+        modality = self._canonical_modality(modality)
         key = f"gt_keypoints_pc_centered_input_{modality}"
         gt = data_batch.get(key, None)
         if gt is None:
@@ -278,6 +286,7 @@ class RegressionKeypointHeadV5(BaseHead):
         return None
 
     def _get_camera_params(self, data_batch, modality, device, sensor_idx=0):
+        modality = self._canonical_modality(modality)
         gt_camera = data_batch.get(f"gt_camera_{modality}", None)
         if gt_camera is None:
             return None
@@ -317,6 +326,7 @@ class RegressionKeypointHeadV5(BaseHead):
         return extrinsics.squeeze(1), intrinsics.squeeze(1), image_size
 
     def _get_image_size(self, data_batch, modality):
+        modality = self._canonical_modality(modality)
         input_key = f"input_{modality}"
         if input_key in data_batch:
             inp = data_batch[input_key]
@@ -360,6 +370,11 @@ class RegressionKeypointHeadV5(BaseHead):
 
     def _build_stream_specs(self, modalities=None, data_batch=None, target_streams=None):
         modalities = self._normalize_modalities(modalities)
+        if len(modalities) == 0:
+            raise ValueError(
+                "RegressionKeypointHeadV5 requires non-empty `modalities` to build stream specs. "
+                "Pass batch modalities explicitly from model_api (predict/loss caller)."
+            )
         specs = []
         for modality in modalities:
             n_sensors = self._infer_sensor_count(data_batch, modality)
@@ -368,20 +383,13 @@ class RegressionKeypointHeadV5(BaseHead):
 
         if target_streams is not None:
             target_streams = int(max(0, target_streams))
-            if len(specs) > target_streams:
-                specs = specs[:target_streams]
-            elif len(specs) < target_streams:
-                base_modalities = modalities if modalities else ["rgb"]
-                counts = {}
-                for m, s in specs:
-                    counts[m] = max(counts.get(m, 0), s + 1)
-                cursor = 0
-                while len(specs) < target_streams:
-                    m = base_modalities[cursor % len(base_modalities)]
-                    s = counts.get(m, 0)
-                    specs.append((m, s))
-                    counts[m] = s + 1
-                    cursor += 1
+            if len(specs) != target_streams:
+                raise ValueError(
+                    "Stream count mismatch in RegressionKeypointHeadV5: "
+                    f"inferred {len(specs)} streams from modalities/selected_cameras "
+                    f"({specs}), but target_streams={target_streams}. "
+                    "Please fix batch metadata or upstream stream ordering."
+                )
 
         stream_modalities = [m for m, _ in specs]
         stream_sensor_indices = [s for _, s in specs]
@@ -395,9 +403,13 @@ class RegressionKeypointHeadV5(BaseHead):
             modalities = modalities[0]
         if not isinstance(modalities, (list, tuple)):
             return []
-        return [str(m).lower() for m in modalities]
+        normalized = []
+        for modality in modalities:
+            normalized.append(RegressionKeypointHeadV5._canonical_modality(str(modality).lower()))
+        return normalized
 
     def _infer_sensor_count(self, data_batch, modality):
+        modality = self._canonical_modality(modality)
         if not isinstance(data_batch, dict):
             return 1
 
