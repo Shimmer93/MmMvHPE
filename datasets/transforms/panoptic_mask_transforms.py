@@ -8,7 +8,7 @@ import numpy as np
 
 
 _FRAME_ID_RE = re.compile(r"_(\d{8})$")
-_VALID_MODALITIES = {"rgb", "depth"}
+_VALID_MODALITIES = {"rgb", "depth", "lidar"}
 
 
 def _normalize_apply_to(apply_to: Sequence[str]) -> List[str]:
@@ -22,7 +22,7 @@ def _normalize_apply_to(apply_to: Sequence[str]) -> List[str]:
         if name not in out:
             out.append(name)
     if not out:
-        raise ValueError("`apply_to` must contain at least one of {'rgb', 'depth'}.")
+        raise ValueError("`apply_to` must contain at least one supported modality.")
     return out
 
 
@@ -253,6 +253,42 @@ def reproject_rgb_mask_to_depth_mask(
     return out
 
 
+def filter_lidar_points_with_rgb_mask(
+    pointcloud: np.ndarray,
+    rgb_mask: np.ndarray,
+    k_color: np.ndarray,
+    lidar_extrinsic: np.ndarray,
+    color_extrinsic: np.ndarray,
+) -> np.ndarray:
+    pc = np.asarray(pointcloud, dtype=np.float32)
+    if pc.ndim != 2 or pc.shape[1] < 3:
+        raise ValueError(f"Point cloud must be (N,C>=3), got {pc.shape}")
+    if rgb_mask.ndim != 2:
+        raise ValueError(f"RGB mask must be single-channel, got {rgb_mask.shape}")
+    if pc.shape[0] == 0:
+        return pc.copy()
+
+    pts_lidar = pc[:, :3]
+    pts_world = _camera_to_world(pts_lidar, lidar_extrinsic)
+    pts_color = _world_to_camera(pts_world, color_extrinsic)
+    uv, z_valid = _project_points(pts_color, k_color)
+
+    u = np.rint(uv[:, 0]).astype(np.int32, copy=False)
+    v = np.rint(uv[:, 1]).astype(np.int32, copy=False)
+    in_bounds = (
+        z_valid
+        & np.isfinite(uv[:, 0])
+        & np.isfinite(uv[:, 1])
+        & (u >= 0)
+        & (u < rgb_mask.shape[1])
+        & (v >= 0)
+        & (v < rgb_mask.shape[0])
+    )
+    keep = np.zeros(pc.shape[0], dtype=bool)
+    keep[in_bounds] = rgb_mask[v[in_bounds], u[in_bounds]]
+    return pc[keep].astype(pointcloud.dtype, copy=False)
+
+
 def _ensure_view_sequences(frame_data: Any, key_name: str) -> Tuple[List[List[np.ndarray]], bool]:
     if isinstance(frame_data, list):
         if not frame_data:
@@ -404,37 +440,32 @@ class ApplyPanopticSegmentationMask:
             )
 
         sample_unit = self._sample_unit(sample)
-        rgb_camera_map: Dict[str, Dict[str, Any]] = {}
-        if sample.get("rgb_camera") is not None and sample.get("selected_cameras", {}).get("rgb"):
-            rgb_camera_map = self._camera_payload_map(sample, "rgb")
+        ref_rgb_names, ref_rgb_payloads = self._resolve_reference_rgb_cameras(sample, "depth")
         masked_views: List[List[np.ndarray]] = []
-        for camera_name, frames, depth_camera in zip(cameras, view_sequences, camera_payloads):
-            camera_meta = self._sequence_camera_meta(sequence_root, camera_name)
-            color_cam_payload = rgb_camera_map.get(camera_name)
-            if color_cam_payload is not None:
-                color_ext = np.asarray(color_cam_payload.get("extrinsic"), dtype=np.float32)
-                if color_ext.shape != (3, 4):
-                    raise ValueError(
-                        f"RGB camera extrinsic for {sequence_root.name}/{camera_name} must be (3,4), got {color_ext.shape}."
-                    )
-            else:
-                color_ext = camera_meta.get("extrinsic_world_to_color")
-                if color_ext is None:
+        for camera_name, frames, depth_camera, rgb_name, rgb_camera in zip(
+            cameras, view_sequences, camera_payloads, ref_rgb_names, ref_rgb_payloads
+        ):
+            depth_meta = self._sequence_camera_meta(sequence_root, camera_name)
+            rgb_meta = self._sequence_camera_meta(sequence_root, rgb_name)
+            color_ext = np.asarray(rgb_camera.get("extrinsic"), dtype=np.float32)
+            if color_ext.shape != (3, 4):
+                fallback_color_ext = rgb_meta.get("extrinsic_world_to_color")
+                if fallback_color_ext is None:
                     raise KeyError(
-                        f"Camera metadata for {sequence_root.name}/{camera_name} is missing `extrinsic_world_to_color`."
+                        f"Camera metadata for {sequence_root.name}/{rgb_name} is missing `extrinsic_world_to_color`."
                     )
                 color_ext = _scale_color_extrinsic_translation(
-                    np.asarray(color_ext, dtype=np.float32),
-                    str(camera_meta["extrinsic_world_to_color_unit"]),
+                    np.asarray(fallback_color_ext, dtype=np.float32),
+                    str(rgb_meta["extrinsic_world_to_color_unit"]),
                     sample_unit,
                 )
-            k_color = np.asarray(camera_meta["K_color"], dtype=np.float32)
-            k_depth = np.asarray(camera_meta["K_depth"], dtype=np.float32)
-            color_h = int(camera_meta.get("color_height", 0))
-            color_w = int(camera_meta.get("color_width", 0))
+            k_color = np.asarray(rgb_meta["K_color"], dtype=np.float32)
+            k_depth = np.asarray(depth_meta["K_depth"], dtype=np.float32)
+            color_h = int(rgb_meta.get("color_height", 0))
+            color_w = int(rgb_meta.get("color_width", 0))
             if color_h <= 0 or color_w <= 0:
                 raise ValueError(
-                    f"Camera metadata for {sequence_root.name}/{camera_name} is missing valid color_width/color_height."
+                    f"Camera metadata for {sequence_root.name}/{rgb_name} is missing valid color_width/color_height."
                 )
             depth_ext = np.asarray(depth_camera.get("extrinsic"), dtype=np.float32)
             if depth_ext.shape != (3, 4):
@@ -460,7 +491,7 @@ class ApplyPanopticSegmentationMask:
                     )
                 mask_path = resolve_panoptic_mask_path(
                     sequence_root=sequence_root,
-                    camera_name=camera_name,
+                    camera_name=rgb_name,
                     frame_id=frame_id,
                     mask_subdir=self.mask_subdir,
                 )
@@ -476,6 +507,116 @@ class ApplyPanopticSegmentationMask:
                     color_extrinsic=color_ext,
                 )
                 masked_frames.append(apply_binary_mask_to_frame(frame, depth_mask))
+            masked_views.append(masked_frames)
+        sample[sample_key] = _restore_view_sequences(masked_views, single_view)
+
+    @staticmethod
+    def _resolve_reference_rgb_cameras(
+        sample: Dict[str, Any],
+        target_modality: str,
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        rgb_names = ApplyPanopticSegmentationMask._selected_cameras(sample, "rgb")
+        rgb_payloads = ApplyPanopticSegmentationMask._camera_payloads(sample, "rgb")
+        target_names = ApplyPanopticSegmentationMask._selected_cameras(sample, target_modality)
+        if len(rgb_names) == 1:
+            return [rgb_names[0]] * len(target_names), [rgb_payloads[0]] * len(target_names)
+        if len(rgb_names) == len(target_names):
+            return list(rgb_names), list(rgb_payloads)
+
+        rgb_map = {name: payload for name, payload in zip(rgb_names, rgb_payloads)}
+        ref_names: List[str] = []
+        ref_payloads: List[Dict[str, Any]] = []
+        for target_name in target_names:
+            if target_name not in rgb_map:
+                raise ValueError(
+                    f"Cannot resolve reference RGB camera for {target_modality} camera `{target_name}`. "
+                    f"Available RGB cameras: {rgb_names}."
+                )
+            ref_names.append(target_name)
+            ref_payloads.append(rgb_map[target_name])
+        return ref_names, ref_payloads
+
+    def _apply_to_lidar(
+        self,
+        sample: Dict[str, Any],
+        frame_ids: List[int],
+        sequence_root: Path,
+        mask_cache: Dict[Path, np.ndarray],
+    ) -> None:
+        sample_key = "input_lidar"
+        if sample_key not in sample:
+            return
+
+        view_sequences, single_view = _ensure_view_sequences(sample[sample_key], sample_key)
+        lidar_cameras = self._selected_cameras(sample, "lidar")
+        lidar_payloads = self._camera_payloads(sample, "lidar")
+        if len(view_sequences) != len(lidar_cameras) or len(lidar_payloads) != len(lidar_cameras):
+            raise ValueError(
+                f"LiDAR view/camera metadata mismatch: views={len(view_sequences)}, cameras={len(lidar_cameras)}, "
+                f"camera_payloads={len(lidar_payloads)}."
+            )
+
+        sample_unit = self._sample_unit(sample)
+        ref_rgb_names, ref_rgb_payloads = self._resolve_reference_rgb_cameras(sample, "lidar")
+        masked_views: List[List[np.ndarray]] = []
+        for lidar_name, frames, lidar_camera, rgb_name, rgb_camera in zip(
+            lidar_cameras, view_sequences, lidar_payloads, ref_rgb_names, ref_rgb_payloads
+        ):
+            rgb_meta = self._sequence_camera_meta(sequence_root, rgb_name)
+            color_ext = np.asarray(rgb_camera.get("extrinsic"), dtype=np.float32)
+            if color_ext.shape != (3, 4):
+                fallback_color_ext = rgb_meta.get("extrinsic_world_to_color")
+                if fallback_color_ext is None:
+                    raise ValueError(
+                        f"RGB camera extrinsic for {sequence_root.name}/{rgb_name} must be (3,4), got {color_ext.shape}."
+                    )
+                color_ext = _scale_color_extrinsic_translation(
+                    np.asarray(fallback_color_ext, dtype=np.float32),
+                    str(rgb_meta["extrinsic_world_to_color_unit"]),
+                    sample_unit,
+                )
+            k_color = np.asarray(rgb_meta["K_color"], dtype=np.float32)
+            color_h = int(rgb_meta.get("color_height", 0))
+            color_w = int(rgb_meta.get("color_width", 0))
+            if color_h <= 0 or color_w <= 0:
+                raise ValueError(
+                    f"Camera metadata for {sequence_root.name}/{rgb_name} is missing valid color_width/color_height."
+                )
+            lidar_ext = np.asarray(lidar_camera.get("extrinsic"), dtype=np.float32)
+            if lidar_ext.shape != (3, 4):
+                raise ValueError(
+                    f"LiDAR camera extrinsic for {sequence_root.name}/{lidar_name} must be (3,4), got {lidar_ext.shape}."
+                )
+            if len(frames) != len(frame_ids):
+                raise ValueError(
+                    f"Frame count mismatch for `{sample_key}` camera={lidar_name}: frames={len(frames)}, "
+                    f"frame_ids={len(frame_ids)}."
+                )
+
+            masked_frames: List[np.ndarray] = []
+            for frame_id, frame in zip(frame_ids, frames):
+                if not isinstance(frame, np.ndarray):
+                    raise ValueError(
+                        f"`{sample_key}` camera={lidar_name} frame={frame_id} must be np.ndarray, got {type(frame).__name__}."
+                    )
+                mask_path = resolve_panoptic_mask_path(
+                    sequence_root=sequence_root,
+                    camera_name=rgb_name,
+                    frame_id=frame_id,
+                    mask_subdir=self.mask_subdir,
+                )
+                if mask_path not in mask_cache:
+                    mask_cache[mask_path] = load_panoptic_binary_mask(mask_path, (color_h, color_w))
+                rgb_mask = mask_cache[mask_path]
+                masked_frames.append(
+                    filter_lidar_points_with_rgb_mask(
+                        pointcloud=frame,
+                        rgb_mask=rgb_mask,
+                        k_color=k_color,
+                        lidar_extrinsic=lidar_ext,
+                        color_extrinsic=color_ext,
+                    )
+                )
             masked_views.append(masked_frames)
         sample[sample_key] = _restore_view_sequences(masked_views, single_view)
 
@@ -495,4 +636,6 @@ class ApplyPanopticSegmentationMask:
             )
         if "depth" in self.apply_to:
             self._apply_to_depth(sample, frame_ids, sequence_root, mask_cache)
+        if "lidar" in self.apply_to:
+            self._apply_to_lidar(sample, frame_ids, sequence_root, mask_cache)
         return sample

@@ -111,9 +111,10 @@ class LitModel(L.LightningModule):
             state_dict = {k: v for k, v in state_dict.items() if not k.startswith('camera_head.')}
             self.load_state_dict(state_dict, strict=False)
 
-        if hasattr(hparams, 'pretrained_camera_head_path') and self.with_camera_head:
-            print("Loading pretrained Camera Head from:", hparams.pretrained_camera_head_path)
-            state_dict_camera_head = torch.load(hparams.pretrained_camera_head_path, map_location=self.device)['state_dict']
+        pretrained_camera_head_path = getattr(hparams, 'pretrained_camera_head_path', None)
+        if pretrained_camera_head_path is not None and self.with_camera_head:
+            print("Loading pretrained Camera Head from:", pretrained_camera_head_path)
+            state_dict_camera_head = torch.load(pretrained_camera_head_path, map_location=self.device)['state_dict']
             load_state_dict_part(self.camera_head, state_dict_camera_head, prefix='camera_head.')
 
         self.metrics = {metric['alias' if 'alias' in metric else 'name']: create_metric(metric['name'], metric['params']) for metric in hparams.metrics}
