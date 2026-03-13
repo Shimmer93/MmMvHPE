@@ -1,0 +1,52 @@
+vis_seq: &vis_seq [170915_office1]
+vis_depth: &vis_depth [kinect_008]
+
+train_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params: &dataset_params
+    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['depth']
+    depth_cameras: *vis_depth
+    depth_cameras_per_sample: 1
+    convert_depth_to_lidar: false
+    split: 'train'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: false
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: *vis_seq
+    strict_validation: true
+
+val_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    <<: *dataset_params
+    split: 'test'
+    test_mode: true
+
+test_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    <<: *dataset_params
+    split: 'test'
+    test_mode: true
+
+train_pipeline: &mask_depth_pipeline
+  - name: ApplyPanopticSegmentationMask
+    params:
+      apply_to: ['depth']
+  - name: ToTensor
+    params: null
+
+val_pipeline: *mask_depth_pipeline
+test_pipeline: *mask_depth_pipeline
