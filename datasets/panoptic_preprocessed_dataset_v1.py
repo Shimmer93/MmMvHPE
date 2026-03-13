@@ -385,19 +385,96 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             "temporal_ratio": temporal_ratio,
         }
 
-    def _camera_extrinsic(self, cam: Dict[str, Any], modality: str) -> np.ndarray:
-        m_world2sensor = np.asarray(cam["M_world2sensor"], dtype=np.float32)
-        if modality == "rgb":
-            m_sensor2mod = np.asarray(cam["M_color"], dtype=np.float32)
-        elif modality in {"depth", "lidar"}:
-            m_sensor2mod = np.asarray(cam["M_depth"], dtype=np.float32)
+    def _camera_color_extrinsic_from_metadata(self, seq_name: str, raw_name: str, cam: Dict[str, Any]) -> np.ndarray:
+        if "extrinsic_world_to_color" not in cam:
+            raise KeyError(f"Camera {seq_name}/{raw_name} is missing `extrinsic_world_to_color`.")
+        ext = np.asarray(cam["extrinsic_world_to_color"], dtype=np.float32)
+        if ext.shape != (3, 4):
+            raise ValueError(
+                f"Invalid extrinsic_world_to_color shape for {seq_name}/{raw_name}: {ext.shape}"
+            )
+        ext_unit = str(cam.get("extrinsic_world_to_color_unit", "cm")).lower()
+        ext = ext.copy()
+        if ext_unit == "cm":
+            if self.unit == "m":
+                ext[:, 3] *= 0.01
+            elif self.unit == "mm":
+                ext[:, 3] *= 10.0
+        elif ext_unit == "m":
+            if self.unit == "mm":
+                ext[:, 3] *= 1000.0
+        elif ext_unit == "mm":
+            if self.unit == "m":
+                ext[:, 3] *= 0.001
         else:
-            raise ValueError(f"Unsupported modality for camera extrinsic: {modality}")
-        if m_world2sensor.shape != (4, 4) or m_sensor2mod.shape != (4, 4):
-            raise ValueError("Camera matrices must be 4x4.")
+            raise ValueError(
+                f"Unsupported extrinsic_world_to_color_unit={ext_unit} for {seq_name}/{raw_name}"
+            )
+        return ext
 
-        m_world2mod = m_sensor2mod @ m_world2sensor
-        return np.asarray(m_world2mod[:3, :4], dtype=np.float32)
+    def _scale_sensor_relative_translation(self, ext_4x4: np.ndarray) -> np.ndarray:
+        out = np.asarray(ext_4x4, dtype=np.float32).copy()
+        if out.shape != (4, 4):
+            raise ValueError(f"Expected 4x4 sensor-relative transform, got {out.shape}")
+        if self.unit == "m":
+            return out
+        if self.unit == "mm":
+            out[:3, 3] *= 1000.0
+            return out
+        if self.unit == "cm":
+            out[:3, 3] *= 100.0
+            return out
+        raise ValueError(f"Unsupported unit for Panoptic sensor-relative transform scaling: {self.unit}")
+
+    def _camera_color_world_extrinsic(
+        self,
+        seq_name: str,
+        camera_name: str,
+        raw_name: str,
+        cam: Dict[str, Any],
+        ext_map: Dict[str, np.ndarray],
+    ) -> np.ndarray:
+        if "extrinsic_world_to_color" in cam:
+            return self._camera_color_extrinsic_from_metadata(seq_name, raw_name, cam)
+        if camera_name in ext_map:
+            ext = np.asarray(ext_map[camera_name], dtype=np.float32)
+            if ext.shape != (3, 4):
+                raise ValueError(
+                    f"Invalid panoptic_extrinsics shape for {seq_name}/{camera_name}: {ext.shape}"
+                )
+            return ext
+        raise RuntimeError(
+            f"Failed to resolve Panoptic world-to-color extrinsic for {seq_name}/{raw_name}. "
+            "Panoptic depth/LiDAR geometry requires a valid world-to-color calibration."
+        )
+
+    def _camera_depth_world_extrinsic(
+        self,
+        seq_name: str,
+        camera_name: str,
+        raw_name: str,
+        cam: Dict[str, Any],
+        ext_map: Dict[str, np.ndarray],
+    ) -> np.ndarray:
+        color_ext = self._camera_color_world_extrinsic(seq_name, camera_name, raw_name, cam, ext_map)
+        if "M_color" not in cam:
+            raise KeyError(f"Camera metadata is missing required `M_color` matrix for {seq_name}/{raw_name}.")
+        if "M_depth" not in cam:
+            raise KeyError(f"Camera metadata is missing required `M_depth` matrix for {seq_name}/{raw_name}.")
+        m_color = np.asarray(cam["M_color"], dtype=np.float32)
+        m_depth = np.asarray(cam["M_depth"], dtype=np.float32)
+        if m_color.shape != (4, 4) or m_depth.shape != (4, 4):
+            raise ValueError(
+                f"Camera {seq_name}/{raw_name} has invalid M_color/M_depth shapes: "
+                f"{m_color.shape}, {m_depth.shape}"
+            )
+
+        rel_depth_from_color = np.linalg.inv(m_depth) @ m_color
+        rel_depth_from_color = self._scale_sensor_relative_translation(rel_depth_from_color)
+        color_ext_h = np.eye(4, dtype=np.float32)
+        color_ext_h[:3, :4] = color_ext
+        depth_ext = rel_depth_from_color @ color_ext_h
+        return np.asarray(depth_ext[:3, :4], dtype=np.float32)
 
     def _camera_intrinsic(self, cam: Dict[str, Any], modality: str) -> np.ndarray:
         key = "K_color" if modality == "rgb" else "K_depth"
@@ -776,41 +853,20 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
         if raw_name not in seq_info["cameras"]:
             raise KeyError(f"Camera {raw_name} not found in cropped cameras metadata for {seq_name}")
         cam = seq_info["cameras"][raw_name]
-        if modality in {"rgb", "depth", "lidar"} and "extrinsic_world_to_color" in cam:
-            ext = np.asarray(cam["extrinsic_world_to_color"], dtype=np.float32)
-            if ext.shape != (3, 4):
-                raise ValueError(
-                    f"Invalid extrinsic_world_to_color shape for {seq_name}/{raw_name}: {ext.shape}"
-                )
-            ext_unit = str(cam.get("extrinsic_world_to_color_unit", "cm")).lower()
-            ext = ext.copy()
-            if ext_unit == "cm":
-                if self.unit == "m":
-                    ext[:, 3] *= 0.01
-                elif self.unit == "mm":
-                    ext[:, 3] *= 10.0
-            elif ext_unit == "m":
-                if self.unit == "mm":
-                    ext[:, 3] *= 1000.0
-            elif ext_unit == "mm":
-                if self.unit == "m":
-                    ext[:, 3] *= 0.001
-            else:
-                raise ValueError(
-                    f"Unsupported extrinsic_world_to_color_unit={ext_unit} for {seq_name}/{raw_name}"
-                )
-            extrinsic = ext
-        else:
-            extrinsic = None
         ext_map = seq_info.get("panoptic_extrinsics", {})
-        if extrinsic is None:
-            if modality == "rgb" and camera_name in ext_map:
-                extrinsic = ext_map[camera_name]
-            elif modality in {"depth", "lidar"} and camera_name in ext_map:
-                # Use color extrinsic for depth streams since RGB/depth were synchronized and cropped together.
-                extrinsic = ext_map[camera_name]
-            else:
-                extrinsic = self._camera_extrinsic(cam, modality)
+        if modality == "rgb":
+            extrinsic = self._camera_color_world_extrinsic(seq_name, camera_name, raw_name, cam, ext_map)
+        elif modality in {"depth", "lidar"}:
+            try:
+                extrinsic = self._camera_depth_world_extrinsic(seq_name, camera_name, raw_name, cam, ext_map)
+            except (KeyError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Failed to resolve {modality} extrinsic for {seq_name}/{raw_name} from Panoptic world-to-color "
+                    "and modality-relative camera metadata. Depth/LiDAR must not fall back to shared RGB/world-to-color "
+                    "extrinsics or to M_world2sensor."
+                ) from exc
+        else:
+            raise ValueError(f"Unsupported camera modality: {modality}")
         return {
             "intrinsic": self._camera_intrinsic(cam, modality),
             "extrinsic": extrinsic,
@@ -1109,7 +1165,9 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             "gt_global_orient": gt_global_orient,
             "gt_pelvis": pelvis,
             "seq_name": seq_name,
+            "sequence_root": str(Path(self.data_root) / seq_name),
             "start_frame": start,
+            "body_frame_ids": [int(fid) for fid in frame_window],
             "selected_cameras": {
                 "rgb": list(selected_rgb),
                 "depth": list(selected_depth),
