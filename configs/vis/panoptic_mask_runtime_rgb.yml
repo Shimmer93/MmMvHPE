@@ -1,0 +1,55 @@
+vis_seq: &vis_seq [170915_office1]
+vis_rgb: &vis_rgb [kinect_008]
+
+train_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params: &dataset_params
+    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb']
+    rgb_cameras: *vis_rgb
+    rgb_cameras_per_sample: 1
+    split: 'train'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: false
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: *vis_seq
+    strict_validation: true
+
+val_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    <<: *dataset_params
+    split: 'test'
+    test_mode: true
+
+test_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    <<: *dataset_params
+    split: 'test'
+    test_mode: true
+
+train_pipeline: &mask_rgb_pipeline
+  - name: ApplyPanopticSegmentationMask
+    params:
+      apply_to: ['rgb']
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: ToTensor
+    params: null
+
+val_pipeline: *mask_rgb_pipeline
+test_pipeline: *mask_rgb_pipeline

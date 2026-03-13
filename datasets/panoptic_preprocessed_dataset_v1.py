@@ -1166,6 +1166,7 @@ class PanopticPreprocessedDatasetV1(BaseDataset):
             "gt_pelvis": pelvis,
             "seq_name": seq_name,
             "sequence_root": str(Path(self.data_root) / seq_name),
+            "unit": self.unit,
             "start_frame": start,
             "body_frame_ids": [int(fid) for fid in frame_window],
             "selected_cameras": {

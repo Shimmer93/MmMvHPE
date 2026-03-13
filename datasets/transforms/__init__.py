@@ -6,3 +6,4 @@ from .formatting import *
 from .camera_param_transform import *
 from .leir_transforms import *
 from .pose_transforms import *
+from .panoptic_mask_transforms import *
