@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`ApplyPanopticSegmentationMask` applies existing SAM3 binary masks to Panoptic RGB and/or depth frames at dataset runtime. It is designed to avoid writing a second masked copy of the dataset to disk.
+`ApplyPanopticSegmentationMask` applies existing SAM3 binary masks to Panoptic RGB, depth, and/or depth-derived LiDAR inputs at dataset runtime. It is designed to avoid writing a second masked copy of the dataset to disk.
 
 The transform is Panoptic-specific and expects masks under each sequence root:
 
@@ -24,11 +24,12 @@ The Panoptic dataset now exposes two extra sample fields used by the transform:
 
 The transform:
 
-- accepts `apply_to: ['rgb']`, `['depth']`, or `['rgb', 'depth']`
+- accepts `apply_to: ['rgb']`, `['depth']`, `['lidar']`, or combinations such as `['rgb', 'lidar']`
 - resolves mask paths from `sequence_root`, selected camera names, and `body_frame_ids`
 - maps normalized sample cameras like `kinect_008` to on-disk folders like `kinect_8`
 - zeroes masked-out RGB pixels directly in the RGB image plane
 - reprojects the RGB mask into the depth image plane before zeroing depth pixels
+- projects LiDAR / depth-derived point clouds into the selected RGB mask view and drops background points
 - preserves depth dtype / shape while masking
 - raises explicit errors on missing masks, unreadable masks, unresolved metadata, or mask/frame shape mismatch
 
@@ -39,6 +40,13 @@ For depth, the transform does not reuse the RGB mask bitmap directly. It:
 - projects them with `K_color`
 - samples the RGB mask in the RGB image plane
 - keeps only depth pixels whose projected RGB samples fall on foreground
+
+For LiDAR, the transform:
+
+- treats `input_lidar` as points in the current LiDAR camera coordinate frame
+- transforms them to world with `lidar_camera.extrinsic`
+- projects them into the selected RGB camera with `rgb_camera.extrinsic` and `K_color`
+- keeps only points whose projected RGB pixels fall on foreground
 
 ## Usage
 
@@ -56,7 +64,7 @@ Combined RGB+depth example:
 
 - `configs/vis/panoptic_mask_runtime_rgb_depth.yml`
 
-Minimal YAML pattern:
+Minimal YAML patterns:
 
 ```yaml
 - name: ApplyPanopticSegmentationMask
@@ -66,15 +74,21 @@ Minimal YAML pattern:
   params:
     norm_mode: 'imagenet'
     keys: ['input_rgb']
-- name: ToTensor
+  - name: ToTensor
   params: null
+```
+
+```yaml
+- name: ApplyPanopticSegmentationMask
+  params:
+    apply_to: ['rgb', 'lidar']
 ```
 
 ## Important Constraint
 
 Depth masking only applies when `input_depth` is still present in the sample.
 
-If a Panoptic config sets `convert_depth_to_lidar: true`, `PanopticPreprocessedDatasetV1` converts depth to `input_lidar` before the pipeline and removes `input_depth`. In that case this transform cannot modify the depth image because it never reaches the pipeline.
+If a Panoptic config sets `convert_depth_to_lidar: true`, `PanopticPreprocessedDatasetV1` converts depth to `input_lidar` before the pipeline and removes `input_depth`. In that case this transform cannot modify the depth image because it never reaches the pipeline, but it can still mask `input_lidar` directly with `apply_to: ['lidar']` or `['rgb', 'lidar']`.
 
 For that reason, the depth example configs in this change use:
 
