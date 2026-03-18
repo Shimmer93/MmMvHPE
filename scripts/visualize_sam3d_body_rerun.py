@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from misc.sam3d_eval import sam3_cam_int_from_rgb_camera
 from misc.utils import load_cfg, merge_args_cfg
 from misc.registry import create_dataset
 from rerun_utils.camera import resolve_view_extrinsics, transform_points_to_camera
@@ -194,6 +195,20 @@ def _to_numpy(value):
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _select_rgb_camera_view(rgb_camera_data, view_idx: int):
+    if rgb_camera_data is None:
+        raise ValueError("Sample does not contain `rgb_camera`; SAM-3D-Body intrinsics cannot be resolved.")
+    if isinstance(rgb_camera_data, list):
+        if not rgb_camera_data:
+            raise ValueError("Sample contains an empty `rgb_camera` list.")
+        if view_idx >= len(rgb_camera_data):
+            raise ValueError(
+                f"Requested rgb camera view {view_idx}, but sample only provides {len(rgb_camera_data)} view(s)."
+            )
+        return rgb_camera_data[view_idx]
+    return rgb_camera_data
 
 
 def _sam3d_skeleton() -> tuple[list[tuple[int, int]], list[list[int]]]:
@@ -597,7 +612,13 @@ def main() -> None:
             rr.log(f"world/inputs/rgb/view_{view_idx}/image", rr.Image(rgb_image))
 
             if view_idx == center_view_idx:
-                outputs = estimator.process_one_image(rgb_image, use_mask=args.use_mask)
+                outputs = estimator.process_one_image(
+                    rgb_image,
+                    cam_int=sam3_cam_int_from_rgb_camera(
+                        _select_rgb_camera_view(cached_sample.get("rgb_camera"), view_idx)
+                    ),
+                    use_mask=args.use_mask,
+                )
                 overlay = _draw_overlay(rgb_image, outputs, skeleton_edges=sam_edges)
                 if args.debug_image_stats:
                     _log_image_stats(f"sample_{step_sample_idx}/frame_{safe_idx}/rgb/view_{view_idx}/overlay", overlay)

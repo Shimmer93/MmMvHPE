@@ -1,0 +1,95 @@
+vis_seq: &vis_seq [170407_office2]
+vis_rgb: &vis_rgb [kinect_007]
+
+train_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: &data_root '/opt/data/panoptic_kinoptic_single_actor_cropped'
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb']
+    rgb_cameras: *vis_rgb
+    split: 'train'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: false
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: *vis_seq
+    strict_validation: true
+
+val_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb']
+    rgb_cameras: *vis_rgb
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: *vis_seq
+    strict_validation: true
+
+test_dataset:
+  name: 'PanopticPreprocessedDatasetV1'
+  params:
+    data_root: *data_root
+    unit: 'm'
+    gt_unit: 'cm'
+    output_num_joints: 19
+    apply_to_new_world: false
+    remove_root_rotation: false
+    modality_names: ['rgb']
+    rgb_cameras: *vis_rgb
+    split: 'test'
+    split_config: 'configs/datasets/panoptic_split_config.yml'
+    split_to_use: 'temporal_split'
+    test_mode: true
+    seq_len: 1
+    seq_step: 1
+    pad_seq: true
+    causal: true
+    use_all_pairs: false
+    colocated: false
+    sequence_allowlist: *vis_seq
+    strict_validation: true
+
+train_pipeline: &train_pipeline
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: ToTensor
+    params: null
+
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+
+vis_skl_format: 'panoptic_coco19'
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0]
+  depth_std: [255.0]
