@@ -1,0 +1,15 @@
+- [x] Add a synthetic exported training dataset under `datasets/` that indexes accepted synthetic sample roots and reads the minimal export contract for HuMMan-style and Panoptic-style samples.
+- [x] Register the new synthetic dataset in `datasets/__init__.py`.
+- [x] Implement HuMMan-style sample loading from `exports/humman`, including RGB, LiDAR, cameras, SMPL params, 2D RGB keypoints, and LiDAR-centered keypoints.
+- [x] Implement Panoptic-style sample loading from `exports/panoptic`, including on-the-fly derivation of LiDAR camera targets and LiDAR-centered keypoints from the base synthetic manifest.
+- [x] Enforce `seq_len=1` and fail fast on malformed or incomplete synthetic sample directories.
+- [x] Add loader documentation under `docs/` describing the synthetic sample contract, expected directory structure, and dataset parameters.
+- [x] Add HuMMan-style synthetic stage-1 pretrain config.
+- [x] Add HuMMan-style synthetic stage-2 camera-head pretrain config.
+- [x] Add HuMMan real-data stage-1 finetune config initialized from synthetic stage-1 checkpoints.
+- [x] Add HuMMan real-data stage-2 finetune and final-eval configs aligned with `tools/eval_fixed_lidar_frame.py`.
+- [x] Add Panoptic-style synthetic stage-1 pretrain config.
+- [x] Add Panoptic-style synthetic stage-2 camera-head pretrain config.
+- [x] Add Panoptic real-data stage-1 finetune config initialized from synthetic stage-1 checkpoints.
+- [x] Add Panoptic real-data stage-2 finetune and final-eval configs aligned with `tools/eval_fixed_lidar_frame.py`.
+- [x] Smoke-test dataset instantiation and representative config loading against `/opt/data/coco/synthetic_data/v0a_train2017`.

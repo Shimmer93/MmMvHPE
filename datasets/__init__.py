@@ -8,6 +8,7 @@ from .humman_dataset_v3 import HummanPreprocessedDatasetV3
 from .humman_camera_dataset_v1 import HummanCameraDatasetV1
 from .panoptic_preprocessed_dataset_v1 import PanopticPreprocessedDatasetV1
 from .panoptic_preprocessed_dataset_v2 import PanopticPreprocessedDatasetV2
+from .synthetic_exported_training_dataset import SyntheticExportedTrainingDataset
 
 __all__ = [
     'BaseDataset',
@@ -22,4 +23,5 @@ __all__ = [
     'HummanCameraDatasetV1',
     'PanopticPreprocessedDatasetV1',
     'PanopticPreprocessedDatasetV2',
+    'SyntheticExportedTrainingDataset',
 ]

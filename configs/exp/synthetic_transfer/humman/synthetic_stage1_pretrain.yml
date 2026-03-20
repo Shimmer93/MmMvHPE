@@ -1,0 +1,196 @@
+strategy: ddp
+benchmark: true
+deterministic: false
+pretrained: false
+sync_batchnorm: false
+clip_grad: null
+precision: 16
+epochs: &epochs 20
+
+train_dataset:
+  name: 'SyntheticExportedTrainingDataset'
+  params:
+    data_root: &train_root '/opt/data/coco/synthetic_data/v0a_train2017'
+    target_format: 'humman'
+    split: 'train'
+    test_mode: false
+    modality_names: ['rgb', 'lidar']
+    seq_len: 1
+val_dataset:
+  name: 'SyntheticExportedTrainingDataset'
+  params:
+    data_root: &val_root '/opt/data/coco/synthetic_data/v0a_val2017'
+    target_format: 'humman'
+    split: 'val'
+    test_mode: true
+    modality_names: ['rgb', 'lidar']
+    seq_len: 1
+test_dataset:
+  name: 'SyntheticExportedTrainingDataset'
+  params:
+    data_root: *val_root
+    target_format: 'humman'
+    split: 'val'
+    test_mode: true
+    modality_names: ['rgb', 'lidar']
+    seq_len: 1
+
+optim_name: AdamW
+optim_params:
+  lr: &lr 0.0002
+  weight_decay: 0.00001
+
+sched_name: LinearWarmupCosineAnnealingLR
+sched_params:
+  warmup_epochs: 4
+  max_epochs: *epochs
+  warmup_start_lr: 0.00002
+  eta_min: 0.00002
+
+model_name: HummanVIBEToken
+backbone_rgb:
+  name: 'TimmWrapper'
+  params:
+    model_name: 'vit_small_patch16_dinov3'
+    pretrained: true
+  has_temporal: false
+backbone_lidar:
+  name: 'MAMBA4DEncoder'
+  params:
+    radius: 0.1
+    nsamples: 16
+    spatial_stride: 32
+    temporal_kernel_size: 3
+    temporal_stride: 1
+    emb_relu: false
+    dim: 512
+    mlp_dim: 1024
+    num_classes: 0
+    depth_mamba_inter: 5
+    rms_norm: true
+    drop_out_in_block: 0.0
+    drop_path: 0.1
+    depth_mamba_intra: 1
+    intra: true
+    mode: 'xyz'
+  has_temporal: true
+aggregator:
+  name: 'TransformerAggregatorV4'
+  params:
+    input_dims: [384, 384, 512, 512]
+    embed_dim: 512
+    num_register_tokens: 4
+    num_smpl_tokens: 1
+    aa_order: ['single', 'cross_joint', 'gcn']
+    aa_block_size: 1
+    depth: 12
+    block_type: 'Block'
+    skeleton_type: 'smpl'
+    num_heads: 8
+    mlp_ratio: 2.0
+    qkv_bias: true
+    proj_bias: true
+    ffn_bias: true
+    qk_norm: true
+    init_values: 0.01
+    gcn_norm_type: 'gn'
+keypoint_head:
+  name: 'RegressionKeypointHeadV5'
+  params:
+    emb_size: 1024
+    num_joints: 24
+    num_register_tokens: 4
+    num_smpl_tokens: 1
+    max_modalities: 4
+    last_n_layers: 4
+    pose_encoding_type: "absT_quaR_FoV"
+    losses:
+      - name: 'KeypointLoss'
+        params:
+          loss_type: 'MSE'
+        weight: 1.0
+        alias: 'KeypointMSELoss'
+smpl_head:
+  name: 'VIBETokenHeadV5'
+  params:
+    emb_size: 1024
+    smpl_path: 'weights/smpl/SMPL_NEUTRAL.pkl'
+    smpl_mean_params: 'weights/smpl_mean_params.npz'
+    n_iters: 3
+    num_register_tokens: 4
+    num_smpl_tokens: 1
+    max_modalities: 4
+    last_n_layers: 4
+    pose_encoding_type: "absT_quaR_FoV"
+    losses:
+      - name: 'KeypointLoss'
+        params:
+          loss_type: 'MSE'
+          root_joint_idx: 0
+        weight: 1.0
+        alias: 'SMPLKeypointMSELoss'
+      - name: 'MSELoss'
+        params: null
+        weight: 0.01
+        alias: 'SMPLPoseMSELoss'
+      - name: 'MSELoss'
+        params: null
+        weight: 0.01
+        alias: 'SMPLShapeMSELoss'
+      - name: 'MSELoss'
+        params: null
+        weight: 0.01
+        alias: 'SMPLRotMatMSELoss'
+
+metrics:
+  - name: 'MPJPE'
+    params:
+      use_smpl: true
+      root_joint_idx: 0
+  - name: 'PAMPJPE'
+    params:
+      use_smpl: true
+      root_joint_idx: 0
+  - name: 'MPJPE'
+    params:
+      use_smpl: false
+      affix: no_smpl
+    alias: 'MPJPE_no_smpl'
+  - name: 'PAMPJPE'
+    params:
+      use_smpl: false
+      affix: no_smpl
+    alias: 'PAMPJPE_no_smpl'
+
+train_pipeline: &train_pipeline
+  - name: VideoCenterCropResize
+    params:
+      size: [224, 224]
+      keys: ['input_rgb']
+  - name: CameraParamToPoseEncoding
+    params:
+      pose_encoding_type: "absT_quaR_FoV"
+  - name: PCCenterWithKeypoints
+    params:
+      center_type: 'mean'
+      keys: ['input_lidar']
+      keypoints_key: 'gt_keypoints'
+  - name: VideoNormalize
+    params:
+      norm_mode: 'imagenet'
+      keys: ['input_rgb']
+  - name: PCPad
+    params:
+      num_points: 1024
+      pad_mode: 'repeat'
+      keys: ['input_lidar']
+  - name: ToTensor
+    params: null
+val_pipeline: *train_pipeline
+test_pipeline: *train_pipeline
+vis_skl_format: 'smpl'
+vis_denorm_params:
+  rgb_mean: [123.675, 116.28, 103.53]
+  rgb_std: [58.395, 57.12, 57.375]
+  depth_mean: [0.0]
+  depth_std: [255.0]

@@ -75,6 +75,201 @@ class VideoResize():
 
             sample[key] = resized_frames
         return sample
+
+
+class VideoCenterCropResize():
+    def __init__(
+        self,
+        size: Sequence[int],
+        interpolation: str = 'bilinear',
+        keys: List[str] = ['input_rgb'],
+        update_2d_keypoints: bool = True,
+    ):
+        if len(size) != 2:
+            raise ValueError("size must be a 2-element sequence [H, W].")
+        self.size = (int(size[0]), int(size[1]))
+        self.interpolation = interpolation
+        self.keys = keys
+        self.update_2d_keypoints = bool(update_2d_keypoints)
+
+    @staticmethod
+    def _camera_key_from_input_key(key: str) -> str:
+        if key.startswith('input_'):
+            return f'{key[6:]}_camera'
+        return f'{key}_camera'
+
+    @staticmethod
+    def _to_camera_list(camera):
+        if camera is None:
+            return []
+        if isinstance(camera, (list, tuple)):
+            return list(camera)
+        return [camera]
+
+    @staticmethod
+    def _restore_camera_type(cameras, original):
+        if isinstance(original, (list, tuple)):
+            return cameras
+        return cameras[0] if cameras else None
+
+    @staticmethod
+    def _is_multiview_frames(frames):
+        return (
+            isinstance(frames, (list, tuple))
+            and len(frames) > 0
+            and isinstance(frames[0], (list, tuple))
+        )
+
+    @staticmethod
+    def _denormalize_points_2d(points_2d, image_size_hw):
+        h, w = int(image_size_hw[0]), int(image_size_hw[1])
+        pts = np.asarray(points_2d, dtype=np.float32).copy()
+        pts[..., 0] = (pts[..., 0] + 1.0) * 0.5 * max(w - 1, 1)
+        pts[..., 1] = (pts[..., 1] + 1.0) * 0.5 * max(h - 1, 1)
+        return pts
+
+    @staticmethod
+    def _normalize_points_2d(points_2d, image_size_hw):
+        h, w = int(image_size_hw[0]), int(image_size_hw[1])
+        pts = np.asarray(points_2d, dtype=np.float32).copy()
+        pts[..., 0] = 2.0 * (pts[..., 0] / max(w - 1, 1)) - 1.0
+        pts[..., 1] = 2.0 * (pts[..., 1] / max(h - 1, 1)) - 1.0
+        return pts
+
+    @staticmethod
+    def _crop_box_for_aspect(h: int, w: int, target_h: int, target_w: int):
+        target_aspect = float(target_h) / float(target_w)
+        current_aspect = float(h) / float(w)
+        if abs(current_aspect - target_aspect) < 1e-6:
+            return 0, 0, w, h
+        if current_aspect > target_aspect:
+            crop_h = max(1, int(round(w * target_aspect)))
+            crop_w = w
+            x0 = 0
+            y0 = max(0, (h - crop_h) // 2)
+        else:
+            crop_h = h
+            crop_w = max(1, int(round(h / target_aspect)))
+            x0 = max(0, (w - crop_w) // 2)
+            y0 = 0
+        return x0, y0, crop_w, crop_h
+
+    def _resize_frame(self, frame, out_w, out_h):
+        if self.interpolation == 'bilinear':
+            interp_method = cv2.INTER_LINEAR
+        elif self.interpolation == 'nearest':
+            interp_method = cv2.INTER_NEAREST
+        else:
+            raise ValueError(f"Unsupported interpolation method: {self.interpolation}")
+        return cv2.resize(frame, (out_w, out_h), interpolation=interp_method)
+
+    def _transform_camera(self, camera, x0, y0, crop_w, crop_h, out_w, out_h):
+        if camera is None:
+            return None
+        cam = deepcopy(camera)
+        intrinsic = np.asarray(cam['intrinsic'], dtype=np.float32).copy()
+        intrinsic[0, 2] -= float(x0)
+        intrinsic[1, 2] -= float(y0)
+        scale_x = float(out_w) / float(crop_w)
+        scale_y = float(out_h) / float(crop_h)
+        intrinsic[0, 0] *= scale_x
+        intrinsic[1, 1] *= scale_y
+        intrinsic[0, 2] *= scale_x
+        intrinsic[1, 2] *= scale_y
+        cam['intrinsic'] = intrinsic
+        return cam
+
+    def _transform_points_2d(self, points_2d, in_hw, crop_box):
+        in_h, in_w = in_hw
+        x0, y0, crop_w, crop_h = crop_box
+        out_h, out_w = self.size
+        pts = np.asarray(points_2d, dtype=np.float32)
+        if pts.size == 0:
+            return pts.astype(np.float32)
+        is_normalized = np.isfinite(pts).all() and float(np.nanmax(np.abs(pts))) <= 1.5
+        if is_normalized:
+            pts = self._denormalize_points_2d(pts, (in_h, in_w))
+        pts = pts.copy()
+        pts[..., 0] = (pts[..., 0] - float(x0)) * (float(out_w) / float(crop_w))
+        pts[..., 1] = (pts[..., 1] - float(y0)) * (float(out_h) / float(crop_h))
+        if is_normalized:
+            pts = self._normalize_points_2d(pts, (out_h, out_w))
+        return pts.astype(np.float32)
+
+    def __call__(self, sample):
+        for key in self.keys:
+            if key not in sample:
+                continue
+            frames = sample[key]
+            if not frames:
+                continue
+
+            out_h, out_w = self.size
+            camera_key = self._camera_key_from_input_key(key)
+            camera_raw = sample.get(camera_key)
+
+            if self._is_multiview_frames(frames):
+                transformed_views = []
+                camera_list = self._to_camera_list(camera_raw)
+                if camera_list and len(camera_list) != len(frames):
+                    raise ValueError(
+                        f"Camera/view count mismatch for {key}: {len(camera_list)} cameras vs {len(frames)} views."
+                    )
+                updated_cameras = []
+                crop_boxes = []
+                input_shapes = []
+                for view_idx, view_frames in enumerate(frames):
+                    if not view_frames:
+                        transformed_views.append(view_frames)
+                        continue
+                    h, w = view_frames[0].shape[:2]
+                    crop_box = self._crop_box_for_aspect(h, w, out_h, out_w)
+                    x0, y0, crop_w, crop_h = crop_box
+                    transformed_views.append(
+                        [
+                            self._resize_frame(frame[y0:y0 + crop_h, x0:x0 + crop_w], out_w, out_h)
+                            for frame in view_frames
+                        ]
+                    )
+                    crop_boxes.append(crop_box)
+                    input_shapes.append((h, w))
+                    if camera_list:
+                        updated_cameras.append(
+                            self._transform_camera(camera_list[view_idx], x0, y0, crop_w, crop_h, out_w, out_h)
+                        )
+                sample[key] = transformed_views
+                if updated_cameras:
+                    sample[camera_key] = self._restore_camera_type(updated_cameras, camera_raw)
+
+                if (
+                    self.update_2d_keypoints
+                    and key == 'input_rgb'
+                    and 'gt_keypoints_2d_rgb' in sample
+                    and crop_boxes
+                ):
+                    kpts = np.asarray(sample['gt_keypoints_2d_rgb'], dtype=np.float32)
+                    if kpts.ndim >= 3 and kpts.shape[0] == len(crop_boxes):
+                        out = []
+                        for view_idx, crop_box in enumerate(crop_boxes):
+                            out.append(self._transform_points_2d(kpts[view_idx], input_shapes[view_idx], crop_box))
+                        sample['gt_keypoints_2d_rgb'] = np.stack(out, axis=0).astype(np.float32)
+            else:
+                h, w = frames[0].shape[:2]
+                crop_box = self._crop_box_for_aspect(h, w, out_h, out_w)
+                x0, y0, crop_w, crop_h = crop_box
+                sample[key] = [
+                    self._resize_frame(frame[y0:y0 + crop_h, x0:x0 + crop_w], out_w, out_h)
+                    for frame in frames
+                ]
+                if camera_raw is not None:
+                    sample[camera_key] = self._transform_camera(camera_raw, x0, y0, crop_w, crop_h, out_w, out_h)
+                if self.update_2d_keypoints and key == 'input_rgb' and 'gt_keypoints_2d_rgb' in sample:
+                    sample['gt_keypoints_2d_rgb'] = self._transform_points_2d(
+                        sample['gt_keypoints_2d_rgb'],
+                        (h, w),
+                        crop_box,
+                    )
+        return sample
                 
 class VideoNormalize():
     def __init__(self, 
