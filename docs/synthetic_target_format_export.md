@@ -39,6 +39,7 @@ Optional derived outputs:
 - `gt_camera_rgb.npy`
 - `gt_camera_lidar.npy`
 - `gt_keypoints_2d_rgb.npy`
+  - normalized to `[-1, 1]` and clipped to that range to match the HuMMan and Panoptic dataset loaders
 
 ### Panoptic Export
 
@@ -54,6 +55,7 @@ Optional derived outputs:
 
 - `gt_camera_rgb.npy`
 - `gt_keypoints_2d_rgb.npy`
+  - normalized to `[-1, 1]` and clipped to that range
 
 Panoptic export is intentionally keypoint-only and does not save `gt_smpl_params`.
 

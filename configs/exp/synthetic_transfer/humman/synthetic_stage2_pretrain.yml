@@ -18,6 +18,7 @@ train_dataset:
     test_mode: false
     modality_names: ['rgb', 'lidar']
     seq_len: 1
+    lidar_version: 'v0a'
 val_dataset:
   name: 'SyntheticExportedTrainingDataset'
   params:
@@ -27,6 +28,7 @@ val_dataset:
     test_mode: true
     modality_names: ['rgb', 'lidar']
     seq_len: 1
+    lidar_version: 'v0a'
 test_dataset:
   name: 'SyntheticExportedTrainingDataset'
   params:
@@ -36,6 +38,7 @@ test_dataset:
     test_mode: true
     modality_names: ['rgb', 'lidar']
     seq_len: 1
+    lidar_version: 'v0a'
 
 optim_name: AdamW
 optim_params:

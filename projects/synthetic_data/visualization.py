@@ -112,6 +112,37 @@ def _plot_pointcloud(ax, points_sensor: np.ndarray, title: str) -> None:
     ax.view_init(elev=20, azim=55)
 
 
+def save_lidar_comparison_figure(
+    path: str | Path,
+    *,
+    canonical_vertices: np.ndarray,
+    sensor_position_world: np.ndarray,
+    pointclouds_sensor: list[np.ndarray],
+    titles: list[str],
+) -> None:
+    if len(pointclouds_sensor) != len(titles):
+        raise ValueError(
+            f"pointclouds_sensor and titles must have the same length, got "
+            f"{len(pointclouds_sensor)} and {len(titles)}."
+        )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    num_cols = len(pointclouds_sensor) + 1
+    fig = plt.figure(figsize=(5 * num_cols, 5))
+
+    ax0 = fig.add_subplot(1, num_cols, 1, projection="3d")
+    _plot_sensor_context(ax0, canonical_vertices, sensor_position_world)
+
+    for idx, (points_sensor, title) in enumerate(zip(pointclouds_sensor, titles), start=2):
+        ax = fig.add_subplot(1, num_cols, idx, projection="3d")
+        _plot_pointcloud(ax, points_sensor, title=title)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def save_summary_figure(
     path: str | Path,
     *,

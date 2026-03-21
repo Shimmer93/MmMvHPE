@@ -37,6 +37,7 @@ class SyntheticTargetExportConfig:
     save_pose_encodings: bool = True
     save_rgb_2d_keypoints: bool = True
     device: str = "cuda"
+    lidar_version: str = "v0a"
     mhr_smpl: MHRSMPLFitConfig = MHRSMPLFitConfig()
 
 
@@ -86,6 +87,29 @@ class SyntheticTargetExportPipeline:
     def _bbox_xywh_to_xyxy(bbox_xywh: list[float] | np.ndarray) -> np.ndarray:
         bbox = np.asarray(bbox_xywh, dtype=np.float32).reshape(4)
         return np.array([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]], dtype=np.float32)
+
+    def _resolve_lidar_artifact_path(self, base_manifest: dict[str, Any]) -> Path:
+        lidar_version = str(self.cfg.lidar_version).strip().lower()
+        if not lidar_version:
+            raise ValueError("SyntheticTargetExportConfig.lidar_version must be a non-empty string.")
+        lidar_artifacts = base_manifest.get("lidar_artifacts", {})
+        if lidar_artifacts:
+            if lidar_version not in lidar_artifacts:
+                raise ValueError(
+                    f"Requested lidar_version={lidar_version}, but available versions are "
+                    f"{sorted(lidar_artifacts.keys())}."
+                )
+            artifact_path = lidar_artifacts[lidar_version].get("artifact_path", None)
+            if not artifact_path:
+                raise ValueError(
+                    f"Manifest lidar_artifacts[{lidar_version}] is missing artifact_path."
+                )
+            return Path(artifact_path).expanduser().resolve()
+        if lidar_version != "v0a":
+            raise ValueError(
+                f"Requested lidar_version={lidar_version}, but manifest only supports legacy v0a layout."
+            )
+        return Path(base_manifest["artifacts"]["synthetic_lidar_points_sensor"]).expanduser().resolve()
 
     @staticmethod
     def _save_manifest(path: Path, payload: dict[str, Any]) -> None:
@@ -149,7 +173,8 @@ class SyntheticTargetExportPipeline:
             "extrinsic": lidar_extrinsic_new_world_to_sensor,
         }
 
-        input_lidar_sensor = np.load(base_manifest["artifacts"]["synthetic_lidar_points_sensor"]).astype(np.float32)
+        input_lidar_path = self._resolve_lidar_artifact_path(base_manifest)
+        input_lidar_sensor = np.load(input_lidar_path).astype(np.float32)
         gt_keypoints_lidar = transform_points_to_camera(smpl_joints_new_world, lidar_camera_new_world["extrinsic"])
         gt_keypoints_pc_centered_input_lidar, gt_keypoints_pc_center_lidar = center_keypoints_with_pc(
             gt_keypoints_lidar, input_lidar_sensor
@@ -157,7 +182,7 @@ class SyntheticTargetExportPipeline:
 
         export_dir = sample_dir / self.cfg.export_dirname / "humman"
         export_dir.mkdir(parents=True, exist_ok=True)
-        ensure_relative_symlink(export_dir / "input_lidar.npy", Path(base_manifest["artifacts"]["synthetic_lidar_points_sensor"]))
+        ensure_relative_symlink(export_dir / "input_lidar.npy", input_lidar_path)
         save_numpy(export_dir / "gt_keypoints.npy", smpl_joints_new_world)
         save_numpy(export_dir / "gt_keypoints_world.npy", smpl_joints_world)
         save_numpy(export_dir / "mhr_keypoints_world.npy", mhr_keypoints_world)
@@ -239,6 +264,7 @@ class SyntheticTargetExportPipeline:
                 "edge_error": float(smpl_fit["edge_error"]),
                 "backend_metadata": self.smpl_adapter.backend_metadata(),
             },
+            "lidar_version": self.cfg.lidar_version,
             "artifacts": artifacts,
         }
         self._save_manifest(export_dir / "manifest.json", metadata)
@@ -312,6 +338,7 @@ class SyntheticTargetExportPipeline:
             "notes": {
                 "smpl_payload": "not_exported_for_panoptic",
             },
+            "lidar_version": self.cfg.lidar_version,
             "artifacts": artifacts,
         }
         self._save_manifest(export_dir / "manifest.json", metadata)

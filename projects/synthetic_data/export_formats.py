@@ -207,7 +207,7 @@ def normalize_points_2d(points_2d: np.ndarray, image_size_hw: tuple[int, int]) -
     out = np.asarray(points_2d, dtype=np.float32).copy()
     out[:, 0] = 2.0 * (out[:, 0] / max(W - 1, 1)) - 1.0
     out[:, 1] = 2.0 * (out[:, 1] / max(H - 1, 1)) - 1.0
-    return out.astype(np.float32)
+    return np.clip(out, -1.0, 1.0).astype(np.float32)
 
 
 def build_rgb_camera_from_sam3d(

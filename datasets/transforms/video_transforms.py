@@ -134,7 +134,7 @@ class VideoCenterCropResize():
         pts = np.asarray(points_2d, dtype=np.float32).copy()
         pts[..., 0] = 2.0 * (pts[..., 0] / max(w - 1, 1)) - 1.0
         pts[..., 1] = 2.0 * (pts[..., 1] / max(h - 1, 1)) - 1.0
-        return pts
+        return np.clip(pts, -1.0, 1.0)
 
     @staticmethod
     def _crop_box_for_aspect(h: int, w: int, target_h: int, target_w: int):
@@ -186,7 +186,11 @@ class VideoCenterCropResize():
         pts = np.asarray(points_2d, dtype=np.float32)
         if pts.size == 0:
             return pts.astype(np.float32)
-        is_normalized = np.isfinite(pts).all() and float(np.nanmax(np.abs(pts))) <= 1.5
+        is_normalized = (
+            np.isfinite(pts).all()
+            and max(in_h, in_w) > 16
+            and float(np.nanmax(np.abs(pts))) <= 4.0
+        )
         if is_normalized:
             pts = self._denormalize_points_2d(pts, (in_h, in_w))
         pts = pts.copy()

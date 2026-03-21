@@ -28,6 +28,7 @@ class SyntheticExportedTrainingDataset(BaseDataset):
         seq_len: int = 1,
         max_samples: Optional[int] = None,
         random_seed: int = 0,
+        lidar_version: str = "v0a",
     ):
         super().__init__(pipeline=pipeline)
         self.data_root = Path(data_root).expanduser().resolve()
@@ -56,6 +57,9 @@ class SyntheticExportedTrainingDataset(BaseDataset):
         self.seq_len = 1
         self.max_samples = max_samples
         self.random_seed = int(random_seed)
+        self.lidar_version = str(lidar_version).strip().lower()
+        if not self.lidar_version:
+            raise ValueError("lidar_version must be a non-empty string.")
 
         self.data_list = self._index_samples()
         if self.max_samples is not None:
@@ -168,12 +172,42 @@ class SyntheticExportedTrainingDataset(BaseDataset):
             sample["input_rgb"] = [self._load_rgb_image(image_path)]
 
         if "lidar" in self.modality_names:
-            lidar_path = self._resolve_artifact_path(
-                source_manifest["artifacts"]["synthetic_lidar_points_sensor"]
-            )
+            lidar_path = self._resolve_lidar_artifact_path(source_manifest)
             sample["input_lidar"] = [self._load_npy(lidar_path).astype(np.float32)]
+            sample["lidar_version"] = self.lidar_version
 
         return sample
+
+    def _resolve_lidar_artifact_path(self, source_manifest: dict[str, Any]) -> Path:
+        lidar_artifacts = source_manifest.get("lidar_artifacts", {})
+        if lidar_artifacts:
+            if self.lidar_version not in lidar_artifacts:
+                raise ValueError(
+                    f"Requested lidar_version={self.lidar_version}, but available versions are "
+                    f"{sorted(lidar_artifacts.keys())}."
+                )
+            artifact_path = lidar_artifacts[self.lidar_version].get("artifact_path", None)
+            if not artifact_path:
+                raise ValueError(
+                    f"Manifest lidar_artifacts[{self.lidar_version}] is missing artifact_path."
+                )
+            return self._resolve_artifact_path(artifact_path)
+        if self.lidar_version != "v0a":
+            raise ValueError(
+                f"Requested lidar_version={self.lidar_version}, but manifest only supports legacy v0a layout."
+            )
+        return self._resolve_artifact_path(source_manifest["artifacts"]["synthetic_lidar_points_sensor"])
+
+    @staticmethod
+    def _derive_lidar_targets_from_camera(
+        *,
+        keypoints_world: np.ndarray,
+        lidar_camera: dict[str, np.ndarray],
+        input_lidar: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        gt_keypoints_lidar = transform_points_to_camera(keypoints_world, lidar_camera["extrinsic"])
+        gt_keypoints_pc_centered, _ = center_keypoints_with_pc(gt_keypoints_lidar, input_lidar)
+        return gt_keypoints_lidar.astype(np.float32), gt_keypoints_pc_centered.astype(np.float32)
 
     def _load_humman_sample(self, entry: dict[str, Any]) -> dict[str, Any]:
         sample = self._load_common_sample(entry)
@@ -186,8 +220,6 @@ class SyntheticExportedTrainingDataset(BaseDataset):
             "gt_smpl_params",
             "gt_global_orient",
             "gt_pelvis",
-            "gt_keypoints_lidar",
-            "gt_keypoints_pc_centered_input_lidar",
             "rgb_camera",
             "lidar_camera",
             "gt_keypoints_2d_rgb",
@@ -208,17 +240,25 @@ class SyntheticExportedTrainingDataset(BaseDataset):
             self._resolve_artifact_path(artifacts["gt_global_orient"])
         ).astype(np.float32)
         sample["gt_pelvis"] = self._load_npy(self._resolve_artifact_path(artifacts["gt_pelvis"])).astype(np.float32)
-        sample["gt_keypoints_lidar"] = self._load_npy(
-            self._resolve_artifact_path(artifacts["gt_keypoints_lidar"])
-        ).astype(np.float32)
-        sample["gt_keypoints_pc_centered_input_lidar"] = self._load_npy(
-            self._resolve_artifact_path(artifacts["gt_keypoints_pc_centered_input_lidar"])
-        ).astype(np.float32)
+        gt_vertices_path = artifacts.get("gt_vertices_new_world", None)
+        if gt_vertices_path is not None:
+            sample["gt_vertices"] = self._load_npy(self._resolve_artifact_path(gt_vertices_path)).astype(np.float32)
         sample["gt_keypoints_2d_rgb"] = self._load_npy(
             self._resolve_artifact_path(artifacts["gt_keypoints_2d_rgb"])
         ).astype(np.float32)
         sample["rgb_camera"] = self._load_camera_json(self._resolve_artifact_path(artifacts["rgb_camera"]))
         sample["lidar_camera"] = self._load_camera_json(self._resolve_artifact_path(artifacts["lidar_camera"]))
+        if "input_lidar" not in sample:
+            raise ValueError(
+                f"HuMMan synthetic sample {entry['sample_dir'].name} requires input_lidar to derive LiDAR targets."
+            )
+        sample["gt_keypoints_lidar"], sample["gt_keypoints_pc_centered_input_lidar"] = (
+            self._derive_lidar_targets_from_camera(
+                keypoints_world=sample["gt_keypoints"],
+                lidar_camera=sample["lidar_camera"],
+                input_lidar=np.asarray(sample["input_lidar"][0], dtype=np.float32),
+            )
+        )
         sample["export_format"] = "humman"
         sample["export_dir"] = str(export_dir)
         return sample

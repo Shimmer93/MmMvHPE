@@ -166,6 +166,9 @@ class SyntheticGenerationPipeline:
             "save_source_rgb": bool(self.cfg.save_source_rgb),
             "save_visualizations": bool(self.cfg.save_visualizations),
             "artifacts": {},
+            "default_lidar_version": "v0a",
+            "available_lidar_versions": ["v0a"],
+            "lidar_artifacts": {},
         }
         manifest_path = sample_dir / "manifest.json"
 
@@ -242,6 +245,13 @@ class SyntheticGenerationPipeline:
                 "elevation_deg": float(lidar_pose["elevation_deg"]),
             }
             manifest["lidar_sampling"] = {
+                "num_points": int(self.cfg.lidar.num_points),
+                "oversample_factor": int(self.cfg.lidar.oversample_factor),
+                "surface_noise_std": float(self.cfg.lidar.surface_noise_std),
+            }
+            manifest["lidar_artifacts"]["v0a"] = {
+                "artifact_path": array_paths["synthetic_lidar_points_sensor"],
+                "simulation_mode": "visible_surface_sampling_v0a",
                 "num_points": int(self.cfg.lidar.num_points),
                 "oversample_factor": int(self.cfg.lidar.oversample_factor),
                 "surface_noise_std": float(self.cfg.lidar.surface_noise_std),

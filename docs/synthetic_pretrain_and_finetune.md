@@ -15,6 +15,9 @@ The training-facing synthetic loader is:
 
 It reads the existing sample-centric synthetic export directories directly and does not require a second HuMMan-style or Panoptic-style on-disk dataset tree.
 
+For optional runtime LiDAR dropout/occlusion augmentation, see:
+- `docs/pc_structured_occlusion_augmentation.md`
+
 ## Dataset Contract
 
 The synthetic loader supports:
@@ -26,6 +29,7 @@ Common sample behavior:
 - only `seq_len=1` is supported
 - RGB is loaded from the original source image path stored in the synthetic sample manifest
 - LiDAR is loaded from the synthetic point-cloud artifact
+- the LiDAR artifact version is selected with `lidar_version` (for example `v0a` or `v1`)
 - camera dicts are returned in the same shape used by the existing training pipelines
 
 Returned training keys:

@@ -43,6 +43,7 @@ val_dataset:
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
+    test_mode: true
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -63,6 +64,7 @@ test_dataset:
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
+    test_mode: true
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -83,6 +85,7 @@ predict_dataset:
     split: "test"
     split_config: 'configs/datasets/humman_split_config.yml'
     split_to_use: 'cross_camera_split'
+    test_mode: true
     seq_len: 1
     seq_step: 1
     pad_seq: true
@@ -92,7 +95,6 @@ predict_dataset:
     convert_depth_to_lidar: false
     apply_to_new_world: false
     remove_root_rotation: false
-predict_pipeline: *train_pipeline
 # --------------------------------------
 # Optimizer parameters
 # --------------------------------------
@@ -197,6 +199,7 @@ train_pipeline: &train_pipeline
     params: null
 val_pipeline: *train_pipeline
 test_pipeline: *train_pipeline
+predict_pipeline: *train_pipeline
 vis_skl_format: 'smpl'
 vis_denorm_params:
   rgb_mean: [123.675, 116.28, 103.53]

@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=0, help="0 means process all remaining samples.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--lidar-version", type=str, default="v0a")
     parser.add_argument("--no-pose-encodings", action="store_true")
     parser.add_argument("--no-rgb-2d", action="store_true")
     return parser.parse_args()
@@ -41,6 +42,7 @@ def main() -> None:
         synthetic_root=args.synthetic_root,
         checkpoint_root=args.checkpoint_root,
         device=args.device,
+        lidar_version=args.lidar_version,
         save_pose_encodings=not args.no_pose_encodings,
         save_rgb_2d_keypoints=not args.no_rgb_2d,
         mhr_smpl=MHRSMPLFitConfig(

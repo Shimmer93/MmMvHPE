@@ -206,6 +206,214 @@ class PCDropout():
             results[key] = dropped_pc_seq
 
         return results
+
+
+class PCStructuredOcclusionAug():
+    def __init__(
+        self,
+        apply_prob: float = 0.35,
+        range_image_size: Union[int, Sequence[int]] = (64, 256),
+        blob_count_range: Union[int, Sequence[int]] = (1, 2),
+        blob_shape_mode: str = 'mixed',
+        rectangle_height_ratio_range: Sequence[float] = (0.08, 0.18),
+        rectangle_width_ratio_range: Sequence[float] = (0.08, 0.18),
+        circle_radius_ratio_range: Sequence[float] = (0.06, 0.12),
+        min_points_kept: int = 256,
+        keys: List[str] = ['input_lidar'],
+    ):
+        if not 0.0 <= float(apply_prob) <= 1.0:
+            raise ValueError("apply_prob must be in [0.0, 1.0].")
+        self.apply_prob = float(apply_prob)
+
+        if isinstance(range_image_size, int):
+            self.range_image_size = (int(range_image_size), int(range_image_size))
+        else:
+            if len(range_image_size) != 2:
+                raise ValueError("range_image_size must be an int or a 2-tuple/list.")
+            self.range_image_size = (int(range_image_size[0]), int(range_image_size[1]))
+        if self.range_image_size[0] <= 1 or self.range_image_size[1] <= 1:
+            raise ValueError("range_image_size dimensions must both be > 1.")
+
+        self.blob_count_range = self._normalize_int_range(blob_count_range, "blob_count_range", min_value=1)
+        self.blob_shape_mode = str(blob_shape_mode)
+        if self.blob_shape_mode not in ['rectangle', 'circle', 'mixed']:
+            raise ValueError("blob_shape_mode must be one of ['rectangle', 'circle', 'mixed'].")
+
+        self.rectangle_height_ratio_range = self._normalize_float_range(
+            rectangle_height_ratio_range, "rectangle_height_ratio_range"
+        )
+        self.rectangle_width_ratio_range = self._normalize_float_range(
+            rectangle_width_ratio_range, "rectangle_width_ratio_range"
+        )
+        self.circle_radius_ratio_range = self._normalize_float_range(
+            circle_radius_ratio_range, "circle_radius_ratio_range"
+        )
+        self.min_points_kept = int(min_points_kept)
+        if self.min_points_kept < 1:
+            raise ValueError("min_points_kept must be >= 1.")
+        self.keys = keys
+
+    @staticmethod
+    def _normalize_int_range(value, name: str, min_value: Optional[int] = None):
+        if isinstance(value, int):
+            low = high = int(value)
+        else:
+            if len(value) != 2:
+                raise ValueError(f"{name} must be an int or a 2-tuple/list.")
+            low, high = int(value[0]), int(value[1])
+        if low > high:
+            raise ValueError(f"{name} low must be <= high.")
+        if min_value is not None and low < min_value:
+            raise ValueError(f"{name} values must be >= {min_value}.")
+        return (low, high)
+
+    @staticmethod
+    def _normalize_float_range(value, name: str):
+        if len(value) != 2:
+            raise ValueError(f"{name} must be a 2-tuple/list.")
+        low, high = float(value[0]), float(value[1])
+        if low > high:
+            raise ValueError(f"{name} low must be <= high.")
+        if low <= 0.0 or high > 1.0:
+            raise ValueError(f"{name} values must be in (0.0, 1.0].")
+        return (low, high)
+
+    def _sample_blob_count(self) -> int:
+        low, high = self.blob_count_range
+        return int(np.random.randint(low, high + 1))
+
+    def _sample_shape(self) -> str:
+        if self.blob_shape_mode != 'mixed':
+            return self.blob_shape_mode
+        return 'rectangle' if np.random.rand() < 0.5 else 'circle'
+
+    def _compute_range_image_coords(self, xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x = xyz[:, 0]
+        y = xyz[:, 1]
+        z = xyz[:, 2]
+        horizontal_range = np.sqrt(np.maximum(x * x + z * z, 1e-12))
+        azimuth = np.arctan2(z, x)
+        elevation = np.arctan2(y, horizontal_range)
+
+        az_min, az_max = float(np.min(azimuth)), float(np.max(azimuth))
+        el_min, el_max = float(np.min(elevation)), float(np.max(elevation))
+        if (az_max - az_min) < 1e-6 or (el_max - el_min) < 1e-6:
+            raise ValueError("Point cloud angular support is degenerate; cannot build range-image coordinates.")
+
+        h, w = self.range_image_size
+        cols = (azimuth - az_min) / (az_max - az_min)
+        rows = (elevation - el_min) / (el_max - el_min)
+        cols = np.clip(np.floor(cols * (w - 1)), 0, w - 1).astype(np.int32)
+        rows = np.clip(np.floor(rows * (h - 1)), 0, h - 1).astype(np.int32)
+        return rows, cols
+
+    def _sample_rectangle_mask(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        height: int,
+        width: int,
+    ) -> np.ndarray:
+        h, w = self.range_image_size
+        center_row = int(np.random.randint(0, h))
+        center_col = int(np.random.randint(0, w))
+        half_h = max(1, height // 2)
+        half_w = max(1, width // 2)
+        row_min = max(0, center_row - half_h)
+        row_max = min(h - 1, center_row + half_h)
+        col_min = max(0, center_col - half_w)
+        col_max = min(w - 1, center_col + half_w)
+        return (
+            (rows >= row_min)
+            & (rows <= row_max)
+            & (cols >= col_min)
+            & (cols <= col_max)
+        )
+
+    def _sample_circle_mask(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        radius: float,
+    ) -> np.ndarray:
+        h, w = self.range_image_size
+        center_row = float(np.random.randint(0, h))
+        center_col = float(np.random.randint(0, w))
+        dist_sq = (rows.astype(np.float32) - center_row) ** 2 + (cols.astype(np.float32) - center_col) ** 2
+        return dist_sq <= float(radius) ** 2
+
+    def _augment_single_pc(self, pc: np.ndarray) -> np.ndarray:
+        if not isinstance(pc, np.ndarray):
+            raise ValueError(f"Point cloud must be np.ndarray, got {type(pc).__name__}.")
+        if pc.ndim != 2 or pc.shape[1] < 3:
+            raise ValueError(f"Point cloud must have shape (N, C>=3), got {pc.shape}.")
+        if pc.shape[0] == 0 or np.random.rand() > self.apply_prob:
+            return pc
+
+        xyz = pc[:, :3]
+        if not np.all(np.isfinite(xyz)):
+            raise ValueError("Point cloud contains non-finite xyz coordinates.")
+
+        try:
+            rows, cols = self._compute_range_image_coords(xyz.astype(np.float32))
+        except ValueError:
+            return pc
+
+        drop_mask = np.zeros(pc.shape[0], dtype=bool)
+        h, w = self.range_image_size
+        for _ in range(self._sample_blob_count()):
+            shape = self._sample_shape()
+            if shape == 'rectangle':
+                rect_h = max(1, int(round(np.random.uniform(*self.rectangle_height_ratio_range) * h)))
+                rect_w = max(1, int(round(np.random.uniform(*self.rectangle_width_ratio_range) * w)))
+                drop_mask |= self._sample_rectangle_mask(rows, cols, rect_h, rect_w)
+            else:
+                radius = max(1.0, np.random.uniform(*self.circle_radius_ratio_range) * min(h, w))
+                drop_mask |= self._sample_circle_mask(rows, cols, radius)
+
+        keep_mask = ~drop_mask
+        kept_indices = np.flatnonzero(keep_mask)
+        if kept_indices.size == 0:
+            keep_count = min(self.min_points_kept, pc.shape[0])
+            kept_indices = np.random.choice(pc.shape[0], size=keep_count, replace=False)
+            keep_mask = np.zeros(pc.shape[0], dtype=bool)
+            keep_mask[kept_indices] = True
+        elif kept_indices.size < min(self.min_points_kept, pc.shape[0]):
+            keep_target = min(self.min_points_kept, pc.shape[0])
+            restore_candidates = np.flatnonzero(~keep_mask)
+            restore_count = min(keep_target - kept_indices.size, restore_candidates.size)
+            if restore_count > 0:
+                restored = np.random.choice(restore_candidates, size=restore_count, replace=False)
+                keep_mask[restored] = True
+
+        return pc[keep_mask]
+
+    def _apply_to_pc_seq(self, pc_seq):
+        is_multi_view = (
+            isinstance(pc_seq, (list, tuple))
+            and len(pc_seq) > 0
+            and isinstance(pc_seq[0], (list, tuple))
+        )
+        if is_multi_view:
+            out = []
+            for view_seq in pc_seq:
+                out_view = []
+                for pc in view_seq:
+                    out_view.append(self._augment_single_pc(pc))
+                out.append(out_view)
+            return out
+
+        out = []
+        for pc in pc_seq:
+            out.append(self._augment_single_pc(pc))
+        return out
+
+    def __call__(self, results):
+        for key in self.keys:
+            if key not in results:
+                continue
+            results[key] = self._apply_to_pc_seq(results[key])
+        return results
     
 class PCNormalize():
     def __init__(self, 
