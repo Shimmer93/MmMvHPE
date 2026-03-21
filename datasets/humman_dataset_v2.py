@@ -332,13 +332,19 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         )
         return None
 
-    def _load_rgb_frames(self, seq_name, camera_name, start_frame):
-        frame_list = self.file_index["rgb"][seq_name][camera_name]
-        frames = []
+    def _frame_records(self, modality: str, seq_name: str, camera_name: str, start_frame: int):
+        frame_list = self.file_index[modality][seq_name][camera_name]
+        records = []
         for i in range(self.seq_len):
             idx = start_frame + i
             idx = min(idx, len(frame_list) - 1)
-            frame_path = frame_list[idx][1]
+            records.append(frame_list[idx])
+        return records
+
+    def _load_rgb_frames(self, seq_name, camera_name, start_frame):
+        frame_records = self._frame_records("rgb", seq_name, camera_name, start_frame)
+        frames = []
+        for _, frame_path in frame_records:
             frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
             if frame is None:
                 if frames:
@@ -351,12 +357,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return frames
 
     def _load_depth_frames(self, seq_name, camera_name, start_frame):
-        frame_list = self.file_index["depth"][seq_name][camera_name]
+        frame_records = self._frame_records("depth", seq_name, camera_name, start_frame)
         frames = []
-        for i in range(self.seq_len):
-            idx = start_frame + i
-            idx = min(idx, len(frame_list) - 1)
-            frame_path = frame_list[idx][1]
+        for _, frame_path in frame_records:
             depth = cv2.imread(frame_path, cv2.IMREAD_ANYDEPTH)
             if depth is None:
                 depth = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
@@ -373,12 +376,9 @@ class HummanPreprocessedDatasetV2(BaseDataset):
         return frames
 
     def _load_lidar_frames(self, seq_name, camera_name, start_frame):
-        frame_list = self.file_index["lidar"][seq_name][camera_name]
+        frame_records = self._frame_records("lidar", seq_name, camera_name, start_frame)
         frames = []
-        for i in range(self.seq_len):
-            idx = start_frame + i
-            idx = min(idx, len(frame_list) - 1)
-            frame_path = frame_list[idx][1]
+        for _, frame_path in frame_records:
             pc = np.load(frame_path)
             frames.append(pc.astype(np.float32))
         return frames
@@ -603,6 +603,7 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 f"{data_info['seq_name']}_rgb_{primary_rgb}_"
                 f"depth_{primary_depth}_{data_info['start_frame']}"
             ),
+            "unit": self.unit,
             "modalities": list(self.modality_names),
             "gt_keypoints": gt_keypoints,
             "gt_smpl_params": gt_smpl_params,
@@ -614,6 +615,11 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                 "rgb": list(selected_rgb),
                 "depth": list(selected_depth),
                 "lidar": list(selected_lidar),
+            },
+            "selected_frame_ids": {
+                "rgb": {},
+                "depth": {},
+                "lidar": {},
             },
         }
 
@@ -648,6 +654,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             rgb_frames_views = []
             rgb_cameras_out = []
             for camera_name in selected_rgb:
+                rgb_frame_ids = [frame_idx for frame_idx, _ in self._frame_records(
+                    "rgb", data_info["seq_name"], camera_name, data_info["start_frame"]
+                )]
+                sample["selected_frame_ids"]["rgb"][camera_name] = rgb_frame_ids
                 if self.skeleton_only:
                     rgb_frames = self._load_rgb_frames(
                         data_info["seq_name"],
@@ -682,6 +692,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             depth_cameras_out = []
 
             for camera_name in selected_depth:
+                depth_frame_ids = [frame_idx for frame_idx, _ in self._frame_records(
+                    "depth", data_info["seq_name"], camera_name, data_info["start_frame"]
+                )]
+                sample["selected_frame_ids"]["depth"][camera_name] = depth_frame_ids
                 if self.skeleton_only:
                     depth_frames = self._load_depth_frames(
                         data_info["seq_name"],
@@ -728,6 +742,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
                         sample["modalities"].remove("depth")
                     sample.pop("input_depth", None)
                     sample["selected_cameras"]["lidar"] = list(selected_depth)
+                    sample["selected_frame_ids"]["lidar"] = {
+                        camera_name: list(sample["selected_frame_ids"]["depth"][camera_name])
+                        for camera_name in selected_depth
+                    }
 
                 if depth_cameras_out:
                     sample["lidar_camera"] = self._maybe_single(depth_cameras_out)
@@ -738,6 +756,10 @@ class HummanPreprocessedDatasetV2(BaseDataset):
             lidar_frames_views = []
             lidar_cameras_out = []
             for camera_name in selected_lidar:
+                lidar_frame_ids = [frame_idx for frame_idx, _ in self._frame_records(
+                    "lidar", data_info["seq_name"], camera_name, data_info["start_frame"]
+                )]
+                sample["selected_frame_ids"]["lidar"][camera_name] = lidar_frame_ids
                 lidar_frames = self._load_lidar_frames(
                     data_info["seq_name"],
                     camera_name,
