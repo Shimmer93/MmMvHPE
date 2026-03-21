@@ -59,6 +59,9 @@ if [[ "${USE_WANDB}" == "1" ]]; then
 fi
 MAIN_ARGS+=("$@")
 
+EVAL_PER_FRAME_WORKERS="${EVAL_PER_FRAME_WORKERS:-${NUM_WORKERS}}"
+EVAL_TARGET_MODALITY="${EVAL_TARGET_MODALITY:-lidar}"
+
 log() {
   printf '[seq1-runtime-mask-rgb-lidar] %s\n' "$*"
 }
@@ -81,7 +84,7 @@ render_cfg() {
   local dst_cfg="$2"
   local checkpoint_path="$3"
   local pretrained_camera_head_path="$4"
-  python - "${src_cfg}" "${dst_cfg}" "${checkpoint_path}" "${pretrained_camera_head_path}" <<'PY'
+  uv run python - "${src_cfg}" "${dst_cfg}" "${checkpoint_path}" "${pretrained_camera_head_path}" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -114,6 +117,28 @@ run_main() {
   local cfg="$1"
   shift
   uv run python "${REPO_ROOT}/main.py" -c "${cfg}" "${MAIN_ARGS[@]}" "$@"
+}
+
+find_test_predictions_pkl() {
+  local run_dir="$1"
+  local pred_pkl
+  pred_pkl="$(find "${run_dir}" -maxdepth 1 -type f -name '*_test_predictions.pkl' | sort | head -n1)"
+  if [[ -z "${pred_pkl}" || ! -f "${pred_pkl}" ]]; then
+    return 1
+  fi
+  printf '%s\n' "${pred_pkl}"
+}
+
+run_per_frame_sensor_eval() {
+  local pred_pkl="$1"
+  local out_txt="$2"
+  uv run python "${REPO_ROOT}/tools/eval_per_frame_sensor.py" \
+    --pred-file "${pred_pkl}" \
+    --pred-cameras-key pred_cameras_stream \
+    --gt-cameras-key gt_cameras_stream \
+    --target-modality "${EVAL_TARGET_MODALITY}" \
+    --workers "${EVAL_PER_FRAME_WORKERS}" \
+    | tee "${out_txt}"
 }
 
 STAGE1_BEST_CKPT="${STAGE1_BEST_CKPT:-}"
@@ -174,16 +199,40 @@ run_eval() {
     --version "${version}"
 }
 
+run_eval_per_frame_sensor() {
+  local src_cfg="$1"
+  local rendered_cfg="$2"
+  local version="$3"
+  local label="$4"
+  local run_dir pred_pkl sensor_eval_txt
+  render_cfg "${src_cfg}" "${rendered_cfg}" "${STAGE1_BEST_CKPT}" "${STAGE2_BEST_CKPT}"
+  log "Final eval (${label}) config: ${rendered_cfg}"
+  run_main "${rendered_cfg}" \
+    --test \
+    --save_test_preds \
+    --exp_name "${EXP_NAME_EVAL}" \
+    --version "${version}"
+
+  run_dir="${REPO_ROOT}/logs/${EXP_NAME_EVAL}/${version}"
+  pred_pkl="$(find_test_predictions_pkl "${run_dir}")" || {
+    log "ERROR: no *_test_predictions.pkl found under ${run_dir}"
+    exit 1
+  }
+  sensor_eval_txt="${run_dir}/per_frame_sensor_eval_${label}.txt"
+  log "Per-frame sensor eval (${label}) predictions: ${pred_pkl}"
+  run_per_frame_sensor_eval "${pred_pkl}" "${sensor_eval_txt}"
+}
+
 if [[ "${RUN_FINAL_EVAL}" == "1" ]]; then
   run_eval "${FINAL_EVAL_CFG}" "${TMP_CFG_DIR}/final_eval_full.yml" "${VERSION_EVAL_FULL}" "full"
 fi
 
 if [[ "${RUN_FINAL_EVAL_OCC}" == "1" ]]; then
-  run_eval "${FINAL_EVAL_OCC_CFG}" "${TMP_CFG_DIR}/final_eval_occluded.yml" "${VERSION_EVAL_OCC}" "occluded"
+  run_eval_per_frame_sensor "${FINAL_EVAL_OCC_CFG}" "${TMP_CFG_DIR}/final_eval_occluded.yml" "${VERSION_EVAL_OCC}" "occluded"
 fi
 
 if [[ "${RUN_FINAL_EVAL_UNOCC}" == "1" ]]; then
-  run_eval "${FINAL_EVAL_UNOCC_CFG}" "${TMP_CFG_DIR}/final_eval_unoccluded.yml" "${VERSION_EVAL_UNOCC}" "unoccluded"
+  run_eval_per_frame_sensor "${FINAL_EVAL_UNOCC_CFG}" "${TMP_CFG_DIR}/final_eval_unoccluded.yml" "${VERSION_EVAL_UNOCC}" "unoccluded"
 fi
 
 log "done"
